@@ -1,0 +1,61 @@
+name: CI/CD — braify-web-services
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── 2. Java 17 ─────────────────────────────────────────────────────
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      # ── 3. Build JAR ───────────────────────────────────────────────────
+      - name: Build with Maven
+        run: mvn clean package -DskipTests
+
+      # Rename to a fixed filename so the systemd service doesn't need to
+      # change every time the version number bumps
+      - name: Rename JAR to app.jar
+        run: mv target/braify-web-services-*.jar target/app.jar
+
+      # ── 4. Upload JAR to EC2 ───────────────────────────────────────────
+      - name: Upload JAR to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host:     ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key:      ${{ secrets.EC2_SSH_KEY }}
+          source:   "target/app.jar"
+          target:   "/opt/braify-web-services/"
+          strip_components: 1
+
+      # ── 5. Restart service ─────────────────────────────────────────────
+      - name: Restart braify-web-services
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USERNAME }}
+          key:      ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            sudo systemctl restart braify-web-services
+            sleep 8
+            STATUS=$(sudo systemctl is-active braify-web-services)
+            echo "Service status: $STATUS"
+            if [ "$STATUS" != "active" ]; then
+              echo "❌ Service failed to start. Last 30 lines of journal:"
+              sudo journalctl -u braify-web-services -n 30 --no-pager
+              exit 1
+            fi
+            echo "✅ braify-web-services is running"
