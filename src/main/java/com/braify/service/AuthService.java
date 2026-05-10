@@ -1,0 +1,97 @@
+package com.braify.service;
+
+import com.braify.dto.LoginRequest;
+import com.braify.dto.LoginResponse;
+import com.braify.model.AppUser;
+import com.braify.model.Organization;
+import com.braify.model.UserSession;
+import com.braify.repository.AppUserRepository;
+import com.braify.repository.OrganizationRepository;
+import com.braify.repository.UserSessionRepository;
+import com.braify.security.JwtUtil;
+import lombok.RequiredArgsConstructor;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+
+import java.time.LocalDateTime;
+import java.util.List;
+
+@Service
+@RequiredArgsConstructor
+public class AuthService {
+
+    private final AppUserRepository userRepository;
+    private final UserSessionRepository sessionRepository;
+    private final OrganizationRepository orgRepository;
+    private final PasswordEncoder passwordEncoder;
+    private final JwtUtil jwtUtil;
+
+    private static final int MAX_SESSIONS = 3;
+
+    public LoginResponse login(LoginRequest req, String ipAddress) {
+        AppUser user = userRepository.findByEmail(req.getEmail())
+                .orElseThrow(() -> new RuntimeException("Invalid email or password"));
+
+        if (!user.isActive()) {
+            throw new RuntimeException("Account is disabled");
+        }
+
+        if (!passwordEncoder.matches(req.getPassword(), user.getPassword())) {
+            throw new RuntimeException("Invalid email or password");
+        }
+
+        // Enforce session limit: if >= MAX_SESSIONS active, revoke oldest
+        List<UserSession> activeSessions =
+                sessionRepository.findByUserIdAndActiveTrueOrderByCreatedAtAsc(user.getId());
+        if (activeSessions.size() >= MAX_SESSIONS) {
+            int toRevoke = activeSessions.size() - MAX_SESSIONS + 1;
+            activeSessions.stream().limit(toRevoke).forEach(s -> {
+                s.setActive(false);
+                sessionRepository.save(s);
+            });
+        }
+
+        // Generate token and persist session
+        String token = jwtUtil.generateToken(user);
+        String jti   = jwtUtil.extractJti(token);
+
+        UserSession session = UserSession.builder()
+                .userId(user.getId())
+                .jti(jti)
+                .organizationId(user.getOrganizationId())
+                .userRole(user.getRole().name())
+                .deviceInfo(req.getDeviceInfo())
+                .ipAddress(ipAddress)
+                .active(true)
+                .expiresAt(jwtUtil.expiresAt(token))
+                .lastUsedAt(LocalDateTime.now())
+                .build();
+        sessionRepository.save(session);
+
+        // Fetch org name if applicable
+        String orgName = user.getOrganizationId() != null
+                ? orgRepository.findById(user.getOrganizationId())
+                    .map(Organization::getName).orElse(null)
+                : null;
+
+        return LoginResponse.builder()
+                .token(token)
+                .userId(user.getId())
+                .email(user.getEmail())
+                .firstName(user.getFirstName())
+                .lastName(user.getLastName())
+                .role(user.getRole().name())
+                .organizationId(user.getOrganizationId())
+                .organizationName(orgName)
+                .profilePicture(user.getProfilePicture())
+                .mustChangePassword(user.isMustChangePassword())
+                .build();
+    }
+
+    public void logout(String jti) {
+        sessionRepository.findByJtiAndActiveTrue(jti).ifPresent(s -> {
+            s.setActive(false);
+            sessionRepository.save(s);
+        });
+    }
+}

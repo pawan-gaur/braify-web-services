@@ -1,0 +1,35 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+
+
+  data:
+    mongodb:
+      host: localhost
+      port: 27017
+      database: pdf_generator
+      username: admin
+      password: root
+
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+# Logging
+logging:
+  level:
+    com:
+      pdfgenerator: DEBUG
+    io:
+      github:
+        openhtmltopdf: WARN
