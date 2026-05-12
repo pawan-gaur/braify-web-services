@@ -18,6 +18,14 @@ public class UserDetailsImpl implements UserDetails {
         return user;
     }
 
+    public String getId() {
+        return user.getId();
+    }
+
+    public String getOrgId() {
+        return user.getOrganizationId();
+    }
+
     @Override
     public String getUsername() {
         return user.getEmail();

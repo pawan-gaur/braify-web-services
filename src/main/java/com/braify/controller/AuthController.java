@@ -38,8 +38,28 @@ public class AuthController {
     @PostMapping("/login")
     public ResponseEntity<LoginResponse> login(@RequestBody LoginRequest req,
                                                HttpServletRequest httpReq) {
-        String ip = httpReq.getRemoteAddr();
+        String ip = extractClientIp(httpReq);
         return ResponseEntity.ok(authService.login(req, ip));
+    }
+
+    /**
+     * Resolves the real client IP address when the app is behind a reverse proxy (Nginx).
+     * Priority: X-Forwarded-For → X-Real-IP → getRemoteAddr()
+     *
+     * X-Forwarded-For may contain a comma-separated chain (client, proxy1, proxy2…);
+     * the first entry is always the originating client.
+     */
+    private String extractClientIp(HttpServletRequest request) {
+        String xff = request.getHeader("X-Forwarded-For");
+        if (xff != null && !xff.isBlank()) {
+            // Take the first IP in the chain — that's the real client
+            return xff.split(",")[0].trim();
+        }
+        String xRealIp = request.getHeader("X-Real-IP");
+        if (xRealIp != null && !xRealIp.isBlank()) {
+            return xRealIp.trim();
+        }
+        return request.getRemoteAddr();
     }
 
     @PostMapping("/logout")

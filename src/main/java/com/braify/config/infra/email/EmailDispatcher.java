@@ -77,6 +77,27 @@ public class EmailDispatcher {
         return send(email, renderedSubject, renderedHtml, Collections.emptyList());
     }
 
+    /**
+     * Sends an HTML email (no S3 template) with a single binary attachment.
+     * Use this when the HTML is already built inline and you also need to attach a file.
+     */
+    public CreateEmailResponse sendHtmlEmailWithAttachment(String email,
+                                                           String subject,
+                                                           String html,
+                                                           Map<String, Object> placeholders,
+                                                           byte[] attachmentData,
+                                                           String attachmentFileName) {
+        String renderedSubject = replacePlaceholders(
+                isBlank(subject) ? DEFAULT_SUBJECT : subject,
+                safePlaceholders(placeholders));
+        String renderedHtml = replacePlaceholders(html, safePlaceholders(placeholders));
+
+        List<Attachment> attachments = new ArrayList<>();
+        buildAttachment(attachmentFileName, attachmentData).ifPresent(attachments::add);
+
+        return send(email, renderedSubject, renderedHtml, attachments);
+    }
+
     private CreateEmailResponse sendTemplatedEmail(String email,
                                                    String templateName,
                                                    String subject,

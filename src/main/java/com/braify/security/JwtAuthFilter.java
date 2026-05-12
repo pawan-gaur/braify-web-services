@@ -36,6 +36,11 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
         String token = header.substring(7);
         try {
+            // Skip ESIGN signing tokens — they are handled by ESignClientController directly
+            if (jwtUtil.isValidSigningToken(token)) {
+                chain.doFilter(request, response);
+                return;
+            }
             if (jwtUtil.isValid(token)) {
                 String jti = jwtUtil.extractJti(token);
                 // Check session is still active in DB

@@ -11,13 +11,13 @@ import java.util.Optional;
 @Repository
 public interface OrganizationRepository extends MongoRepository<Organization, String> {
 
-    Optional<Organization> findBySlugAndDeletedFalse(String slug);
+    Optional<Organization> findByCodeAndDeletedFalse(String code);
 
     List<Organization> findByDeletedFalseOrderByNameAsc();
 
-    boolean existsBySlug(String slug);
+    boolean existsByCode(String code);
 
-    /** Case-insensitive name/slug search. */
-    @Query("{ 'deleted': false, $or: [ { 'name': { $regex: ?0, $options: 'i' } }, { 'slug': { $regex: ?0, $options: 'i' } } ] }")
+    /** Case-insensitive name/code search. */
+    @Query("{ 'deleted': false, $or: [ { 'name': { $regex: ?0, $options: 'i' } }, { 'code': { $regex: ?0, $options: 'i' } } ] }")
     List<Organization> searchByQuery(String q);
 }

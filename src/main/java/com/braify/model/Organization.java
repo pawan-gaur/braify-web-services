@@ -24,7 +24,7 @@ public class Organization {
     private String name;
 
     /** Unique short identifier, e.g. "acme-corp" */
-    private String slug;
+    private String code;
 
     private String description;
 
