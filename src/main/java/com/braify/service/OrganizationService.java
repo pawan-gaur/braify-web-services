@@ -33,12 +33,12 @@ public class OrganizationService {
     }
 
     public Organization create(OrganizationRequest req) {
-        if (orgRepository.existsBySlug(req.getSlug())) {
-            throw new RuntimeException("Slug already taken: " + req.getSlug());
+        if (orgRepository.existsByCode(req.getCode())) {
+            throw new RuntimeException("Code already taken: " + req.getCode());
         }
         Organization org = Organization.builder()
                 .name(req.getName())
-                .slug(req.getSlug())
+                .code(req.getCode())
                 .description(req.getDescription())
                 .active(true)
                 .deleted(false)
