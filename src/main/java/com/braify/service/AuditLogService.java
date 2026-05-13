@@ -19,16 +19,19 @@ public class AuditLogService {
     private final AuditLogRepository auditLogRepository;
     private final AppUserRepository  userRepository;
 
+    // ── Write ─────────────────────────────────────────────────────────────────
+
     /**
-     * Write a single audit entry for either a PDF or email template.
+     * Full audit entry with organization scope.
      *
-     * @param resourceId   ID of the template or email template
-     * @param resourceName Display name at time of action
-     * @param action       CREATED | UPDATED | DELETED | RESTORED
-     * @param resourceType TEMPLATE | EMAIL_TEMPLATE
-     * @param version      Resulting version number (0 for DELETE)
-     * @param changes      Optional field-level diff map
-     * @param performedBy  Email of the user performing the action
+     * @param resourceId     ID of the affected resource
+     * @param resourceName   Display name at the time of the action
+     * @param action         Action performed (CREATED, UPDATED, …)
+     * @param resourceType   TEMPLATE | EMAIL_TEMPLATE | USER | ORGANIZATION | E_SIGN
+     * @param version        Resulting version number (0 when not applicable)
+     * @param changes        Optional field-level diff map (UPDATED only)
+     * @param performedBy    Email of the acting user
+     * @param organizationId Organisation that owns the affected resource (may be null for legacy entries)
      */
     public AuditLog log(String resourceId,
                         String resourceName,
@@ -36,7 +39,8 @@ public class AuditLogService {
                         AuditLog.ResourceType resourceType,
                         int version,
                         Map<String, Object> changes,
-                        String performedBy) {
+                        String performedBy,
+                        String organizationId) {
 
         AuditLog entry = AuditLog.builder()
                 .templateId(resourceId)
@@ -46,52 +50,82 @@ public class AuditLogService {
                 .versionNumber(version)
                 .performedBy(performedBy != null ? performedBy : "system")
                 .changes(changes)
+                .organizationId(organizationId)
                 .build();
 
         return auditLogRepository.save(entry);
     }
 
     /**
-     * Overload for backward compatibility — uses "system" as performer.
+     * Backward-compatible 7-param overload (organizationId defaults to null).
+     * Existing callers (TemplateService, EmailTemplateService, UserService) that
+     * already pass the caller's email are still fully functional.
      */
     public AuditLog log(String resourceId,
                         String resourceName,
                         AuditLog.Action action,
                         AuditLog.ResourceType resourceType,
                         int version,
-                        Map<String, Object> changes) {
-        return log(resourceId, resourceName, action, resourceType, version, changes, "system");
+                        Map<String, Object> changes,
+                        String performedBy) {
+        return log(resourceId, resourceName, action, resourceType, version, changes, performedBy, null);
     }
 
-    /** All logs for a specific resource (PDF or email template), newest first. */
+    /** Overload for backward compatibility — uses "system" as performer. */
+    public AuditLog log(String resourceId,
+                        String resourceName,
+                        AuditLog.Action action,
+                        AuditLog.ResourceType resourceType,
+                        int version,
+                        Map<String, Object> changes) {
+        return log(resourceId, resourceName, action, resourceType, version, changes, "system", null);
+    }
+
+    // ── Read ──────────────────────────────────────────────────────────────────
+
+    /** All logs for a specific resource (PDF template, email template, user…), newest first. */
     public List<AuditLog> getForResource(String resourceId) {
         return auditLogRepository.findByTemplateIdOrderByTimestampDesc(resourceId);
     }
 
     /**
      * Paginated audit log scoped by the caller's role:
+     *
      * <ul>
-     *   <li>PLATFORM_ADMIN → all entries</li>
+     *   <li>PLATFORM_ADMIN → all entries; optionally filtered by {@code orgId}</li>
      *   <li>ORG_ADMIN      → entries performed by any user in their org</li>
      *   <li>ADMIN          → entries performed by ADMIN + USER roles in their org</li>
      *   <li>USER           → only entries performed by themselves</li>
      * </ul>
      *
-     * @param caller       the authenticated user requesting the log
+     * @param page         zero-based page index
+     * @param size         page size
      * @param resourceType null = all types; otherwise filtered
+     * @param orgId        PLATFORM_ADMIN only: scope to a specific organisation (null = all orgs)
+     * @param caller       the authenticated user requesting the log
      */
     public Page<AuditLog> getAll(int page, int size,
                                  AuditLog.ResourceType resourceType,
+                                 String orgId,
                                  AppUser caller) {
         PageRequest pr = PageRequest.of(page, size);
 
         return switch (caller.getRole()) {
-            case PLATFORM_ADMIN -> resourceType != null
-                    ? auditLogRepository.findByResourceTypeOrderByTimestampDesc(resourceType, pr)
-                    : auditLogRepository.findAllByOrderByTimestampDesc(pr);
+
+            case PLATFORM_ADMIN -> {
+                if (orgId != null && !orgId.isBlank()) {
+                    // Filter by the organizationId field stored on each log entry
+                    yield resourceType != null
+                            ? auditLogRepository.findByOrganizationIdAndResourceTypeOrderByTimestampDesc(orgId, resourceType, pr)
+                            : auditLogRepository.findByOrganizationIdOrderByTimestampDesc(orgId, pr);
+                }
+                yield resourceType != null
+                        ? auditLogRepository.findByResourceTypeOrderByTimestampDesc(resourceType, pr)
+                        : auditLogRepository.findAllByOrderByTimestampDesc(pr);
+            }
 
             case ORG_ADMIN -> {
-                // All performer emails in their org
+                // All performer emails in their org (all roles)
                 List<String> emails = performerEmails(caller.getOrganizationId(), null);
                 yield resourceType != null
                         ? auditLogRepository.findByPerformedByInAndResourceTypeOrderByTimestampDesc(emails, resourceType, pr)
@@ -115,6 +149,8 @@ public class AuditLogService {
             }
         };
     }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
     /**
      * Returns the emails of all active users in {@code orgId}.

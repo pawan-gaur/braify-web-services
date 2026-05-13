@@ -5,6 +5,8 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.List;
+
 @Data
 @Builder
 @AllArgsConstructor
@@ -20,4 +22,11 @@ public class LoginResponse {
     private String organizationName;
     private String profilePicture;
     private boolean mustChangePassword;
+
+    /**
+     * Feature keys enabled for this user's organisation.
+     * Frontend uses this to show/hide modules immediately after login.
+     * PLATFORM_ADMIN users receive all feature keys.
+     */
+    private List<String> features;
 }

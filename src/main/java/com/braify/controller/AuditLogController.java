@@ -26,21 +26,22 @@ public class AuditLogController {
      * Paginated audit log, role-scoped, newest first.
      *
      * <ul>
-     *   <li>PLATFORM_ADMIN → all entries</li>
+     *   <li>PLATFORM_ADMIN → all entries; pass {@code orgId} to scope to one organisation</li>
      *   <li>ORG_ADMIN      → entries by users in their org</li>
      *   <li>ADMIN          → entries by ADMIN + USER in their org</li>
      *   <li>USER           → own entries only</li>
      * </ul>
      *
-     * GET /api/audit-logs?page=0&size=20&resourceType=TEMPLATE
+     * GET /api/audit-logs?page=0&size=20&resourceType=TEMPLATE&orgId=abc123
      */
     @GetMapping
     public Page<AuditLog> getAll(
             @RequestParam(defaultValue = "0")  int page,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(required = false)    AuditLog.ResourceType resourceType,
+            @RequestParam(required = false)    String orgId,
             Authentication auth) {
-        return auditLogService.getAll(page, size, resourceType, currentUser(auth));
+        return auditLogService.getAll(page, size, resourceType, orgId, currentUser(auth));
     }
 
     /**

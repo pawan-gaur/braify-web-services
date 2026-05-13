@@ -27,18 +27,32 @@ public class AuditLog {
         CREATED, UPDATED, DELETED, RESTORED,
         PASSWORD_CHANGED, AVATAR_UPDATED,
         DEACTIVATED, ACTIVATED,
-        SESSION_REVOKED, SENT
+        SESSION_REVOKED, SENT,
+        FEATURES_UPDATED,  // org feature assignment changed
+        CANCELLED          // e-sign document cancelled
     }
 
     /** Distinguishes which resource type generated this entry. */
     public enum ResourceType {
         TEMPLATE,        // PDF template
         EMAIL_TEMPLATE,  // Email template
-        USER             // User / profile actions
+        USER,            // User / profile actions
+        ORGANIZATION,    // Organization-level actions (feature updates, etc.)
+        E_SIGN           // E-Sign document lifecycle
     }
 
     @Id
     private String id;
+
+    // ── Organisation scope ────────────────────────────────────────────────────
+
+    /**
+     * Organisation that owns the affected resource.
+     * Populated on all new entries; null for legacy entries written before this field existed.
+     * Enables PLATFORM_ADMIN to filter the audit log by organisation.
+     */
+    @Indexed
+    private String organizationId;
 
     // ── Resource identification ───────────────────────────────────────────────
 

@@ -3,6 +3,7 @@ package com.braify.service;
 import com.braify.dto.LoginRequest;
 import com.braify.dto.LoginResponse;
 import com.braify.model.AppUser;
+import com.braify.model.Feature;
 import com.braify.model.Organization;
 import com.braify.model.UserSession;
 import com.braify.repository.AppUserRepository;
@@ -68,11 +69,18 @@ public class AuthService {
                 .build();
         sessionRepository.save(session);
 
-        // Fetch org name if applicable
-        String orgName = user.getOrganizationId() != null
-                ? orgRepository.findById(user.getOrganizationId())
-                    .map(Organization::getName).orElse(null)
+        // Fetch org (name + features) if applicable
+        Organization org = user.getOrganizationId() != null
+                ? orgRepository.findById(user.getOrganizationId()).orElse(null)
                 : null;
+
+        String orgName = org != null ? org.getName() : null;
+
+        // PLATFORM_ADMIN sees all features; regular users see their org's assigned features
+        boolean isPlatformAdmin = user.getRole() == AppUser.Role.PLATFORM_ADMIN;
+        List<String> features = isPlatformAdmin
+                ? Feature.allKeys()
+                : (org != null && org.getFeatures() != null ? org.getFeatures() : List.of());
 
         return LoginResponse.builder()
                 .token(token)
@@ -85,6 +93,7 @@ public class AuthService {
                 .organizationName(orgName)
                 .profilePicture(user.getProfilePicture())
                 .mustChangePassword(user.isMustChangePassword())
+                .features(features)
                 .build();
     }
 

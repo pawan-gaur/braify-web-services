@@ -10,6 +10,8 @@ import org.springframework.data.annotation.LastModifiedDate;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 
 @Data
 @Builder
@@ -27,6 +29,14 @@ public class Organization {
     private String code;
 
     private String description;
+
+    /**
+     * Feature keys enabled for this organisation.
+     * Values must match the Feature enum: PDF_TEMPLATES, EMAIL_TEMPLATES, E_SIGN.
+     * Platform admins bypass this list and always have access to everything.
+     */
+    @Builder.Default
+    private List<String> features = new ArrayList<>();
 
     private boolean active = true;
     private boolean deleted = false;

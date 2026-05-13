@@ -26,6 +26,14 @@ public interface AuditLogRepository extends MongoRepository<AuditLog, String> {
     Page<AuditLog> findByResourceTypeOrderByTimestampDesc(
             AuditLog.ResourceType resourceType, Pageable pageable);
 
+    // ── PLATFORM_ADMIN: org-scoped log (filter by organizationId) ─────────────
+
+    Page<AuditLog> findByOrganizationIdOrderByTimestampDesc(
+            String organizationId, Pageable pageable);
+
+    Page<AuditLog> findByOrganizationIdAndResourceTypeOrderByTimestampDesc(
+            String organizationId, AuditLog.ResourceType resourceType, Pageable pageable);
+
     // ── ORG_ADMIN / ADMIN: scoped to a set of performer emails ────────────────
 
     /** Paginated log filtered by a set of performer emails */

@@ -6,6 +6,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Data
 @Builder
@@ -25,4 +26,11 @@ public class UserResponse {
     private String bio;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+
+    /**
+     * Feature keys enabled for this user's organisation.
+     * Always populated from Organization.features.
+     * PLATFORM_ADMIN users receive all feature keys.
+     */
+    private List<String> features;
 }
