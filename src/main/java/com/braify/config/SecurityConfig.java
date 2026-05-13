@@ -37,6 +37,7 @@ public class SecurityConfig {
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/api/esign/sign/**").permitAll()   // client signing (ESIGN token)
                 .requestMatchers("/api/esign/verify/**").permitAll() // public verification
+                .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/onboarding").permitAll() // public get-started form
                 .anyRequest().authenticated()
             )
             .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);

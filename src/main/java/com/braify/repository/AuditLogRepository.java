@@ -56,6 +56,12 @@ public interface AuditLogRepository extends MongoRepository<AuditLog, String> {
 
     List<AuditLog> findTop10ByOrderByTimestampDesc();
 
+    /** All logs for an org since a given timestamp — used for top-user ranking. */
+    List<AuditLog> findByOrganizationIdAndTimestampAfter(String organizationId, LocalDateTime after);
+
+    /** Global logs since a given timestamp — used for top-user ranking (PLATFORM_ADMIN). */
+    List<AuditLog> findByTimestampAfter(LocalDateTime after);
+
     @Query("{ 'performedBy': { $in: ?0 }, 'resourceType': { $in: ?1 } }")
     List<AuditLog> findRecentByPerformersAndTypes(
             List<String> performerEmails,
