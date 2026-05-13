@@ -26,6 +26,14 @@ public interface AuditLogRepository extends MongoRepository<AuditLog, String> {
     Page<AuditLog> findByResourceTypeOrderByTimestampDesc(
             AuditLog.ResourceType resourceType, Pageable pageable);
 
+    // ── PLATFORM_ADMIN: org-scoped log (filter by organizationId) ─────────────
+
+    Page<AuditLog> findByOrganizationIdOrderByTimestampDesc(
+            String organizationId, Pageable pageable);
+
+    Page<AuditLog> findByOrganizationIdAndResourceTypeOrderByTimestampDesc(
+            String organizationId, AuditLog.ResourceType resourceType, Pageable pageable);
+
     // ── ORG_ADMIN / ADMIN: scoped to a set of performer emails ────────────────
 
     /** Paginated log filtered by a set of performer emails */
@@ -47,6 +55,12 @@ public interface AuditLogRepository extends MongoRepository<AuditLog, String> {
     // ── Dashboard ──────────────────────────────────────────────────────────────
 
     List<AuditLog> findTop10ByOrderByTimestampDesc();
+
+    /** All logs for an org since a given timestamp — used for top-user ranking. */
+    List<AuditLog> findByOrganizationIdAndTimestampAfter(String organizationId, LocalDateTime after);
+
+    /** Global logs since a given timestamp — used for top-user ranking (PLATFORM_ADMIN). */
+    List<AuditLog> findByTimestampAfter(LocalDateTime after);
 
     @Query("{ 'performedBy': { $in: ?0 }, 'resourceType': { $in: ?1 } }")
     List<AuditLog> findRecentByPerformersAndTypes(

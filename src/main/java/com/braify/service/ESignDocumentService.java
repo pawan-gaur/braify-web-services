@@ -3,6 +3,7 @@ package com.braify.service;
 import com.braify.dto.esign.CreateDocumentRequest;
 import com.braify.dto.esign.DocumentResponse;
 import com.braify.dto.esign.FieldPlacementRequest;
+import com.braify.model.AuditLog;
 import com.braify.model.ESignAuditEvent;
 import com.braify.model.ESignDocument;
 import com.braify.model.ESignSignatureField;
@@ -27,12 +28,13 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class ESignDocumentService {
 
-    private final ESignDocumentRepository     docRepo;
+    private final ESignDocumentRepository       docRepo;
     private final ESignSignatureFieldRepository fieldRepo;
-    private final TemplateRepository          templateRepo;
-    private final ESignTokenService           tokenService;
-    private final ESignEmailService           emailService;
-    private final ESignAuditService           auditService;
+    private final TemplateRepository            templateRepo;
+    private final ESignTokenService             tokenService;
+    private final ESignEmailService             emailService;
+    private final ESignAuditService             auditService;
+    private final AuditLogService               auditLogService;
 
     // ── Create ──────────────────────────────────────────────────────────────
 
@@ -77,6 +79,13 @@ public class ESignDocumentService {
                 ESignAuditEvent.ActorType.CREATOR,
                 ESignAuditEvent.EventType.DOCUMENT_CREATED, ip, ua,
                 Map.of("title", doc.getTitle(), "sourceType", doc.getSourceType().name()));
+
+        // Unified audit log entry (visible in the main Audit Log page)
+        auditLogService.log(
+                doc.getId(), doc.getTitle(),
+                AuditLog.Action.CREATED, AuditLog.ResourceType.E_SIGN,
+                0, Map.of("sourceType", doc.getSourceType().name()),
+                principal.getUsername(), principal.getOrgId());
 
         return DocumentResponse.from(doc, List.of(), false);
     }
@@ -141,6 +150,13 @@ public class ESignDocumentService {
                 ESignAuditEvent.EventType.DOCUMENT_SENT, ip, ua,
                 Map.of("clientEmail", doc.getClientEmail(), "tokenValidDays", tokenValidDays));
 
+        // Unified audit log entry
+        auditLogService.log(
+                doc.getId(), doc.getTitle(),
+                AuditLog.Action.SENT, AuditLog.ResourceType.E_SIGN,
+                0, Map.of("clientEmail", doc.getClientEmail()),
+                principal.getUsername(), principal.getOrgId());
+
         List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(docId);
         return DocumentResponse.from(doc, fields, false);
     }
@@ -173,6 +189,13 @@ public class ESignDocumentService {
                 Map.of("clientEmail", doc.getClientEmail(), "action", "RESEND",
                        "tokenValidDays", tokenValidDays));
 
+        // Unified audit log entry (resend = SENT action)
+        auditLogService.log(
+                doc.getId(), doc.getTitle(),
+                AuditLog.Action.SENT, AuditLog.ResourceType.E_SIGN,
+                0, Map.of("clientEmail", doc.getClientEmail(), "action", "RESEND"),
+                principal.getUsername(), principal.getOrgId());
+
         List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(docId);
         return DocumentResponse.from(doc, fields, false);
     }
@@ -202,6 +225,14 @@ public class ESignDocumentService {
         auditService.log(docId, principal.getUsername(),
                 ESignAuditEvent.ActorType.CREATOR,
                 ESignAuditEvent.EventType.DOCUMENT_CANCELLED, ip, ua, null);
+
+        // Unified audit log entry
+        auditLogService.log(
+                doc.getId(), doc.getTitle(),
+                AuditLog.Action.CANCELLED, AuditLog.ResourceType.E_SIGN,
+                0, null,
+                principal.getUsername(), principal.getOrgId());
+
         List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(docId);
         return DocumentResponse.from(doc, fields, false);
     }

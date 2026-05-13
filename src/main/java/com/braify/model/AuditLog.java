@@ -13,8 +13,9 @@ import java.time.LocalDateTime;
 import java.util.Map;
 
 /**
- * Immutable audit-trail entry shared by both PDF templates and email templates.
- * One document is written for every CREATED / UPDATED / DELETED / RESTORED action.
+ * Immutable audit-trail entry.  Every action that changes a resource is recorded here.
+ * As of the compliance upgrade the document also captures IP address, User-Agent,
+ * severity, outcome and a SHA-256 integrity hash for tamper detection.
  */
 @Data
 @Builder
@@ -23,32 +24,56 @@ import java.util.Map;
 @Document(collection = "audit_logs")
 public class AuditLog {
 
+    // ── Enumerations ──────────────────────────────────────────────────────────
+
     public enum Action {
         CREATED, UPDATED, DELETED, RESTORED,
         PASSWORD_CHANGED, AVATAR_UPDATED,
         DEACTIVATED, ACTIVATED,
-        SESSION_REVOKED, SENT
+        SESSION_REVOKED, SENT,
+        FEATURES_UPDATED,   // org feature assignment changed
+        CANCELLED           // e-sign document cancelled
     }
 
     /** Distinguishes which resource type generated this entry. */
     public enum ResourceType {
         TEMPLATE,        // PDF template
         EMAIL_TEMPLATE,  // Email template
-        USER             // User / profile actions
+        USER,            // User / profile actions
+        ORGANIZATION,    // Organization-level actions
+        E_SIGN           // E-Sign document lifecycle
     }
+
+    /** Compliance risk level — auto-assigned from the action. */
+    public enum Severity { INFO, WARNING, CRITICAL }
+
+    /** Whether the action completed successfully or produced an error. */
+    public enum Outcome { SUCCESS, FAILURE }
+
+    // ── Identity ──────────────────────────────────────────────────────────────
 
     @Id
     private String id;
 
+    // ── Organisation scope ────────────────────────────────────────────────────
+
+    /**
+     * Organisation that owns the affected resource.
+     * Populated on all new entries; null for legacy entries written before this
+     * field existed.  Enables PLATFORM_ADMIN to filter the audit log by org.
+     */
+    @Indexed
+    private String organizationId;
+
     // ── Resource identification ───────────────────────────────────────────────
 
-    /** The resourceType this log entry belongs to (default: TEMPLATE for backward-compat). */
+    /** Resource type (default: TEMPLATE for backward-compat with old documents). */
     @Builder.Default
     private ResourceType resourceType = ResourceType.TEMPLATE;
 
     /**
-     * ID of the affected resource (templateId or emailTemplateId).
-     * Field kept as "templateId" for backward-compatibility with existing documents.
+     * ID of the affected resource.
+     * Field name kept as "templateId" for backward-compat with existing documents.
      */
     @Indexed
     private String templateId;
@@ -57,17 +82,57 @@ public class AuditLog {
     private String templateName;
 
     // ── Event metadata ────────────────────────────────────────────────────────
+
     private Action action;
 
-    /** Version that resulted from this action (0 for DELETE). */
+    /** Version that resulted from this action (0 when not applicable / DELETED). */
     private int versionNumber;
 
-    /** Who performed the action — replace with auth principal in the future. */
+    /** Email of the acting user. */
     private String performedBy;
 
-    /** Changed fields: name → { from, to }.  Populated on UPDATED only. */
+    /** Stable user-ID snapshot (does not change if the user renames or changes e-mail). */
+    private String performedByUserId;
+
+    /** Display name snapshot at the time of the action. */
+    private String performedByName;
+
+    /** Changed fields: fieldName → { from, to }.  Populated on UPDATED only. */
     private Map<String, Object> changes;
 
+    @Indexed
     @CreatedDate
     private LocalDateTime timestamp;
+
+    // ── Compliance fields ─────────────────────────────────────────────────────
+
+    /** Client IP address.  X-Forwarded-For aware; picks the first hop. */
+    private String ipAddress;
+
+    /** HTTP User-Agent header of the requesting client. */
+    private String userAgent;
+
+    /** JWT JTI claim — correlates all actions that belong to the same session. */
+    private String sessionId;
+
+    /** Optional human-readable justification for the action (supplied by caller). */
+    private String reason;
+
+    /** Risk level; auto-assigned from the action when not explicitly provided. */
+    @Builder.Default
+    private Severity severity = Severity.INFO;
+
+    /** Whether the action completed successfully or produced an error. */
+    @Builder.Default
+    private Outcome outcome = Outcome.SUCCESS;
+
+    /** Error description when {@code outcome == FAILURE}. */
+    private String failureReason;
+
+    /**
+     * SHA-256 tamper-evidence hash.
+     * Input: {@code resourceId|action|resourceType|performedBy|organizationId|timestamp}.
+     * Computed before persisting; re-verify at any time to detect tampering.
+     */
+    private String integrityHash;
 }

@@ -67,7 +67,7 @@ public class EmailTemplateService {
 
         auditLogService.log(saved.getId(), saved.getName(),
                 AuditLog.Action.CREATED, RESOURCE, saved.getCurrentVersion(), null,
-                currentUser.getEmail());
+                currentUser.getEmail(), saved.getOrganizationId());
 
         return saved;
     }
@@ -98,7 +98,7 @@ public class EmailTemplateService {
 
         auditLogService.log(saved.getId(), saved.getName(),
                 AuditLog.Action.UPDATED, RESOURCE, saved.getCurrentVersion(), changes,
-                currentUser.getEmail());
+                currentUser.getEmail(), saved.getOrganizationId());
 
         return saved;
     }
@@ -118,7 +118,7 @@ public class EmailTemplateService {
 
         auditLogService.log(existing.getId(), existing.getName(),
                 AuditLog.Action.DELETED, RESOURCE, existing.getCurrentVersion(), null,
-                currentUser.getEmail());
+                currentUser.getEmail(), existing.getOrganizationId());
     }
 
     // ── Restore version ──────────────────────────────────────────────────────
@@ -147,7 +147,7 @@ public class EmailTemplateService {
         auditLogService.log(saved.getId(), saved.getName(),
                 AuditLog.Action.RESTORED, RESOURCE, saved.getCurrentVersion(),
                 Map.of("restoredFromVersion", versionNumber),
-                currentUser.getEmail());
+                currentUser.getEmail(), saved.getOrganizationId());
 
         return saved;
     }
@@ -194,7 +194,7 @@ public class EmailTemplateService {
                 RESOURCE,
                 template.getCurrentVersion(),
                 Map.of("to", req.getTo(), "subject", subject),
-                caller.getEmail());
+                caller.getEmail(), template.getOrganizationId());
 
         return SendEmailResponse.builder()
                 .messageId(resendResponse != null ? resendResponse.getId() : null)

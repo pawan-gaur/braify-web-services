@@ -63,7 +63,8 @@ public class TemplateService {
         auditLogService.log(
                 saved.getId(), saved.getName(),
                 AuditLog.Action.CREATED, AuditLog.ResourceType.TEMPLATE,
-                saved.getCurrentVersion(), null, currentUser.getEmail());
+                saved.getCurrentVersion(), null,
+                currentUser.getEmail(), saved.getOrganizationId());
 
         return saved;
     }
@@ -98,7 +99,8 @@ public class TemplateService {
         auditLogService.log(
                 saved.getId(), saved.getName(),
                 AuditLog.Action.UPDATED, AuditLog.ResourceType.TEMPLATE,
-                saved.getCurrentVersion(), changes, currentUser.getEmail());
+                saved.getCurrentVersion(), changes,
+                currentUser.getEmail(), saved.getOrganizationId());
 
         return saved;
     }
@@ -119,7 +121,8 @@ public class TemplateService {
         auditLogService.log(
                 existing.getId(), existing.getName(),
                 AuditLog.Action.DELETED, AuditLog.ResourceType.TEMPLATE,
-                existing.getCurrentVersion(), null, currentUser.getEmail());
+                existing.getCurrentVersion(), null,
+                currentUser.getEmail(), existing.getOrganizationId());
     }
 
     // ── Restore version ──────────────────────────────────────────────────────
@@ -153,7 +156,7 @@ public class TemplateService {
                 AuditLog.Action.RESTORED, AuditLog.ResourceType.TEMPLATE,
                 saved.getCurrentVersion(),
                 Map.of("restoredFromVersion", versionNumber),
-                currentUser.getEmail());
+                currentUser.getEmail(), saved.getOrganizationId());
 
         return saved;
     }

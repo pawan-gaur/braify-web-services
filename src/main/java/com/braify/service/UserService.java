@@ -4,6 +4,7 @@ import com.braify.dto.UserRequest;
 import com.braify.dto.UserResponse;
 import com.braify.model.AppUser;
 import com.braify.model.AuditLog;
+import com.braify.model.Feature;
 import com.braify.model.Organization;
 import com.braify.repository.AppUserRepository;
 import com.braify.repository.OrganizationRepository;
@@ -104,7 +105,7 @@ public class UserService {
         auditLogService.log(
                 user.getId(), user.getEmail(),
                 AuditLog.Action.CREATED, AuditLog.ResourceType.USER,
-                0, null, currentUser.getEmail());
+                0, null, currentUser.getEmail(), user.getOrganizationId());
 
         // Send invite email asynchronously (fire-and-forget; errors are logged)
         if (sendInvite) {
@@ -129,7 +130,7 @@ public class UserService {
         auditLogService.log(
                 user.getId(), user.getEmail(),
                 AuditLog.Action.UPDATED, AuditLog.ResourceType.USER,
-                0, null, currentUser.getEmail());
+                0, null, currentUser.getEmail(), user.getOrganizationId());
 
         return response;
     }
@@ -149,7 +150,7 @@ public class UserService {
         auditLogService.log(
                 user.getId(), user.getEmail(),
                 AuditLog.Action.DEACTIVATED, AuditLog.ResourceType.USER,
-                0, null, currentUser.getEmail());
+                0, null, currentUser.getEmail(), user.getOrganizationId());
     }
 
     public void enable(String id, AppUser currentUser) {
@@ -164,7 +165,7 @@ public class UserService {
         auditLogService.log(
                 user.getId(), user.getEmail(),
                 AuditLog.Action.ACTIVATED, AuditLog.ResourceType.USER,
-                0, null, currentUser.getEmail());
+                0, null, currentUser.getEmail(), user.getOrganizationId());
     }
 
     /**
@@ -201,10 +202,19 @@ public class UserService {
     }
 
     public UserResponse toResponse(AppUser u) {
-        String orgName = u.getOrganizationId() != null
-                ? orgRepository.findById(u.getOrganizationId())
-                    .map(Organization::getName).orElse(null)
+        // PLATFORM_ADMIN bypasses feature restrictions — return all keys
+        boolean isPlatformAdmin = u.getRole() == AppUser.Role.PLATFORM_ADMIN;
+
+        Organization org = u.getOrganizationId() != null
+                ? orgRepository.findById(u.getOrganizationId()).orElse(null)
                 : null;
+
+        String orgName = org != null ? org.getName() : null;
+
+        List<String> features = isPlatformAdmin
+                ? Feature.allKeys()
+                : (org != null && org.getFeatures() != null ? org.getFeatures() : List.of());
+
         return UserResponse.builder()
                 .id(u.getId())
                 .email(u.getEmail())
@@ -219,6 +229,7 @@ public class UserService {
                 .bio(u.getBio())
                 .createdAt(u.getCreatedAt())
                 .updatedAt(u.getUpdatedAt())
+                .features(features)
                 .build();
     }
 }
