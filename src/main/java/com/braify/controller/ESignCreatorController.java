@@ -7,6 +7,10 @@ import com.braify.model.ESignAuditEvent;
 import com.braify.security.UserDetailsImpl;
 import com.braify.service.ESignAuditService;
 import com.braify.service.ESignDocumentService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -16,10 +20,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Authenticated creator endpoints.
- * All routes require a valid user JWT (handled by JwtAuthFilter).
- */
+@Tag(name = "E-Sign — Creator", description = "Authenticated creator endpoints for managing e-sign documents: create, place fields, send signing invitations, resend, cancel, view audit trail, and download the completed signed PDF. All routes require a valid user JWT.")
 @RestController
 @RequestMapping("/api/esign/documents")
 @RequiredArgsConstructor
@@ -28,7 +29,10 @@ public class ESignCreatorController {
     private final ESignDocumentService documentService;
     private final ESignAuditService    auditService;
 
-    /** POST /api/esign/documents — create new document (DRAFT) */
+    @Operation(summary = "Create e-sign document",
+               description = "Creates a new DRAFT document from a PDF template. The base PDF is rendered immediately and stored. " +
+                             "Body: `{ templateId, title, clientName, clientEmail, data: { … } }`")
+    @ApiResponse(responseCode = "200", description = "Document created in DRAFT status")
     @PostMapping
     public ResponseEntity<DocumentResponse> create(
             @RequestBody CreateDocumentRequest req,
@@ -40,25 +44,33 @@ public class ESignCreatorController {
         return ResponseEntity.ok(doc);
     }
 
-    /** GET /api/esign/documents — list my documents */
+    @Operation(summary = "List my e-sign documents",
+               description = "Returns all documents created by the authenticated user, newest first.")
+    @ApiResponse(responseCode = "200", description = "List of documents")
     @GetMapping
     public ResponseEntity<List<DocumentResponse>> list(
             @AuthenticationPrincipal UserDetailsImpl principal) {
         return ResponseEntity.ok(documentService.listMyDocuments(principal));
     }
 
-    /** GET /api/esign/documents/{id} — full detail (includes PDF) */
+    @Operation(summary = "Get e-sign document detail",
+               description = "Returns full document detail including base PDF (base64), field placements, and status.")
+    @ApiResponse(responseCode = "200", description = "Document detail")
+    @ApiResponse(responseCode = "404", description = "Not found or not owned by the caller")
     @GetMapping("/{id}")
     public ResponseEntity<DocumentResponse> get(
-            @PathVariable String id,
+            @Parameter(description = "Document ID") @PathVariable String id,
             @AuthenticationPrincipal UserDetailsImpl principal) {
         return ResponseEntity.ok(documentService.getDocument(id, principal));
     }
 
-    /** PUT /api/esign/documents/{id}/fields — replace all field placements */
+    @Operation(summary = "Save field placements",
+               description = "Replaces all field placement definitions for the document. Each field specifies position, size, type (SIGNATURE / INITIALS / DATE / TEXT), and page number. " +
+                             "Only DRAFT documents can have fields edited.")
+    @ApiResponse(responseCode = "200", description = "Fields saved")
     @PutMapping("/{id}/fields")
     public ResponseEntity<DocumentResponse> saveFields(
-            @PathVariable String id,
+            @Parameter(description = "Document ID") @PathVariable String id,
             @RequestBody List<FieldPlacementRequest> fields,
             @AuthenticationPrincipal UserDetailsImpl principal,
             HttpServletRequest http) {
@@ -68,11 +80,14 @@ public class ESignCreatorController {
         return ResponseEntity.ok(doc);
     }
 
-    /** POST /api/esign/documents/{id}/send — send signing invitation */
+    @Operation(summary = "Send signing invitation",
+               description = "Generates a one-time signing token, sends the client an email invitation, and transitions the document to PENDING status. " +
+                             "The `tokenValidDays` query param sets how long the link remains valid (default 7 days).")
+    @ApiResponse(responseCode = "200", description = "Invitation sent — document now PENDING")
     @PostMapping("/{id}/send")
     public ResponseEntity<DocumentResponse> send(
-            @PathVariable String id,
-            @RequestParam(defaultValue = "7") int tokenValidDays,
+            @Parameter(description = "Document ID") @PathVariable String id,
+            @Parameter(description = "Token validity in days (default 7)") @RequestParam(defaultValue = "7") int tokenValidDays,
             @AuthenticationPrincipal UserDetailsImpl principal,
             HttpServletRequest http) {
 
@@ -81,11 +96,13 @@ public class ESignCreatorController {
         return ResponseEntity.ok(doc);
     }
 
-    /** POST /api/esign/documents/{id}/resend — resend signing invitation */
+    @Operation(summary = "Resend signing invitation",
+               description = "Invalidates the previous signing token, issues a new one, and re-sends the invitation email. Resets the expiry window.")
+    @ApiResponse(responseCode = "200", description = "Invitation resent")
     @PostMapping("/{id}/resend")
     public ResponseEntity<DocumentResponse> resend(
-            @PathVariable String id,
-            @RequestParam(defaultValue = "7") int tokenValidDays,
+            @Parameter(description = "Document ID") @PathVariable String id,
+            @Parameter(description = "New token validity in days (default 7)") @RequestParam(defaultValue = "7") int tokenValidDays,
             @AuthenticationPrincipal UserDetailsImpl principal,
             HttpServletRequest http) {
 
@@ -94,10 +111,12 @@ public class ESignCreatorController {
         return ResponseEntity.ok(doc);
     }
 
-    /** POST /api/esign/documents/{id}/cancel — cancel document */
+    @Operation(summary = "Cancel document",
+               description = "Transitions the document to CANCELLED status. The signing link is invalidated. Cannot cancel a COMPLETED document.")
+    @ApiResponse(responseCode = "200", description = "Document cancelled")
     @PostMapping("/{id}/cancel")
     public ResponseEntity<DocumentResponse> cancel(
-            @PathVariable String id,
+            @Parameter(description = "Document ID") @PathVariable String id,
             @AuthenticationPrincipal UserDetailsImpl principal,
             HttpServletRequest http) {
 
@@ -106,18 +125,23 @@ public class ESignCreatorController {
         return ResponseEntity.ok(doc);
     }
 
-    /** GET /api/esign/documents/{id}/audit — full audit trail */
+    @Operation(summary = "Get e-sign audit trail",
+               description = "Returns chronological audit events for the document: CREATED, FIELDS_SAVED, SENT, OPENED, FIELD_SIGNED, SUBMITTED, COMPLETED, CANCELLED, etc.")
+    @ApiResponse(responseCode = "200", description = "Audit events list")
     @GetMapping("/{id}/audit")
     public ResponseEntity<List<ESignAuditEvent>> audit(
-            @PathVariable String id,
+            @Parameter(description = "Document ID") @PathVariable String id,
             @AuthenticationPrincipal UserDetailsImpl principal) {
         return ResponseEntity.ok(documentService.getAuditTrail(id, principal));
     }
 
-    /** GET /api/esign/documents/{id}/signed-pdf — download signed PDF */
+    @Operation(summary = "Download signed PDF",
+               description = "Returns the completed, signature-stamped PDF as a binary download (`application/pdf`). Only available when the document status is COMPLETED.")
+    @ApiResponse(responseCode = "200", description = "Signed PDF bytes")
+    @ApiResponse(responseCode = "204", description = "Document not yet completed — no signed PDF available")
     @GetMapping("/{id}/signed-pdf")
     public ResponseEntity<byte[]> downloadSignedPdf(
-            @PathVariable String id,
+            @Parameter(description = "Document ID") @PathVariable String id,
             @AuthenticationPrincipal UserDetailsImpl principal) {
 
         DocumentResponse doc = documentService.getDocument(id, principal);

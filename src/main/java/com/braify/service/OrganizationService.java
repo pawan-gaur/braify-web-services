@@ -2,10 +2,14 @@ package com.braify.service;
 
 import com.braify.dto.OrgFeaturesResponse;
 import com.braify.dto.OrganizationRequest;
+import com.braify.dto.SubscriptionRequest;
+import com.braify.dto.SubscriptionResponse;
 import com.braify.model.AuditLog;
 import com.braify.model.Feature;
 import com.braify.model.Organization;
+import com.braify.model.SubscriptionPlan;
 import com.braify.repository.OrganizationRepository;
+import com.braify.service.QuotaService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -21,6 +25,7 @@ public class OrganizationService {
 
     private final OrganizationRepository orgRepository;
     private final AuditLogService        auditLogService;
+    private final QuotaService           quotaService;
 
     // ── CRUD ──────────────────────────────────────────────────────────────────
 
@@ -176,5 +181,71 @@ public class OrganizationService {
     /** Backward-compatible overload — kept so existing callers still compile. */
     public OrgFeaturesResponse updateFeatures(String id, List<String> rawFeatures) {
         return updateFeatures(id, rawFeatures, "system");
+    }
+
+    // ── Subscription management ───────────────────────────────────────────────
+
+    public SubscriptionResponse getSubscription(String id) {
+        Organization org = findById(id);
+        SubscriptionPlan plan = org.getSubscriptionPlan() != null
+                ? org.getSubscriptionPlan() : SubscriptionPlan.FREE;
+        return toSubscriptionResponse(org, plan);
+    }
+
+    /**
+     * Assigns a subscription plan to an organisation and resets its quota config
+     * to the plan's default limits.  Platform Admin may override individual limits
+     * afterwards via PUT /api/organizations/{id}/quota/config.
+     */
+    public SubscriptionResponse assignSubscription(String id,
+                                                   SubscriptionRequest req,
+                                                   String performedBy) {
+        Organization org = findById(id);
+        SubscriptionPlan oldPlan = org.getSubscriptionPlan() != null
+                ? org.getSubscriptionPlan() : SubscriptionPlan.FREE;
+
+        SubscriptionPlan newPlan;
+        try {
+            newPlan = SubscriptionPlan.valueOf(req.getSubscriptionPlan().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new RuntimeException("Unknown subscription plan: " + req.getSubscriptionPlan());
+        }
+
+        org.setSubscriptionPlan(newPlan);
+        org.setPlanAssignedAt(LocalDateTime.now());
+        org.setPlanAssignedBy(performedBy);
+        org.setPlanExpiresAt(req.getPlanExpiresAt());
+        orgRepository.save(org);
+
+        // Reset quota config to new plan defaults
+        quotaService.resetToDefaults(org.getId(), newPlan);
+
+        log.info("Assigned plan '{}' to org '{}' (was '{}')", newPlan, org.getName(), oldPlan);
+
+        auditLogService.log(
+                org.getId(), org.getName(),
+                AuditLog.Action.SUBSCRIPTION_CHANGED, AuditLog.ResourceType.ORGANIZATION,
+                0,
+                Map.of("from", oldPlan.name(), "to", newPlan.name()),
+                performedBy,
+                org.getId());
+
+        return toSubscriptionResponse(org, newPlan);
+    }
+
+    private SubscriptionResponse toSubscriptionResponse(Organization org, SubscriptionPlan plan) {
+        return SubscriptionResponse.builder()
+                .organizationId(org.getId())
+                .organizationName(org.getName())
+                .subscriptionPlan(plan)
+                .planLabel(plan.label)
+                .planAssignedAt(org.getPlanAssignedAt())
+                .planAssignedBy(org.getPlanAssignedBy())
+                .planExpiresAt(org.getPlanExpiresAt())
+                .defaultMaxUsers(plan.defaultMaxUsers)
+                .defaultMaxDocsPerMonth(plan.defaultMaxDocsPerMonth)
+                .defaultMaxStorageMb(plan.defaultMaxStorageMb)
+                .defaultMaxApiCallsPerMonth(plan.defaultMaxApiCallsPerMonth)
+                .build();
     }
 }

@@ -31,8 +31,13 @@ public class AuditLog {
         PASSWORD_CHANGED, AVATAR_UPDATED,
         DEACTIVATED, ACTIVATED,
         SESSION_REVOKED, SENT,
-        FEATURES_UPDATED,   // org feature assignment changed
-        CANCELLED           // e-sign document cancelled
+        FEATURES_UPDATED,     // org feature assignment changed
+        CANCELLED,            // e-sign document cancelled
+        SUBSCRIPTION_CHANGED, // org subscription plan changed
+        BRANDING_UPDATED,     // org branding settings changed
+        QUOTA_EXCEEDED,       // a quota limit was hit (recorded as FAILURE)
+        TEMPLATE_SHARED,      // template shared with another org
+        TEMPLATE_UNSHARED     // template share revoked
     }
 
     /** Distinguishes which resource type generated this entry. */
@@ -41,7 +46,8 @@ public class AuditLog {
         EMAIL_TEMPLATE,  // Email template
         USER,            // User / profile actions
         ORGANIZATION,    // Organization-level actions
-        E_SIGN           // E-Sign document lifecycle
+        E_SIGN,          // E-Sign document lifecycle
+        SHARING          // Org-to-org template sharing
     }
 
     /** Compliance risk level — auto-assigned from the action. */

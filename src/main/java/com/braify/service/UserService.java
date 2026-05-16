@@ -25,6 +25,7 @@ public class UserService {
     private final EmailInviteService   emailInviteService;
     private final AuditLogService      auditLogService;
     private final SessionService       sessionService;
+    private final QuotaService         quotaService;
 
     /**
      * Returns users visible to currentUser.
@@ -82,6 +83,9 @@ public class UserService {
         String orgId = currentUser.getRole() == AppUser.Role.PLATFORM_ADMIN
                 ? req.getOrganizationId()
                 : currentUser.getOrganizationId();
+
+        // Enforce user quota (skipped for PLATFORM_ADMIN who have no orgId)
+        quotaService.checkUserCount(orgId);
 
         // Use provided password or generate a random one (invite flow)
         boolean sendInvite = req.isSendInvite();

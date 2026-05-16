@@ -34,12 +34,16 @@ public class AuditLogService {
     private static final Set<AuditLog.Action> CRITICAL_ACTIONS = Set.of(
             AuditLog.Action.DEACTIVATED,
             AuditLog.Action.SESSION_REVOKED,
-            AuditLog.Action.FEATURES_UPDATED
+            AuditLog.Action.FEATURES_UPDATED,
+            AuditLog.Action.SUBSCRIPTION_CHANGED,
+            AuditLog.Action.QUOTA_EXCEEDED
     );
     private static final Set<AuditLog.Action> WARNING_ACTIONS = Set.of(
             AuditLog.Action.DELETED,
             AuditLog.Action.CANCELLED,
-            AuditLog.Action.PASSWORD_CHANGED
+            AuditLog.Action.PASSWORD_CHANGED,
+            AuditLog.Action.TEMPLATE_SHARED,
+            AuditLog.Action.TEMPLATE_UNSHARED
     );
 
     private static AuditLog.Severity resolveSeverity(AuditLog.Action action) {

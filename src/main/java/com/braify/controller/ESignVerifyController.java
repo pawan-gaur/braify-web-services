@@ -2,18 +2,18 @@ package com.braify.controller;
 
 import com.braify.dto.esign.DocumentResponse;
 import com.braify.service.ESignClientService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.security.SecurityRequirements;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
 
-/**
- * Public verification endpoint — no authentication needed.
- * Returns completion metadata so anyone can verify a signed document's integrity.
- *
- * GET /api/esign/verify/{id}
- */
+@Tag(name = "E-Sign — Verification", description = "Public endpoint to verify a completed e-sign document's authenticity. No authentication required — anyone with the document ID can verify.")
 @RestController
 @RequestMapping("/api/esign/verify")
 @RequiredArgsConstructor
@@ -21,13 +21,16 @@ public class ESignVerifyController {
 
     private final ESignClientService clientService;
 
-    /**
-     * Returns a summary of the completed document:
-     * status, clientName, completedAt, signedPdfHash (for integrity verification).
-     * Does NOT return the signed PDF bytes — use the creator's download endpoint.
-     */
+    @Operation(summary = "Verify signed document",
+               description = "Returns a public summary of a completed e-sign document for third-party integrity verification. " +
+                             "Includes: `status`, `clientName`, `clientEmail`, `completedAt`, `signedPdfHash` (SHA-256 of the signed PDF bytes), and `verified` (boolean — true only when status is COMPLETED). " +
+                             "Does **not** return the PDF bytes — use the creator's download endpoint for that.")
+    @SecurityRequirements   // marks as requiring NO auth in the spec
+    @ApiResponse(responseCode = "200", description = "Verification summary")
+    @ApiResponse(responseCode = "404", description = "Document not found")
     @GetMapping("/{id}")
-    public ResponseEntity<Map<String, Object>> verify(@PathVariable String id) {
+    public ResponseEntity<Map<String, Object>> verify(
+            @Parameter(description = "E-sign document ID") @PathVariable String id) {
         DocumentResponse doc = clientService.verifyDocument(id);
 
         Map<String, Object> result = Map.of(
