@@ -47,7 +47,8 @@ public class AuditLog {
         USER,            // User / profile actions
         ORGANIZATION,    // Organization-level actions
         E_SIGN,          // E-Sign document lifecycle
-        SHARING          // Org-to-org template sharing
+        SHARING,         // Org-to-org template sharing
+        API_KEY          // Organisation API key lifecycle
     }
 
     /** Compliance risk level — auto-assigned from the action. */

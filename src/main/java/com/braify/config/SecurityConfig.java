@@ -1,5 +1,6 @@
 package com.braify.config;
 
+import com.braify.security.ApiKeyAuthFilter;
 import com.braify.security.JwtAuthFilter;
 import com.braify.security.UserDetailsServiceImpl;
 import lombok.RequiredArgsConstructor;
@@ -24,7 +25,8 @@ import org.springframework.security.config.Customizer;
 @RequiredArgsConstructor
 public class SecurityConfig {
 
-    private final JwtAuthFilter jwtAuthFilter;
+    private final JwtAuthFilter    jwtAuthFilter;
+    private final ApiKeyAuthFilter apiKeyAuthFilter;
     private final UserDetailsServiceImpl userDetailsService;
 
     @Bean
@@ -42,7 +44,11 @@ public class SecurityConfig {
                 .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                 .anyRequest().authenticated()
             )
-            .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
+            // Register JwtAuthFilter first so its class is recorded in Spring Security's
+            // internal filter-order map.  Then ApiKeyAuthFilter is inserted before it —
+            // referencing a class that is now known to the order registry.
+            .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
+            .addFilterBefore(apiKeyAuthFilter, JwtAuthFilter.class);
         return http.build();
     }
 
