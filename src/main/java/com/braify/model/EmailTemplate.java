@@ -48,6 +48,17 @@ public class EmailTemplate {
     private boolean deleted = false;
     private LocalDateTime deletedAt;
 
+    // ── Sharing provenance ────────────────────────────────────────────────────
+
+    /** ID of the original template this was forked from (null when not a fork). */
+    private String sourceTemplateId;
+
+    /** Organisation that shared/forked this template (null when not a fork). */
+    private String sourceOrgId;
+
+    /** True when this document is a fork created by the sharing system. */
+    private boolean forked = false;
+
     // ── Auditing ──────────────────────────────────────────────────────────────
     @CreatedDate
     private LocalDateTime createdAt;

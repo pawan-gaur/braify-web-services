@@ -38,6 +38,34 @@ public class Organization {
     @Builder.Default
     private List<String> features = new ArrayList<>();
 
+    // ── Subscription ──────────────────────────────────────────────────────────
+
+    /** Current subscription tier; defaults to FREE for all new organisations. */
+    @Builder.Default
+    private SubscriptionPlan subscriptionPlan = SubscriptionPlan.FREE;
+
+    /** When the current plan was assigned. */
+    private LocalDateTime planAssignedAt;
+
+    /** Email of the Platform Admin who assigned the plan. */
+    private String planAssignedBy;
+
+    /**
+     * Optional plan expiry date.  Null means the plan never expires.
+     * When set, QuotaService will fall back to FREE limits after this date.
+     */
+    private LocalDateTime planExpiresAt;
+
+    // ── Branding ──────────────────────────────────────────────────────────────
+
+    /**
+     * Org-level branding settings (logo, colours, email sender, footer text).
+     * Stored as an embedded BSON object; null until the org configures branding.
+     */
+    private OrgBranding branding;
+
+    // ── Status ────────────────────────────────────────────────────────────────
+
     private boolean active = true;
     private boolean deleted = false;
     private LocalDateTime deletedAt;

@@ -1,5 +1,6 @@
 package com.braify.controller;
 
+import com.braify.exception.QuotaExceededException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
@@ -24,6 +25,20 @@ import java.util.Map;
  */
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    /** Quota exceeded — org has hit a usage limit. Returns HTTP 429. */
+    @ExceptionHandler(QuotaExceededException.class)
+    public ResponseEntity<Map<String, Object>> handleQuotaExceeded(QuotaExceededException ex) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .body(Map.of(
+                        "status",    429,
+                        "message",   ex.getMessage(),
+                        "quotaType", ex.getQuotaType(),
+                        "limit",     ex.getLimit(),
+                        "current",   ex.getCurrent(),
+                        "timestamp", Instant.now().toString()
+                ));
+    }
 
     /** Access denied — thrown by Spring Security @PreAuthorize. */
     @ExceptionHandler(AccessDeniedException.class)

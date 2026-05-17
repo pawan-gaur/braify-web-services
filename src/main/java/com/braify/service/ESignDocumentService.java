@@ -35,6 +35,7 @@ public class ESignDocumentService {
     private final ESignEmailService             emailService;
     private final ESignAuditService             auditService;
     private final AuditLogService               auditLogService;
+    private final QuotaService                  quotaService;
 
     // ── Create ──────────────────────────────────────────────────────────────
 
@@ -135,6 +136,9 @@ public class ESignDocumentService {
             doc.getStatus() == ESignDocument.Status.CANCELLED) {
             throw new IllegalStateException("Document is already " + doc.getStatus());
         }
+
+        // Enforce monthly e-sign quota before sending
+        quotaService.checkAndIncrementEsign(principal.getOrgId());
 
         String signingToken = tokenService.issueSigningToken(doc, tokenValidDays);
 
