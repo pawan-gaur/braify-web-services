@@ -7,6 +7,7 @@ import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 @Data
 @Builder
@@ -33,4 +34,23 @@ public class UserResponse {
      * PLATFORM_ADMIN users receive all feature keys.
      */
     private List<String> features;
+
+    /**
+     * Per-feature role whitelist from the organisation's branding config.
+     * Key = feature key (e.g. "PDF_TEMPLATES"), value = list of role names allowed.
+     * Null when no role restrictions have been configured (all roles have access).
+     * PLATFORM_ADMIN users receive null (they bypass all restrictions).
+     */
+    private Map<String, List<String>> featureRoleAccess;
+
+    /**
+     * Organisation primary brand colour (#rrggbb).
+     * Used to apply the org's theme to the web app UI.
+     */
+    private String primaryColor;
+
+    /**
+     * Organisation accent/secondary brand colour (#rrggbb).
+     */
+    private String accentColor;
 }

@@ -206,7 +206,7 @@ public class UserService {
     }
 
     public UserResponse toResponse(AppUser u) {
-        // PLATFORM_ADMIN bypasses feature restrictions — return all keys
+        // PLATFORM_ADMIN bypasses feature and role restrictions — return all keys
         boolean isPlatformAdmin = u.getRole() == AppUser.Role.PLATFORM_ADMIN;
 
         Organization org = u.getOrganizationId() != null
@@ -218,6 +218,16 @@ public class UserService {
         List<String> features = isPlatformAdmin
                 ? Feature.allKeys()
                 : (org != null && org.getFeatures() != null ? org.getFeatures() : List.of());
+
+        // Pull branding fields (null-safe) — Platform Admin gets no restrictions
+        com.braify.model.OrgBranding branding = (org != null) ? org.getBranding() : null;
+
+        java.util.Map<String, List<String>> featureRoleAccess = (!isPlatformAdmin && branding != null)
+                ? branding.getFeatureRoleAccess()
+                : null;
+
+        String primaryColor = branding != null ? branding.getPrimaryColor() : null;
+        String accentColor  = branding != null ? branding.getAccentColor()  : null;
 
         return UserResponse.builder()
                 .id(u.getId())
@@ -234,6 +244,9 @@ public class UserService {
                 .createdAt(u.getCreatedAt())
                 .updatedAt(u.getUpdatedAt())
                 .features(features)
+                .featureRoleAccess(featureRoleAccess)
+                .primaryColor(primaryColor)
+                .accentColor(accentColor)
                 .build();
     }
 }

@@ -12,6 +12,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 
+import java.util.*;
 import java.util.regex.Pattern;
 
 @Slf4j
@@ -37,13 +38,9 @@ public class OrgBrandingService {
     public OrgBrandingResponse updateBranding(String orgId, OrgBrandingRequest req, AppUser caller) {
         assertAccess(orgId, caller);
 
-        // Validate colour format
-        if (req.getPrimaryColor() != null && !req.getPrimaryColor().isBlank()) {
-            if (!HEX_COLOR.matcher(req.getPrimaryColor()).matches()) {
-                throw new RuntimeException(
-                        "Invalid primary colour '" + req.getPrimaryColor() + "'. Must be a 6-digit hex colour, e.g. #1a73e8");
-            }
-        }
+        // Validate colour formats
+        validateHexColor(req.getPrimaryColor(), "Primary colour");
+        validateHexColor(req.getAccentColor(),  "Accent colour");
 
         // Validate email reply-to format (basic)
         if (req.getEmailReplyTo() != null && !req.getEmailReplyTo().isBlank()) {
@@ -57,14 +54,19 @@ public class OrgBrandingService {
             throw new RuntimeException("Footer text must not exceed 500 characters.");
         }
 
+        // Normalise featureRoleAccess — ORG_ADMIN must always be present in every feature list
+        Map<String, List<String>> normalised = normaliseFeatureRoleAccess(req.getFeatureRoleAccess());
+
         Organization org = findOrg(orgId);
 
         OrgBranding branding = OrgBranding.builder()
                 .logoBase64(req.getLogoBase64())
                 .primaryColor(req.getPrimaryColor())
+                .accentColor(req.getAccentColor())
                 .emailSenderName(req.getEmailSenderName())
                 .emailReplyTo(req.getEmailReplyTo())
                 .footerText(req.getFooterText())
+                .featureRoleAccess(normalised)
                 .build();
 
         org.setBranding(branding);
@@ -83,6 +85,33 @@ public class OrgBrandingService {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    private void validateHexColor(String color, String fieldName) {
+        if (color != null && !color.isBlank()) {
+            if (!HEX_COLOR.matcher(color).matches()) {
+                throw new RuntimeException(
+                        "Invalid " + fieldName + " '" + color + "'. Must be a 6-digit hex colour, e.g. #1a73e8");
+            }
+        }
+    }
+
+    /**
+     * Ensures every feature list in the map contains "ORG_ADMIN".
+     * Returns null if the input map is null (no restrictions configured).
+     */
+    private Map<String, List<String>> normaliseFeatureRoleAccess(Map<String, List<String>> raw) {
+        if (raw == null || raw.isEmpty()) return null;
+
+        Map<String, List<String>> result = new LinkedHashMap<>();
+        for (Map.Entry<String, List<String>> entry : raw.entrySet()) {
+            List<String> roles = new ArrayList<>(entry.getValue() != null ? entry.getValue() : List.of());
+            if (!roles.contains("ORG_ADMIN")) {
+                roles.add(0, "ORG_ADMIN"); // always prepend ORG_ADMIN
+            }
+            result.put(entry.getKey(), Collections.unmodifiableList(roles));
+        }
+        return result;
+    }
+
     private void assertAccess(String orgId, AppUser caller) {
         if (caller.getRole() == AppUser.Role.PLATFORM_ADMIN) return;
         if (!orgId.equals(caller.getOrganizationId())) {
@@ -95,23 +124,27 @@ public class OrgBrandingService {
                 .orElseThrow(() -> new RuntimeException("Organization not found: " + orgId));
     }
 
-    private OrgBrandingResponse toResponse(Organization org) {
+    public OrgBrandingResponse toResponse(Organization org) {
         OrgBranding b = org.getBranding();
         boolean configured = b != null && (
                 (b.getLogoBase64()     != null && !b.getLogoBase64().isBlank())     ||
                 (b.getPrimaryColor()   != null && !b.getPrimaryColor().isBlank())   ||
+                (b.getAccentColor()    != null && !b.getAccentColor().isBlank())    ||
                 (b.getEmailSenderName()!= null && !b.getEmailSenderName().isBlank())||
                 (b.getEmailReplyTo()   != null && !b.getEmailReplyTo().isBlank())   ||
-                (b.getFooterText()     != null && !b.getFooterText().isBlank()));
+                (b.getFooterText()     != null && !b.getFooterText().isBlank())     ||
+                (b.getFeatureRoleAccess() != null && !b.getFeatureRoleAccess().isEmpty()));
 
         return OrgBrandingResponse.builder()
                 .organizationId(org.getId())
                 .organizationName(org.getName())
                 .logoBase64(b != null ? b.getLogoBase64() : null)
                 .primaryColor(b != null ? b.getPrimaryColor() : null)
+                .accentColor(b != null ? b.getAccentColor() : null)
                 .emailSenderName(b != null ? b.getEmailSenderName() : null)
                 .emailReplyTo(b != null ? b.getEmailReplyTo() : null)
                 .footerText(b != null ? b.getFooterText() : null)
+                .featureRoleAccess(b != null ? b.getFeatureRoleAccess() : null)
                 .configured(configured)
                 .build();
     }

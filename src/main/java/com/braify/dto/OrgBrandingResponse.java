@@ -3,6 +3,9 @@ package com.braify.dto;
 import lombok.Builder;
 import lombok.Data;
 
+import java.util.List;
+import java.util.Map;
+
 @Data
 @Builder
 public class OrgBrandingResponse {
@@ -12,9 +15,16 @@ public class OrgBrandingResponse {
 
     private String logoBase64;
     private String primaryColor;
+    private String accentColor;
     private String emailSenderName;
     private String emailReplyTo;
     private String footerText;
+
+    /**
+     * Per-feature role whitelist as saved.
+     * Null when no access restrictions have been configured.
+     */
+    private Map<String, List<String>> featureRoleAccess;
 
     /** True when at least one branding field has been configured. */
     private boolean configured;
