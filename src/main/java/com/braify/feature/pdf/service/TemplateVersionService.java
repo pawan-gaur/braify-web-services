@@ -1,0 +1,66 @@
+package com.braify.feature.pdf.service;
+
+import com.braify.feature.pdf.model.Template;
+import com.braify.feature.pdf.model.TemplateVersion;
+import com.braify.feature.pdf.repository.TemplateVersionRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+
+@Service
+@RequiredArgsConstructor
+public class TemplateVersionService {
+
+    private final TemplateVersionRepository versionRepository;
+
+    /**
+     * Snapshot the current state of a template as a new version.
+     * The version number is  max(existing) + 1,  or 1 for brand-new templates.
+     */
+    public TemplateVersion snapshot(Template template, String changeNote) {
+        int nextVersion = versionRepository.countByTemplateId(template.getId()) + 1;
+
+        TemplateVersion v = TemplateVersion.builder()
+                .templateId(template.getId())
+                .version(nextVersion)
+                .name(template.getName())
+                .description(template.getDescription())
+                .htmlContent(template.getHtmlContent())
+                .cssContent(template.getCssContent())
+                .gjsData(template.getGjsData())
+                .pageSize(template.getPageSize())
+                .orientation(template.getOrientation())
+                .marginTop(template.getMarginTop())
+                .marginBottom(template.getMarginBottom())
+                .marginLeft(template.getMarginLeft())
+                .marginRight(template.getMarginRight())
+                .placeholders(template.getPlaceholders())
+                .savedBy("system")              // replace with auth principal later
+                .changeNote(changeNote)
+                .build();
+
+        TemplateVersion saved = versionRepository.save(v);
+
+        // Keep currentVersion in sync on the template itself
+        template.setCurrentVersion(nextVersion);
+        return saved;
+    }
+
+    /** List all versions for a template, newest first. */
+    public List<TemplateVersion> getVersions(String templateId) {
+        return versionRepository.findByTemplateIdOrderByVersionDesc(templateId);
+    }
+
+    /**
+     * Retrieve a specific version.
+     *
+     * @throws RuntimeException if not found
+     */
+    public TemplateVersion getVersion(String templateId, int version) {
+        return versionRepository
+                .findByTemplateIdAndVersion(templateId, version)
+                .orElseThrow(() -> new RuntimeException(
+                        "Version " + version + " not found for template " + templateId));
+    }
+}

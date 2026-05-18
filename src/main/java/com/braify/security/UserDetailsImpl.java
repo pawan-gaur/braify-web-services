@@ -1,6 +1,6 @@
 package com.braify.security;
 
-import com.braify.model.AppUser;
+import com.braify.feature.user.model.AppUser;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;

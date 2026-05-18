@@ -1,6 +1,6 @@
 package com.braify.security;
 
-import com.braify.repository.AppUserRepository;
+import com.braify.feature.user.repository.AppUserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.core.userdetails.UserDetailsService;

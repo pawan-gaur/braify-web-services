@@ -1,7 +1,7 @@
 package com.braify.security;
 
-import com.braify.model.OrgApiKey;
-import com.braify.service.OrgApiKeyService;
+import com.braify.feature.apikey.model.OrgApiKey;
+import com.braify.feature.apikey.service.OrgApiKeyService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
