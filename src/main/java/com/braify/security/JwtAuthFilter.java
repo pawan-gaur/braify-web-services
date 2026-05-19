@@ -1,6 +1,6 @@
 package com.braify.security;
 
-import com.braify.repository.UserSessionRepository;
+import com.braify.feature.session.repository.UserSessionRepository;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;

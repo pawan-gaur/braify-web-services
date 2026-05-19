@@ -1,6 +1,6 @@
 package com.braify.security;
 
-import com.braify.model.AppUser;
+import com.braify.feature.user.model.AppUser;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
