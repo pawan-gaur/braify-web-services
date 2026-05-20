@@ -10,7 +10,9 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -19,6 +21,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
+@Slf4j
 @Tag(name = "Usage Quotas", description = "View and override usage quota limits (max users, docs/month, storage, API calls) and fetch monthly usage history. Use -1 for unlimited.")
 @RestController
 @RequestMapping("/api/organizations/{orgId}/quota")
@@ -46,6 +49,7 @@ public class QuotaController {
     public ResponseEntity<QuotaConfigResponse> getConfig(
             @Parameter(description = "Organisation ID") @PathVariable String orgId,
             Authentication auth) {
+        log.debug("GET /api/organizations/{}/quota/config caller='{}'", orgId, currentUser(auth).getEmail());
         assertAccess(orgId, currentUser(auth));
         return ResponseEntity.ok(quotaService.getConfigResponse(orgId));
     }
@@ -63,9 +67,11 @@ public class QuotaController {
     @PreAuthorize("hasRole('PLATFORM_ADMIN')")
     public ResponseEntity<QuotaConfigResponse> updateConfig(
             @Parameter(description = "Organisation ID") @PathVariable String orgId,
-            @RequestBody QuotaConfigRequest req,
+            @Valid @RequestBody QuotaConfigRequest req,
             Authentication auth) {
+        log.info("PUT /api/organizations/{}/quota/config by '{}'", orgId, currentUser(auth).getEmail());
         quotaService.overrideQuota(orgId, req, currentUser(auth).getEmail());
+        log.info("Quota config updated for org '{}'", orgId);
         return ResponseEntity.ok(quotaService.getConfigResponse(orgId));
     }
 
@@ -84,6 +90,7 @@ public class QuotaController {
             @Parameter(description = "Organisation ID") @PathVariable String orgId,
             @Parameter(description = "Number of past months to return (default 6)") @RequestParam(defaultValue = "6") int months,
             Authentication auth) {
+        log.debug("GET /api/organizations/{}/quota/usage months={} caller='{}'", orgId, months, currentUser(auth).getEmail());
         assertAccess(orgId, currentUser(auth));
         return ResponseEntity.ok(quotaService.getUsageHistory(orgId, months));
     }

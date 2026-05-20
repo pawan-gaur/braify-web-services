@@ -11,12 +11,14 @@ import com.braify.feature.organization.repository.OrganizationRepository;
 import com.braify.feature.session.repository.UserSessionRepository;
 import com.braify.security.JwtUtil;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.List;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class AuthService {
@@ -30,14 +32,20 @@ public class AuthService {
     private static final int MAX_SESSIONS = 3;
 
     public LoginResponse login(LoginRequest req, String ipAddress) {
+        log.info("Login attempt for email='{}'", req.getEmail());
         AppUser user = userRepository.findByEmail(req.getEmail())
-                .orElseThrow(() -> new RuntimeException("Invalid email or password"));
+                .orElseThrow(() -> {
+                    log.warn("Login failed — user not found for email='{}'", req.getEmail());
+                    return new RuntimeException("Invalid email or password");
+                });
 
         if (!user.isActive()) {
+            log.warn("Login rejected — account disabled for email='{}'", req.getEmail());
             throw new RuntimeException("Account is disabled");
         }
 
         if (!passwordEncoder.matches(req.getPassword(), user.getPassword())) {
+            log.warn("Login failed — invalid password for email='{}'", req.getEmail());
             throw new RuntimeException("Invalid email or password");
         }
 
@@ -46,6 +54,7 @@ public class AuthService {
                 sessionRepository.findByUserIdAndActiveTrueOrderByCreatedAtAsc(user.getId());
         if (activeSessions.size() >= MAX_SESSIONS) {
             int toRevoke = activeSessions.size() - MAX_SESSIONS + 1;
+            log.info("Session limit reached for user '{}' — revoking {} oldest session(s)", user.getEmail(), toRevoke);
             activeSessions.stream().limit(toRevoke).forEach(s -> {
                 s.setActive(false);
                 sessionRepository.save(s);
@@ -82,6 +91,7 @@ public class AuthService {
                 ? Feature.allKeys()
                 : (org != null && org.getFeatures() != null ? org.getFeatures() : List.of());
 
+        log.info("Login successful for user '{}' (role={})", user.getEmail(), user.getRole());
         return LoginResponse.builder()
                 .token(token)
                 .userId(user.getId())
@@ -98,9 +108,11 @@ public class AuthService {
     }
 
     public void logout(String jti) {
+        log.info("Logout: revoking session jti='{}'", jti);
         sessionRepository.findByJtiAndActiveTrue(jti).ifPresent(s -> {
             s.setActive(false);
             sessionRepository.save(s);
+            log.info("Session revoked for user '{}'", s.getUserId());
         });
     }
 }

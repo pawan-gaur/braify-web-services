@@ -9,7 +9,9 @@ import com.braify.feature.audit.service.AuditLogService;
 import com.braify.feature.apikey.service.OrgApiKeyService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -21,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+@Slf4j
 @RestController
 @RequestMapping("/api/organizations/{orgId}/api-keys")
 @RequiredArgsConstructor
@@ -69,6 +72,7 @@ public class OrgApiKeyController {
     @GetMapping
     @Operation(summary = "List API keys", description = "Returns all API keys for the organisation, keyHash excluded.")
     public List<Map<String, Object>> listKeys(@PathVariable String orgId) {
+        log.debug("GET /api/organizations/{}/api-keys", orgId);
         return orgApiKeyService.listKeys(orgId)
                 .stream()
                 .map(this::sanitize)
@@ -86,10 +90,11 @@ public class OrgApiKeyController {
                description = "Generates a new API key. The plain key is returned once and cannot be retrieved again.")
     public ResponseEntity<Map<String, Object>> createKey(
             @PathVariable String orgId,
-            @RequestBody ApiKeyCreateRequest request,
+            @Valid @RequestBody ApiKeyCreateRequest request,
             Authentication auth) {
 
         String createdBy = performedBy(auth);
+        log.info("POST /api/organizations/{}/api-keys name='{}' by '{}'", orgId, request.getName(), createdBy);
 
         OrgApiKeyService.KeyCreatedResponse result = orgApiKeyService.createKey(
                 orgId,
@@ -115,6 +120,7 @@ public class OrgApiKeyController {
         body.put("plainKey", result.plainKey());
         body.put("keyMeta",  sanitize(result.keyMeta()));
 
+        log.info("API key created: id='{}' for org '{}'", result.keyMeta().getId(), orgId);
         return ResponseEntity.status(HttpStatus.CREATED).body(body);
     }
 
@@ -129,6 +135,7 @@ public class OrgApiKeyController {
     public void revokeKey(@PathVariable String orgId,
                           @PathVariable String keyId,
                           Authentication auth) {
+        log.info("DELETE /api/organizations/{}/api-keys/{} by '{}'", orgId, keyId, performedBy(auth));
         OrgApiKey revoked = orgApiKeyService.revokeKey(orgId, keyId);
 
         auditLogService.log(
@@ -141,6 +148,7 @@ public class OrgApiKeyController {
                 performedBy(auth),
                 orgId
         );
+        log.info("API key '{}' revoked for org '{}'", keyId, orgId);
     }
 
     /**
@@ -152,7 +160,9 @@ public class OrgApiKeyController {
     @Operation(summary = "Toggle API key", description = "Flips the active state of an API key.")
     public Map<String, Object> toggleKey(@PathVariable String orgId,
                                          @PathVariable String keyId) {
+        log.info("PATCH /api/organizations/{}/api-keys/{}/toggle", orgId, keyId);
         OrgApiKey toggled = orgApiKeyService.toggleKey(orgId, keyId);
+        log.info("API key '{}' toggled to active={} for org '{}'", keyId, toggled.isActive(), orgId);
         return sanitize(toggled);
     }
 
@@ -165,6 +175,7 @@ public class OrgApiKeyController {
     @Operation(summary = "Get API key usage",
                description = "Returns recent usage logs (last 30 days) and a per-key call-count summary.")
     public Map<String, Object> getUsage(@PathVariable String orgId) {
+        log.debug("GET /api/organizations/{}/api-keys/usage", orgId);
         List<ApiKeyUsageLog> logs  = orgApiKeyService.getRecentUsage(orgId, 30);
         Map<String, Long>  summary = orgApiKeyService.getUsageSummaryByKey(orgId);
 

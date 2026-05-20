@@ -10,6 +10,7 @@ import com.braify.feature.user.repository.AppUserRepository;
 import com.braify.feature.organization.repository.OrganizationRepository;
 import com.braify.feature.session.repository.UserSessionRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -19,6 +20,7 @@ import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class SessionService {
@@ -120,15 +122,21 @@ public class SessionService {
      * a caller can only revoke sessions owned by users with a strictly lower role rank.
      */
     public void revokeSession(String sessionId, AppUser caller, String currentJti) {
+        log.info("Revoking session id='{}' by '{}'", sessionId, caller.getEmail());
         UserSession session = sessionRepository.findById(sessionId)
-                .orElseThrow(() -> new RuntimeException("Session not found"));
+                .orElseThrow(() -> {
+                    log.warn("Session not found: id='{}'", sessionId);
+                    return new RuntimeException("Session not found");
+                });
 
         if (!session.isActive()) {
+            log.warn("Session '{}' is already inactive", sessionId);
             throw new RuntimeException("Session is already inactive");
         }
 
         assertCanManage(caller, session);
         doRevoke(session, caller);
+        log.info("Session '{}' revoked by '{}'", sessionId, caller.getEmail());
 
         auditLogService.log(
                 session.getUserId(), "Session revoked",
@@ -139,6 +147,7 @@ public class SessionService {
     // ── Revoke all OTHER sessions of the caller ───────────────────────────────
 
     public int revokeAllMyOtherSessions(AppUser caller, String currentJti) {
+        log.info("Revoking all other sessions for user '{}'", caller.getEmail());
         List<UserSession> mine = sessionRepository.findByUserIdAndActiveTrue(caller.getId());
         int count = 0;
         for (UserSession s : mine) {
@@ -147,6 +156,7 @@ public class SessionService {
                 count++;
             }
         }
+        log.info("Revoked {} other session(s) for user '{}'", count, caller.getEmail());
         return count;
     }
 

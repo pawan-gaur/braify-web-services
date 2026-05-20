@@ -4,6 +4,7 @@ import com.braify.feature.apikey.service.OrgApiKeyService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
@@ -19,6 +20,7 @@ import java.util.Map;
  *
  * <p>Base path: {@code /api/admin/api-keys}
  */
+@Slf4j
 @RestController
 @RequestMapping("/api/admin/api-keys")
 @RequiredArgsConstructor
@@ -39,6 +41,7 @@ public class AdminApiKeyController {
     @Operation(summary = "List all API keys (all orgs)",
                description = "Returns all API keys across every organisation, enriched with orgName. Platform Admin only.")
     public List<Map<String, Object>> listAllKeys() {
+        log.debug("GET /api/admin/api-keys");
         return orgApiKeyService.listAllKeysWithOrgName();
     }
 }

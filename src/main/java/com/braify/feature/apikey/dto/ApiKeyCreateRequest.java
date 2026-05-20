@@ -5,6 +5,7 @@ import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.deser.std.StdDeserializer;
+import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 
 import java.io.IOException;
@@ -22,6 +23,7 @@ import java.util.Set;
 public class ApiKeyCreateRequest {
 
     /** Human-readable label for this key, e.g. "Production Key" */
+    @NotBlank
     private String name;
 
     /**

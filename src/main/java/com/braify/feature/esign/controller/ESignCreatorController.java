@@ -12,7 +12,9 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
@@ -20,6 +22,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
 
+@Slf4j
 @Tag(name = "E-Sign — Creator", description = "Authenticated creator endpoints for managing e-sign documents: create, place fields, send signing invitations, resend, cancel, view audit trail, and download the completed signed PDF. All routes require a valid user JWT.")
 @RestController
 @RequestMapping("/api/esign/documents")
@@ -35,12 +38,14 @@ public class ESignCreatorController {
     @ApiResponse(responseCode = "200", description = "Document created in DRAFT status")
     @PostMapping
     public ResponseEntity<DocumentResponse> create(
-            @RequestBody CreateDocumentRequest req,
+            @Valid @RequestBody CreateDocumentRequest req,
             @AuthenticationPrincipal UserDetailsImpl principal,
             HttpServletRequest http) {
 
+        log.info("POST /api/esign/documents title='{}' by '{}'", req.getTitle(), principal.getUsername());
         DocumentResponse doc = documentService.createDocument(
                 req, principal, extractIp(http), http.getHeader("User-Agent"));
+        log.info("E-sign document created: id='{}'", doc.getId());
         return ResponseEntity.ok(doc);
     }
 
@@ -50,6 +55,7 @@ public class ESignCreatorController {
     @GetMapping
     public ResponseEntity<List<DocumentResponse>> list(
             @AuthenticationPrincipal UserDetailsImpl principal) {
+        log.debug("GET /api/esign/documents caller='{}'", principal.getUsername());
         return ResponseEntity.ok(documentService.listMyDocuments(principal));
     }
 
@@ -61,6 +67,7 @@ public class ESignCreatorController {
     public ResponseEntity<DocumentResponse> get(
             @Parameter(description = "Document ID") @PathVariable String id,
             @AuthenticationPrincipal UserDetailsImpl principal) {
+        log.debug("GET /api/esign/documents/{}", id);
         return ResponseEntity.ok(documentService.getDocument(id, principal));
     }
 
@@ -75,8 +82,10 @@ public class ESignCreatorController {
             @AuthenticationPrincipal UserDetailsImpl principal,
             HttpServletRequest http) {
 
+        log.info("PUT /api/esign/documents/{}/fields count={} by '{}'", id, fields.size(), principal.getUsername());
         DocumentResponse doc = documentService.saveFields(
                 id, fields, principal, extractIp(http), http.getHeader("User-Agent"));
+        log.info("Fields saved for e-sign document '{}'", id);
         return ResponseEntity.ok(doc);
     }
 
@@ -91,8 +100,10 @@ public class ESignCreatorController {
             @AuthenticationPrincipal UserDetailsImpl principal,
             HttpServletRequest http) {
 
+        log.info("POST /api/esign/documents/{}/send tokenValidDays={} by '{}'", id, tokenValidDays, principal.getUsername());
         DocumentResponse doc = documentService.sendDocument(
                 id, tokenValidDays, principal, extractIp(http), http.getHeader("User-Agent"));
+        log.info("E-sign document '{}' sent to client", id);
         return ResponseEntity.ok(doc);
     }
 
@@ -106,8 +117,10 @@ public class ESignCreatorController {
             @AuthenticationPrincipal UserDetailsImpl principal,
             HttpServletRequest http) {
 
+        log.info("POST /api/esign/documents/{}/resend by '{}'", id, principal.getUsername());
         DocumentResponse doc = documentService.resendDocument(
                 id, tokenValidDays, principal, extractIp(http), http.getHeader("User-Agent"));
+        log.info("E-sign document '{}' invitation resent", id);
         return ResponseEntity.ok(doc);
     }
 
@@ -120,8 +133,10 @@ public class ESignCreatorController {
             @AuthenticationPrincipal UserDetailsImpl principal,
             HttpServletRequest http) {
 
+        log.info("POST /api/esign/documents/{}/cancel by '{}'", id, principal.getUsername());
         DocumentResponse doc = documentService.cancelDocument(
                 id, principal, extractIp(http), http.getHeader("User-Agent"));
+        log.info("E-sign document '{}' cancelled", id);
         return ResponseEntity.ok(doc);
     }
 
@@ -132,6 +147,7 @@ public class ESignCreatorController {
     public ResponseEntity<List<ESignAuditEvent>> audit(
             @Parameter(description = "Document ID") @PathVariable String id,
             @AuthenticationPrincipal UserDetailsImpl principal) {
+        log.debug("GET /api/esign/documents/{}/audit", id);
         return ResponseEntity.ok(documentService.getAuditTrail(id, principal));
     }
 
@@ -143,6 +159,7 @@ public class ESignCreatorController {
     public ResponseEntity<byte[]> downloadSignedPdf(
             @Parameter(description = "Document ID") @PathVariable String id,
             @AuthenticationPrincipal UserDetailsImpl principal) {
+        log.info("GET /api/esign/documents/{}/signed-pdf by '{}'", id, principal.getUsername());
 
         DocumentResponse doc = documentService.getDocument(id, principal);
         if (doc.getSignedPdfBase64() == null)

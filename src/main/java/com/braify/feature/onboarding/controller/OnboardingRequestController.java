@@ -5,7 +5,9 @@ import com.braify.feature.onboarding.dto.OnboardingSubmitRequest;
 import com.braify.feature.onboarding.model.OnboardingRequest;
 import com.braify.security.UserDetailsImpl;
 import com.braify.feature.onboarding.service.OnboardingRequestService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
@@ -14,6 +16,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
 
+@Slf4j
 @RestController
 @RequestMapping("/api/onboarding")
 @RequiredArgsConstructor
@@ -35,7 +38,8 @@ public class OnboardingRequestController {
      * Submit an onboarding request from the public "Get Started" form.
      */
     @PostMapping
-    public ResponseEntity<Map<String, Object>> submit(@RequestBody OnboardingSubmitRequest req) {
+    public ResponseEntity<Map<String, Object>> submit(@Valid @RequestBody OnboardingSubmitRequest req) {
+        log.info("POST /api/onboarding applicantEmail='{}' org='{}'", req.getApplicantEmail(), req.getOrganizationName());
         try {
             OnboardingRequest saved = onboardingService.submit(req);
             return ResponseEntity.ok(Map.of(
@@ -44,6 +48,7 @@ public class OnboardingRequestController {
                     "id", saved.getId()
             ));
         } catch (RuntimeException ex) {
+            log.warn("Onboarding submission rejected for '{}': {}", req.getApplicantEmail(), ex.getMessage());
             return ResponseEntity.badRequest().body(Map.of(
                     "success", false,
                     "message", ex.getMessage()
@@ -61,6 +66,7 @@ public class OnboardingRequestController {
     @PreAuthorize("hasRole('PLATFORM_ADMIN')")
     public List<OnboardingRequest> getAll(
             @RequestParam(required = false) OnboardingRequest.Status status) {
+        log.debug("GET /api/onboarding status={}", status);
         return status != null
                 ? onboardingService.findByStatus(status)
                 : onboardingService.findAll();
@@ -95,8 +101,11 @@ public class OnboardingRequestController {
     @PreAuthorize("hasRole('PLATFORM_ADMIN')")
     public ResponseEntity<OnboardingRequest> review(
             @PathVariable String id,
-            @RequestBody OnboardingReviewRequest reviewRequest,
+            @Valid @RequestBody OnboardingReviewRequest reviewRequest,
             Authentication auth) {
-        return ResponseEntity.ok(onboardingService.review(id, reviewRequest, performedBy(auth)));
+        log.info("PUT /api/onboarding/{}/review action='{}' by '{}'", id, reviewRequest.getAction(), performedBy(auth));
+        ResponseEntity<OnboardingRequest> result = ResponseEntity.ok(onboardingService.review(id, reviewRequest, performedBy(auth)));
+        log.info("Onboarding request '{}' reviewed with action '{}'", id, reviewRequest.getAction());
+        return result;
     }
 }

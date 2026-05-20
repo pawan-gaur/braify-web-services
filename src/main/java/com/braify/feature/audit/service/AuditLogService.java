@@ -5,6 +5,7 @@ import com.braify.feature.audit.model.AuditLog;
 import com.braify.feature.user.repository.AppUserRepository;
 import com.braify.feature.audit.repository.AuditLogRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.*;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
@@ -21,6 +22,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class AuditLogService {
@@ -207,7 +209,10 @@ public class AuditLogService {
 
         entry.setIntegrityHash(computeHash(entry));
 
-        return auditLogRepository.save(entry);
+        AuditLog saved = auditLogRepository.save(entry);
+        log.debug("Audit logged: action={} resource={} resourceId='{}' by='{}'",
+                action, resourceType, resourceId, performer);
+        return saved;
     }
 
     // ── Read — single resource ────────────────────────────────────────────────

@@ -12,7 +12,9 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
@@ -20,6 +22,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
+@Slf4j
 @Tag(name = "Organizations", description = "CRUD, feature management, and subscription management for tenant organisations. Requires PLATFORM_ADMIN role.")
 @RestController
 @RequestMapping("/api/organizations")
@@ -44,6 +47,7 @@ public class OrganizationController {
     @GetMapping
     @PreAuthorize("hasRole('PLATFORM_ADMIN')")
     public List<Organization> getAll() {
+        log.debug("GET /api/organizations");
         return orgService.findAll();
     }
 
@@ -53,6 +57,7 @@ public class OrganizationController {
     @PreAuthorize("hasRole('PLATFORM_ADMIN')")
     public List<Organization> search(
             @Parameter(description = "Search query (matches name or code)") @RequestParam(defaultValue = "") String q) {
+        log.debug("GET /api/organizations/search q='{}'", q);
         return orgService.search(q);
     }
 
@@ -62,6 +67,7 @@ public class OrganizationController {
     @GetMapping("/{id}")
     @PreAuthorize("hasRole('PLATFORM_ADMIN')")
     public Organization getById(@Parameter(description = "Organisation ID") @PathVariable String id) {
+        log.debug("GET /api/organizations/{}", id);
         return orgService.findById(id);
     }
 
@@ -70,9 +76,12 @@ public class OrganizationController {
     @ApiResponse(responseCode = "200", description = "Organisation created")
     @PostMapping
     @PreAuthorize("hasRole('PLATFORM_ADMIN')")
-    public ResponseEntity<Organization> create(@RequestBody OrganizationRequest req,
+    public ResponseEntity<Organization> create(@Valid @RequestBody OrganizationRequest req,
                                                Authentication auth) {
-        return ResponseEntity.ok(orgService.create(req, performedBy(auth)));
+        log.info("POST /api/organizations name='{}' by '{}'", req.getName(), performedBy(auth));
+        ResponseEntity<Organization> result = ResponseEntity.ok(orgService.create(req, performedBy(auth)));
+        log.info("Organisation created: id='{}'", result.getBody() != null ? result.getBody().getId() : "unknown");
+        return result;
     }
 
     @Operation(summary = "Update organisation",
@@ -81,9 +90,12 @@ public class OrganizationController {
     @PreAuthorize("hasRole('PLATFORM_ADMIN')")
     public ResponseEntity<Organization> update(
             @Parameter(description = "Organisation ID") @PathVariable String id,
-            @RequestBody OrganizationRequest req,
+            @Valid @RequestBody OrganizationRequest req,
             Authentication auth) {
-        return ResponseEntity.ok(orgService.update(id, req, performedBy(auth)));
+        log.info("PUT /api/organizations/{} by '{}'", id, performedBy(auth));
+        ResponseEntity<Organization> result = ResponseEntity.ok(orgService.update(id, req, performedBy(auth)));
+        log.info("Organisation '{}' updated", id);
+        return result;
     }
 
     @Operation(summary = "Soft-delete organisation",
@@ -92,7 +104,9 @@ public class OrganizationController {
     @DeleteMapping("/{id}")
     @PreAuthorize("hasRole('PLATFORM_ADMIN')")
     public ResponseEntity<Void> delete(@Parameter(description = "Organisation ID") @PathVariable String id) {
+        log.info("DELETE /api/organizations/{}", id);
         orgService.delete(id);
+        log.info("Organisation '{}' deleted", id);
         return ResponseEntity.noContent().build();
     }
 
@@ -113,9 +127,12 @@ public class OrganizationController {
     @PreAuthorize("hasRole('PLATFORM_ADMIN')")
     public ResponseEntity<OrgFeaturesResponse> updateFeatures(
             @Parameter(description = "Organisation ID") @PathVariable String id,
-            @RequestBody OrgFeaturesRequest req,
+            @Valid @RequestBody OrgFeaturesRequest req,
             Authentication auth) {
-        return ResponseEntity.ok(orgService.updateFeatures(id, req.getFeatures(), performedBy(auth)));
+        log.info("PUT /api/organizations/{}/features features={} by '{}'", id, req.getFeatures(), performedBy(auth));
+        ResponseEntity<OrgFeaturesResponse> result = ResponseEntity.ok(orgService.updateFeatures(id, req.getFeatures(), performedBy(auth)));
+        log.info("Features updated for org '{}'", id);
+        return result;
     }
 
     // ── Subscription ──────────────────────────────────────────────────────────
@@ -138,8 +155,11 @@ public class OrganizationController {
     @PreAuthorize("hasRole('PLATFORM_ADMIN')")
     public ResponseEntity<SubscriptionResponse> assignSubscription(
             @Parameter(description = "Organisation ID") @PathVariable String id,
-            @RequestBody SubscriptionRequest req,
+            @Valid @RequestBody SubscriptionRequest req,
             Authentication auth) {
-        return ResponseEntity.ok(orgService.assignSubscription(id, req, performedBy(auth)));
+        log.info("PUT /api/organizations/{}/subscription plan='{}' by '{}'", id, req.getSubscriptionPlan(), performedBy(auth));
+        ResponseEntity<SubscriptionResponse> result = ResponseEntity.ok(orgService.assignSubscription(id, req, performedBy(auth)));
+        log.info("Subscription plan '{}' assigned to org '{}'", req.getSubscriptionPlan(), id);
+        return result;
     }
 }

@@ -9,7 +9,9 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
@@ -17,6 +19,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
+@Slf4j
 @Tag(name = "Template Sharing", description = "Share PDF and Email templates across organisations with VIEW / USE / EDIT permissions. EDIT shares fork the template into the target org (independent copy). Revoking an EDIT share soft-deletes the fork.")
 @RestController
 @RequestMapping("/api/sharing")
@@ -45,9 +48,14 @@ public class TemplateSharingController {
     @ApiResponse(responseCode = "403", description = "Access denied")
     @PostMapping
     @PreAuthorize("hasAnyRole('PLATFORM_ADMIN','ORG_ADMIN')")
-    public ResponseEntity<SharingResponse> share(@RequestBody SharingRequest req,
+    public ResponseEntity<SharingResponse> share(@Valid @RequestBody SharingRequest req,
                                                   Authentication auth) {
-        return ResponseEntity.ok(sharingService.shareTemplate(req, currentUser(auth)));
+        log.info("POST /api/sharing templateId='{}' targetOrgId='{}' permission={} by '{}'",
+                req.getTemplateId(), req.getTargetOrgId(), req.getPermission(), currentUser(auth).getEmail());
+        ResponseEntity<SharingResponse> result = ResponseEntity.ok(sharingService.shareTemplate(req, currentUser(auth)));
+        log.info("Template '{}' shared with org '{}' (permission={})",
+                req.getTemplateId(), req.getTargetOrgId(), req.getPermission());
+        return result;
     }
 
     @Operation(
@@ -63,7 +71,9 @@ public class TemplateSharingController {
     public ResponseEntity<Void> revoke(
             @Parameter(description = "Share ID") @PathVariable String id,
             Authentication auth) {
+        log.info("DELETE /api/sharing/{} by '{}'", id, currentUser(auth).getEmail());
         sharingService.revokeShare(id, currentUser(auth));
+        log.info("Share '{}' revoked", id);
         return ResponseEntity.noContent().build();
     }
 
@@ -75,6 +85,7 @@ public class TemplateSharingController {
     @ApiResponse(responseCode = "200", description = "List of received shares")
     @GetMapping("/received")
     public ResponseEntity<List<SharingResponse>> received(Authentication auth) {
+        log.debug("GET /api/sharing/received caller='{}'", currentUser(auth).getEmail());
         return ResponseEntity.ok(sharingService.getReceivedShares(currentUser(auth)));
     }
 
@@ -87,6 +98,7 @@ public class TemplateSharingController {
     @GetMapping("/sent")
     @PreAuthorize("hasAnyRole('PLATFORM_ADMIN','ORG_ADMIN')")
     public ResponseEntity<List<SharingResponse>> sent(Authentication auth) {
+        log.debug("GET /api/sharing/sent caller='{}'", currentUser(auth).getEmail());
         return ResponseEntity.ok(sharingService.getSentShares(currentUser(auth)));
     }
 
@@ -101,6 +113,7 @@ public class TemplateSharingController {
     public ResponseEntity<List<SharingResponse>> forTemplate(
             @Parameter(description = "Template ID") @PathVariable String templateId,
             Authentication auth) {
+        log.debug("GET /api/sharing/template/{} caller='{}'", templateId, currentUser(auth).getEmail());
         return ResponseEntity.ok(sharingService.getSharesForTemplate(templateId, currentUser(auth)));
     }
 }

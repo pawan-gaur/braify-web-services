@@ -28,6 +28,7 @@ public class AuditLog {
 
     public enum Action {
         CREATED, UPDATED, DELETED, RESTORED,
+        READ,                 // read / download access
         PASSWORD_CHANGED, AVATAR_UPDATED,
         DEACTIVATED, ACTIVATED,
         SESSION_REVOKED, SENT,
@@ -48,7 +49,8 @@ public class AuditLog {
         ORGANIZATION,    // Organization-level actions
         E_SIGN,          // E-Sign document lifecycle
         SHARING,         // Org-to-org template sharing
-        API_KEY          // Organisation API key lifecycle
+        API_KEY,         // Organisation API key lifecycle
+        DOCUMENT         // Uploaded file / document
     }
 
     /** Compliance risk level — auto-assigned from the action. */

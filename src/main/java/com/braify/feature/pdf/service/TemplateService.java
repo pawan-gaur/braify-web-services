@@ -7,6 +7,7 @@ import com.braify.feature.pdf.model.Template;
 import com.braify.feature.pdf.model.TemplateVersion;
 import com.braify.feature.pdf.repository.TemplateRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -14,6 +15,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class TemplateService {
@@ -27,6 +29,7 @@ public class TemplateService {
 
     /** Returns only non-deleted templates, filtered by org for non-platform admins. */
     public List<Template> findAll(AppUser currentUser) {
+        log.debug("findAll templates for user='{}' org='{}'", currentUser.getEmail(), currentUser.getOrganizationId());
         if (currentUser.getRole() == AppUser.Role.PLATFORM_ADMIN) {
             return templateRepository.findByDeletedFalseOrderByUpdatedAtDesc();
         }
@@ -36,18 +39,26 @@ public class TemplateService {
 
     /** Throws if the template is deleted, not found, or inaccessible to the user. */
     public Template findById(String id, AppUser currentUser) {
+        log.debug("findById template id='{}' user='{}'", id, currentUser.getEmail());
         if (currentUser.getRole() == AppUser.Role.PLATFORM_ADMIN) {
             return templateRepository.findByIdAndDeletedFalse(id)
-                    .orElseThrow(() -> new RuntimeException("Template not found: " + id));
+                    .orElseThrow(() -> {
+                        log.warn("Template not found: id='{}'", id);
+                        return new RuntimeException("Template not found: " + id);
+                    });
         }
         return templateRepository.findByIdAndOrganizationIdAndDeletedFalse(
                         id, currentUser.getOrganizationId())
-                .orElseThrow(() -> new RuntimeException("Template not found: " + id));
+                .orElseThrow(() -> {
+                    log.warn("Template not found: id='{}' org='{}'", id, currentUser.getOrganizationId());
+                    return new RuntimeException("Template not found: " + id);
+                });
     }
 
     // ── Create ───────────────────────────────────────────────────────────────
 
     public Template create(Template template, AppUser currentUser) {
+        log.info("Creating template name='{}' by '{}'", template.getName(), currentUser.getEmail());
         template.setId(null);
         template.setDeleted(false);
         template.setCurrentVersion(0);
@@ -67,12 +78,14 @@ public class TemplateService {
                 saved.getCurrentVersion(), null,
                 currentUser.getEmail(), saved.getOrganizationId());
 
+        log.info("Template created: id='{}' name='{}'", saved.getId(), saved.getName());
         return saved;
     }
 
     // ── Update ───────────────────────────────────────────────────────────────
 
     public Template update(String id, Template incoming, AppUser currentUser) {
+        log.info("Updating template id='{}' by '{}'", id, currentUser.getEmail());
         Template existing = findById(id, currentUser);
         assertAccess(currentUser, existing.getOrganizationId());
 
@@ -103,13 +116,16 @@ public class TemplateService {
                 saved.getCurrentVersion(), changes,
                 currentUser.getEmail(), saved.getOrganizationId());
 
+        log.info("Template '{}' updated to version {}", id, saved.getCurrentVersion());
         return saved;
     }
 
     // ── Soft Delete ──────────────────────────────────────────────────────────
 
     public void delete(String id, AppUser currentUser) {
+        log.info("Deleting template id='{}' by '{}'", id, currentUser.getEmail());
         if (currentUser.getRole() == AppUser.Role.USER) {
+            log.warn("Delete rejected — USER role cannot delete templates, caller='{}'", currentUser.getEmail());
             throw new RuntimeException("Users cannot delete templates");
         }
         Template existing = findById(id, currentUser);
@@ -124,11 +140,13 @@ public class TemplateService {
                 AuditLog.Action.DELETED, AuditLog.ResourceType.TEMPLATE,
                 existing.getCurrentVersion(), null,
                 currentUser.getEmail(), existing.getOrganizationId());
+        log.info("Template '{}' deleted", id);
     }
 
     // ── Restore version ──────────────────────────────────────────────────────
 
     public Template restoreVersion(String templateId, int versionNumber, AppUser currentUser) {
+        log.info("Restoring template id='{}' to version {} by '{}'", templateId, versionNumber, currentUser.getEmail());
         Template existing = findById(templateId, currentUser);
         assertAccess(currentUser, existing.getOrganizationId());
 
@@ -159,6 +177,7 @@ public class TemplateService {
                 Map.of("restoredFromVersion", versionNumber),
                 currentUser.getEmail(), saved.getOrganizationId());
 
+        log.info("Template '{}' restored to version {} (new version={})", templateId, versionNumber, saved.getCurrentVersion());
         return saved;
     }
 

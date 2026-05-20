@@ -9,10 +9,13 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+@Slf4j
 @Tag(name = "E-Sign — Client Signing", description = "Public endpoints used by the signing recipient (no user account required). Access is controlled by a short-lived ESIGN signing JWT embedded in the emailed link. Pass the token as a Bearer token in the Authorization header.")
 @SecurityRequirement(name = "bearerAuth")
 @RestController
@@ -33,6 +36,7 @@ public class ESignClientController {
             @Parameter(description = "ESIGN signing token from the emailed link") @PathVariable String token,
             HttpServletRequest http) {
 
+        log.info("GET /api/esign/sign/{} (open document)", token.length() > 12 ? token.substring(0, 12) + "…" : token);
         DocumentResponse doc = clientService.openDocument(
                 token, extractIp(http), http.getHeader("User-Agent"));
         return ResponseEntity.ok(doc);
@@ -49,11 +53,13 @@ public class ESignClientController {
     public ResponseEntity<DocumentResponse.FieldResponse> signField(
             @Parameter(description = "ESIGN signing token") @PathVariable String token,
             @Parameter(description = "Field ID to sign") @PathVariable String fieldId,
-            @RequestBody SignFieldRequest req,
+            @Valid @RequestBody SignFieldRequest req,
             HttpServletRequest http) {
 
+        log.info("PUT /api/esign/sign/{token}/fields/{} (sign field)", fieldId);
         DocumentResponse.FieldResponse field = clientService.signField(
                 token, fieldId, req, extractIp(http), http.getHeader("User-Agent"));
+        log.info("Field '{}' signed", fieldId);
         return ResponseEntity.ok(field);
     }
 
@@ -67,8 +73,10 @@ public class ESignClientController {
             @Parameter(description = "ESIGN signing token") @PathVariable String token,
             HttpServletRequest http) {
 
+        log.info("POST /api/esign/sign/{token}/submit (client submitting document)");
         DocumentResponse doc = clientService.submitDocument(
                 token, extractIp(http), http.getHeader("User-Agent"));
+        log.info("E-sign document '{}' submitted by client", doc.getId());
         return ResponseEntity.ok(doc);
     }
 

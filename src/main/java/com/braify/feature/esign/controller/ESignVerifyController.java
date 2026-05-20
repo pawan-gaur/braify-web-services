@@ -8,11 +8,13 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.security.SecurityRequirements;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
 
+@Slf4j
 @Tag(name = "E-Sign — Verification", description = "Public endpoint to verify a completed e-sign document's authenticity. No authentication required — anyone with the document ID can verify.")
 @RestController
 @RequestMapping("/api/esign/verify")
@@ -31,6 +33,7 @@ public class ESignVerifyController {
     @GetMapping("/{id}")
     public ResponseEntity<Map<String, Object>> verify(
             @Parameter(description = "E-sign document ID") @PathVariable String id) {
+        log.info("GET /api/esign/verify/{}", id);
         DocumentResponse doc = clientService.verifyDocument(id);
 
         Map<String, Object> result = Map.of(

@@ -1,6 +1,7 @@
 package com.braify.feature.organization.model;
 
 import com.braify.feature.branding.model.OrgBranding;
+import com.braify.feature.cloudconfig.model.OrgCloudConfig;
 import com.braify.shared.SubscriptionPlan;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -9,6 +10,9 @@ import lombok.NoArgsConstructor;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.annotation.LastModifiedDate;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
+import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.LocalDateTime;
@@ -20,6 +24,9 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 @Document(collection = "organizations")
+@CompoundIndexes({
+    @CompoundIndex(name = "idx_deleted_name", def = "{'deleted': 1, 'name': 1}")
+})
 public class Organization {
 
     @Id
@@ -28,6 +35,7 @@ public class Organization {
     private String name;
 
     /** Unique short identifier, e.g. "acme-corp" */
+    @Indexed(unique = true)
     private String code;
 
     private String description;
@@ -65,6 +73,15 @@ public class Organization {
      * Stored as an embedded BSON object; null until the org configures branding.
      */
     private OrgBranding branding;
+
+    // ── Cloud Storage ─────────────────────────────────────────────────────────
+
+    /**
+     * Cloud storage configuration (AWS / Azure / GCP credentials, bucket, upload policy).
+     * Stored as an embedded BSON object; null until the org configures cloud storage.
+     * Sensitive credential fields are masked in all API responses.
+     */
+    private OrgCloudConfig cloudConfig;
 
     // ── Status ────────────────────────────────────────────────────────────────
 

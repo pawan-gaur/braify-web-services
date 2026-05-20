@@ -142,6 +142,31 @@ public class QuotaService {
         incrementField(orgId, "apiCalls");
     }
 
+    /**
+     * Atomically adds {@code additionalMb} to the current month's storage counter.
+     * No enforcement — storage limit is checked before upload in {@code FileService}.
+     *
+     * @param orgId        the organisation to update
+     * @param additionalMb megabytes to add (may be fractional)
+     */
+    public void incrementStorage(String orgId, double additionalMb) {
+        if (orgId == null || additionalMb <= 0) return;
+        // Round up to the nearest whole MB so we stay compatible with OrgUsage.storageMb (long)
+        long wholeMb = Math.max(1L, Math.round(additionalMb));
+        LocalDate now = LocalDate.now();
+        Query  q = Query.query(Criteria.where("organizationId").is(orgId)
+                .and("year").is(now.getYear())
+                .and("month").is(now.getMonthValue()));
+        Update u = new Update()
+                .setOnInsert("organizationId", orgId)
+                .setOnInsert("year",  now.getYear())
+                .setOnInsert("month", now.getMonthValue())
+                .inc("storageMb", wholeMb);
+        mongoTemplate.findAndModify(q, u,
+                FindAndModifyOptions.options().upsert(true).returnNew(true),
+                OrgUsage.class);
+    }
+
     // ── Read ─────────────────────────────────────────────────────────────────
 
     public OrgQuotaConfig getConfig(String orgId) {

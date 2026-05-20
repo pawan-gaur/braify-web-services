@@ -1,5 +1,7 @@
 package com.braify.feature.email.dto;
 
+import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 
 import java.util.Map;
@@ -11,6 +13,7 @@ import java.util.Map;
 public class SendEmailRequest {
 
     /** Recipient email address (required). */
+    @NotBlank @Email
     private String to;
 
     /**
