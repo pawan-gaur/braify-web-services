@@ -1,15 +1,21 @@
 package com.braify.shared;
 
 import com.braify.feature.quota.exception.QuotaExceededException;
+import jakarta.validation.ConstraintViolationException;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.validation.FieldError;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.servlet.NoHandlerFoundException;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Converts any unhandled exception into a consistent JSON error body:
@@ -22,13 +28,67 @@ import java.util.Map;
  * </pre>
  * This lets the React front-end display the real reason instead of a
  * generic "backend not running" fallback.
+ *
+ * <p>Logging policy:
+ * <ul>
+ *   <li>5xx errors (RuntimeException without "not found", generic Exception) → {@code log.error} with stack trace</li>
+ *   <li>4xx errors (quota, access denied, not found) → {@code log.warn} without stack trace</li>
+ *   <li>NoHandlerFoundException → {@code log.debug} (normal miss on unknown routes)</li>
+ * </ul>
  */
+@Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    /** Bean Validation failure on @RequestBody — returns field-level errors. */
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<Map<String, Object>> handleValidation(MethodArgumentNotValidException ex) {
+        Map<String, String> fieldErrors = ex.getBindingResult().getFieldErrors().stream()
+                .collect(Collectors.toMap(
+                        FieldError::getField,
+                        fe -> fe.getDefaultMessage() != null ? fe.getDefaultMessage() : "Invalid value",
+                        (a, b) -> a,          // keep first error per field
+                        LinkedHashMap::new
+                ));
+        log.warn("Validation failed: {}", fieldErrors);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("status",    400);
+        body.put("message",   "Validation failed");
+        body.put("errors",    fieldErrors);
+        body.put("timestamp", Instant.now().toString());
+        return ResponseEntity.badRequest().body(body);
+    }
+
+    /** @RequestParam / @PathVariable constraint violations (requires @Validated on controller). */
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ResponseEntity<Map<String, Object>> handleConstraintViolation(ConstraintViolationException ex) {
+        Map<String, String> fieldErrors = ex.getConstraintViolations().stream()
+                .collect(Collectors.toMap(
+                        cv -> cv.getPropertyPath().toString(),
+                        cv -> cv.getMessage(),
+                        (a, b) -> a,
+                        LinkedHashMap::new
+                ));
+        log.warn("Constraint violation: {}", fieldErrors);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("status",    400);
+        body.put("message",   "Constraint violation");
+        body.put("errors",    fieldErrors);
+        body.put("timestamp", Instant.now().toString());
+        return ResponseEntity.badRequest().body(body);
+    }
+
+    /** Bad caller argument — e.g. invalid enum value or explicit guard. Returns HTTP 400. */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, Object>> handleIllegalArgument(IllegalArgumentException ex) {
+        log.warn("Illegal argument: {}", ex.getMessage());
+        return ResponseEntity.badRequest().body(errorBody(HttpStatus.BAD_REQUEST, ex.getMessage()));
+    }
 
     /** Quota exceeded — org has hit a usage limit. Returns HTTP 429. */
     @ExceptionHandler(QuotaExceededException.class)
     public ResponseEntity<Map<String, Object>> handleQuotaExceeded(QuotaExceededException ex) {
+        log.warn("Quota exceeded: type={} limit={} current={}", ex.getQuotaType(), ex.getLimit(), ex.getCurrent());
         return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
                 .body(Map.of(
                         "status",    429,
@@ -43,6 +103,7 @@ public class GlobalExceptionHandler {
     /** Access denied — thrown by Spring Security @PreAuthorize. */
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<Map<String, Object>> handleAccessDenied(AccessDeniedException ex) {
+        log.warn("Access denied: {}", ex.getMessage());
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
                 .body(errorBody(HttpStatus.FORBIDDEN, "Access denied"));
     }
@@ -51,9 +112,14 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(RuntimeException.class)
     public ResponseEntity<Map<String, Object>> handleRuntime(RuntimeException ex) {
         String msg = ex.getMessage();
-        HttpStatus status = (msg != null && msg.toLowerCase().contains("not found"))
-                ? HttpStatus.NOT_FOUND
-                : HttpStatus.INTERNAL_SERVER_ERROR;
+        boolean isNotFound = msg != null && msg.toLowerCase().contains("not found");
+        HttpStatus status = isNotFound ? HttpStatus.NOT_FOUND : HttpStatus.INTERNAL_SERVER_ERROR;
+
+        if (isNotFound) {
+            log.warn("Resource not found: {}", msg);
+        } else {
+            log.error("Unhandled RuntimeException: {}", msg, ex);
+        }
 
         return ResponseEntity.status(status).body(errorBody(status, msg));
     }
@@ -62,12 +128,14 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(NoHandlerFoundException.class)
     public ResponseEntity<Map<String, Object>> handleNoRoute(NoHandlerFoundException ex) {
         String msg = "No endpoint: " + ex.getHttpMethod() + " " + ex.getRequestURL();
+        log.debug("No handler found: {} {}", ex.getHttpMethod(), ex.getRequestURL());
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(errorBody(HttpStatus.NOT_FOUND, msg));
     }
 
     /** Catch-all for anything else. */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleGeneric(Exception ex) {
+        log.error("Unexpected error: {}", ex.getMessage(), ex);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(errorBody(HttpStatus.INTERNAL_SERVER_ERROR,
                         ex.getMessage() != null ? ex.getMessage() : "Unexpected error"));

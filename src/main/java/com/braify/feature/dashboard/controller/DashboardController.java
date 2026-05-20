@@ -5,12 +5,14 @@ import com.braify.feature.user.model.AppUser;
 import com.braify.security.UserDetailsImpl;
 import com.braify.feature.dashboard.service.DashboardService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+@Slf4j
 @RestController
 @RequestMapping("/api/dashboard")
 @RequiredArgsConstructor
@@ -27,6 +29,7 @@ public class DashboardController {
     @GetMapping
     public ResponseEntity<DashboardStats> getDashboard(Authentication auth) {
         AppUser caller = ((UserDetailsImpl) auth.getPrincipal()).getAppUser();
+        log.debug("GET /api/dashboard caller='{}'", caller.getEmail());
         return ResponseEntity.ok(dashboardService.stats(caller));
     }
 }

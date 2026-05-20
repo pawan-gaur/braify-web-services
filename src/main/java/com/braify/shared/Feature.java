@@ -13,7 +13,8 @@ public enum Feature {
 
     PDF_TEMPLATES("PDF_TEMPLATES", "PDF Templates"),
     EMAIL_TEMPLATES("EMAIL_TEMPLATES", "Email Templates"),
-    E_SIGN("E_SIGN", "E-Sign");
+    E_SIGN("E_SIGN", "E-Sign"),
+    FILE_STORAGE("FILE_STORAGE", "File Storage");
 
     private final String key;
     private final String label;

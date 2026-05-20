@@ -1,5 +1,6 @@
 package com.braify.security;
 
+import com.braify.config.RequestLoggingFilter;
 import com.braify.feature.apikey.model.OrgApiKey;
 import com.braify.feature.apikey.service.OrgApiKeyService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -96,6 +97,10 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
             );
             SecurityContextHolder.getContext().setAuthentication(auth);
 
+            // Expose caller identity for RequestLoggingFilter (SecurityContext is
+            // cleared by Spring Security before the outermost filter's finally block)
+            request.setAttribute(RequestLoggingFilter.CALLER_ATTR, "key:" + key.getKeyPrefix());
+
             // Async usage tracking — non-blocking
             orgApiKeyService.trackUsage(
                     key.getOrgId(),
@@ -138,9 +143,10 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
      */
     private static String detectFeature(String path) {
         if (path == null) return null;
-        if (path.startsWith("/api/external/pdf"))   return "PDF_TEMPLATES";
+        if (path.startsWith("/api/external/pdf"))    return "PDF_TEMPLATES";
         if (path.startsWith("/api/external/email"))  return "EMAIL_TEMPLATES";
         if (path.startsWith("/api/external/esign"))  return "E_SIGN";
+        if (path.startsWith("/api/external/files"))  return "FILE_STORAGE";
         return null;
     }
 

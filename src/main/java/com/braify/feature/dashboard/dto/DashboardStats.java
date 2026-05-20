@@ -50,6 +50,9 @@ public class DashboardStats {
     /** Documents that reached COMPLETED status (fully signed + delivered). */
     private long esignCompleted;
 
+    /** Number of LINK_OPENED audit events — proxy for how many clients viewed the signing link. */
+    private long esignViewed;
+
     /** Documents in PENDING/IN_REVIEW but past their signing token expiry. */
     private long esignOverdue;
 

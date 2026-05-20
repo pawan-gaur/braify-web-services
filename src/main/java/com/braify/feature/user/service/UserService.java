@@ -14,6 +14,7 @@ import com.braify.feature.session.service.SessionService;
 import com.braify.feature.user.repository.AppUserRepository;
 import com.braify.shared.Feature;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
@@ -21,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class UserService {
@@ -74,7 +76,9 @@ public class UserService {
     }
 
     public UserResponse create(UserRequest req, AppUser currentUser) {
+        log.info("Creating user email='{}' role='{}' by '{}'", req.getEmail(), req.getRole(), currentUser.getEmail());
         if (userRepository.findByEmail(req.getEmail()).isPresent()) {
+            log.warn("User creation rejected — email already registered: '{}'", req.getEmail());
             throw new RuntimeException("Email already registered: " + req.getEmail());
         }
 
@@ -82,6 +86,7 @@ public class UserService {
 
         // Only PLATFORM_ADMIN can create PLATFORM_ADMIN users
         if (role == AppUser.Role.PLATFORM_ADMIN && currentUser.getRole() != AppUser.Role.PLATFORM_ADMIN) {
+            log.warn("User creation rejected — insufficient permissions for caller='{}' to create PLATFORM_ADMIN", currentUser.getEmail());
             throw new RuntimeException("Insufficient permissions to create a Platform Admin");
         }
 
@@ -117,6 +122,8 @@ public class UserService {
                 AuditLog.Action.CREATED, AuditLog.ResourceType.USER,
                 0, null, currentUser.getEmail(), user.getOrganizationId());
 
+        log.info("User created: id='{}' email='{}' org='{}'", user.getId(), user.getEmail(), user.getOrganizationId());
+
         // Send invite email asynchronously (fire-and-forget; errors are logged)
         if (sendInvite) {
             emailInviteService.sendInvite(user);
@@ -126,6 +133,7 @@ public class UserService {
     }
 
     public UserResponse update(String id, UserRequest req, AppUser currentUser) {
+        log.info("Updating user id='{}' by '{}'", id, currentUser.getEmail());
         AppUser user = userRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("User not found"));
         assertSameOrg(currentUser, user.getOrganizationId());
@@ -142,10 +150,12 @@ public class UserService {
                 AuditLog.Action.UPDATED, AuditLog.ResourceType.USER,
                 0, null, currentUser.getEmail(), user.getOrganizationId());
 
+        log.info("User '{}' updated", id);
         return response;
     }
 
     public void deactivate(String id, AppUser currentUser) {
+        log.info("Deactivating user id='{}' by '{}'", id, currentUser.getEmail());
         AppUser user = userRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("User not found"));
         assertSameOrg(currentUser, user.getOrganizationId());
@@ -161,9 +171,11 @@ public class UserService {
                 user.getId(), user.getEmail(),
                 AuditLog.Action.DEACTIVATED, AuditLog.ResourceType.USER,
                 0, null, currentUser.getEmail(), user.getOrganizationId());
+        log.info("User '{}' deactivated", id);
     }
 
     public void enable(String id, AppUser currentUser) {
+        log.info("Enabling user id='{}' by '{}'", id, currentUser.getEmail());
         AppUser user = userRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("User not found"));
         assertSameOrg(currentUser, user.getOrganizationId());
@@ -176,6 +188,7 @@ public class UserService {
                 user.getId(), user.getEmail(),
                 AuditLog.Action.ACTIVATED, AuditLog.ResourceType.USER,
                 0, null, currentUser.getEmail(), user.getOrganizationId());
+        log.info("User '{}' enabled", id);
     }
 
     /**

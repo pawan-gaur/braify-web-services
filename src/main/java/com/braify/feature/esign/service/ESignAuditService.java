@@ -3,12 +3,14 @@ package com.braify.feature.esign.service;
 import com.braify.feature.esign.model.ESignAuditEvent;
 import com.braify.feature.esign.repository.ESignAuditEventRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.Map;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class ESignAuditService {
@@ -34,7 +36,9 @@ public class ESignAuditService {
                 .userAgent(userAgent)
                 .metadata(metadata)
                 .build();
-        return auditRepo.save(entry);
+        ESignAuditEvent saved = auditRepo.save(entry);
+        log.debug("ESign audit: event={} document='{}' actor='{}'", event, documentId, actor);
+        return saved;
     }
 
     /** Convenience overload — no metadata. */

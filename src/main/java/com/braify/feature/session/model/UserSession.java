@@ -24,7 +24,13 @@ public class UserSession {
     @Indexed
     private String userId;
 
-    /** JWT ID claim — unique per token */
+    /**
+     * JWT ID claim — unique per token.
+     *
+     * Indexed because {@code findByJtiAndActiveTrue(jti)} is called on EVERY
+     * authenticated request; a collection scan here would degrade every API call.
+     */
+    @Indexed(unique = true)
     private String jti;
 
     /** Org the user belongs to — used for role-scoped session listing */

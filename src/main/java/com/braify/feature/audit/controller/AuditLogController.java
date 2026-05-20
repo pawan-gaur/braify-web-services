@@ -5,6 +5,7 @@ import com.braify.feature.audit.model.AuditLog;
 import com.braify.security.UserDetailsImpl;
 import com.braify.feature.audit.service.AuditLogService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpHeaders;
@@ -17,6 +18,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
+@Slf4j
 @RestController
 @RequestMapping("/api/audit-logs")
 @RequiredArgsConstructor
@@ -59,6 +61,7 @@ public class AuditLogController {
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime to,
             Authentication auth) {
 
+        log.debug("GET /api/audit-logs page={} size={} resourceType={} orgId={}", page, size, resourceType, orgId);
         return auditLogService.getAll(page, size, resourceType, orgId,
                 action, performedBy, from, to, currentUser(auth));
     }
@@ -71,6 +74,7 @@ public class AuditLogController {
      */
     @GetMapping("/resource/{resourceId}")
     public List<AuditLog> getForResource(@PathVariable String resourceId) {
+        log.debug("GET /api/audit-logs/resource/{}", resourceId);
         return auditLogService.getForResource(resourceId);
     }
 
@@ -87,6 +91,7 @@ public class AuditLogController {
     public Map<String, Long> getStats(
             @RequestParam(required = false) String orgId,
             Authentication auth) {
+        log.debug("GET /api/audit-logs/stats orgId={}", orgId);
         return auditLogService.getStats(currentUser(auth), orgId);
     }
 
@@ -111,6 +116,7 @@ public class AuditLogController {
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime to,
             Authentication auth) {
 
+        log.info("GET /api/audit-logs/export resourceType={} orgId={}", resourceType, orgId);
         byte[] csv = auditLogService.exportCsv(
                 resourceType, orgId, action, performedBy, from, to, currentUser(auth));
 

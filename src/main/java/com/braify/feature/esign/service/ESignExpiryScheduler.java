@@ -34,12 +34,11 @@ public class ESignExpiryScheduler {
             log.info("[ESignExpiry] Revoked {} stale signing tokens", revokedTokens);
 
         // 2. Mark documents as EXPIRED
-        List<ESignDocument> toExpire = docRepo.findAll().stream()
-                .filter(d -> (d.getStatus() == ESignDocument.Status.PENDING ||
-                              d.getStatus() == ESignDocument.Status.IN_REVIEW)
-                          && d.getTokenExpiresAt() != null
-                          && d.getTokenExpiresAt().isBefore(LocalDateTime.now()))
-                .toList();
+        // Use a targeted query instead of findAll() — the previous findAll() loaded
+        // every document including embedded PDF byte arrays into JVM heap on every tick.
+        List<ESignDocument> toExpire = docRepo.findByStatusInAndTokenExpiresAtBefore(
+                List.of(ESignDocument.Status.PENDING, ESignDocument.Status.IN_REVIEW),
+                LocalDateTime.now());
 
         toExpire.forEach(doc -> {
             doc.setStatus(ESignDocument.Status.EXPIRED);

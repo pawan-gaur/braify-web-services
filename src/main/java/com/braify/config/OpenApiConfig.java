@@ -62,8 +62,8 @@ public class OpenApiConfig {
     // ── Organization API group ────────────────────────────────────────────────
     //
     // Exposes:  GET /v3/api-docs/organizations
-    // Covers: OrganizationController, OrgBrandingController, QuotaController,
-    //         TemplateSharingController
+    // Covers: OrganizationController, OrgBrandingController (Organisation Settings),
+    //         QuotaController, TemplateSharingController
 
     @Bean
     public GroupedOpenApi organizationsGroup() {
@@ -116,6 +116,24 @@ public class OpenApiConfig {
                 .group("esign")
                 .displayName("E-Sign")
                 .pathsToMatch("/api/esign/**")
+                .build();
+    }
+
+    // ── File Storage group ────────────────────────────────────────────────────
+    //
+    // Exposes:  GET /v3/api-docs/file-storage
+    // Covers: FileController (JWT) + FileApiController (API key)
+
+    @Bean
+    public GroupedOpenApi fileStorageGroup() {
+        return GroupedOpenApi.builder()
+                .group("file-storage")
+                .displayName("File Storage")
+                .pathsToMatch(
+                        "/api/organizations/*/files/**",
+                        "/api/external/files/**",
+                        "/api/admin/files/**"
+                )
                 .build();
     }
 

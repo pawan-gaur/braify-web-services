@@ -7,6 +7,7 @@ import com.braify.security.UserDetailsImpl;
 import com.braify.feature.session.service.SessionService;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
 
+@Slf4j
 @RestController
 @RequestMapping("/api/sessions")
 @RequiredArgsConstructor
@@ -45,6 +47,7 @@ public class SessionController {
      */
     @GetMapping
     public List<SessionResponse> list(Authentication auth, HttpServletRequest request) {
+        log.debug("GET /api/sessions caller='{}'", currentUser(auth).getEmail());
         return sessionService.listSessions(currentUser(auth), currentJti(request));
     }
 
@@ -58,7 +61,9 @@ public class SessionController {
     public ResponseEntity<Void> revoke(@PathVariable String id,
                                        Authentication auth,
                                        HttpServletRequest request) {
+        log.info("DELETE /api/sessions/{} by '{}'", id, currentUser(auth).getEmail());
         sessionService.revokeSession(id, currentUser(auth), currentJti(request));
+        log.info("Session '{}' revoked", id);
         return ResponseEntity.noContent().build();
     }
 
@@ -71,7 +76,9 @@ public class SessionController {
     @DeleteMapping("/me/others")
     public ResponseEntity<Map<String, Integer>> revokeOthers(Authentication auth,
                                                               HttpServletRequest request) {
+        log.info("DELETE /api/sessions/me/others by '{}'", currentUser(auth).getEmail());
         int count = sessionService.revokeAllMyOtherSessions(currentUser(auth), currentJti(request));
+        log.info("Revoked {} other session(s) for user '{}'", count, currentUser(auth).getEmail());
         return ResponseEntity.ok(Map.of("revoked", count));
     }
 }

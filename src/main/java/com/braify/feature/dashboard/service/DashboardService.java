@@ -10,10 +10,13 @@ import com.braify.feature.user.repository.AppUserRepository;
 import com.braify.feature.pdf.repository.TemplateRepository;
 import com.braify.feature.email.repository.EmailTemplateRepository;
 import com.braify.feature.audit.repository.AuditLogRepository;
+import com.braify.feature.esign.model.ESignAuditEvent;
+import com.braify.feature.esign.repository.ESignAuditEventRepository;
 import com.braify.feature.esign.repository.ESignDocumentRepository;
 import com.braify.feature.onboarding.model.OnboardingRequest;
 import com.braify.feature.onboarding.repository.OnboardingRequestRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -23,6 +26,7 @@ import java.time.format.TextStyle;
 import java.util.*;
 import java.util.stream.Collectors;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class DashboardService {
@@ -33,6 +37,7 @@ public class DashboardService {
     private final EmailTemplateRepository     emailTemplateRepo;
     private final AuditLogRepository          auditLogRepo;
     private final ESignDocumentRepository     esignRepo;
+    private final ESignAuditEventRepository   auditEventRepo;
     private final OnboardingRequestRepository onboardingRepo;
 
     private static final int MONTHS = 6;
@@ -40,6 +45,7 @@ public class DashboardService {
             List.of(ESignDocument.Status.PENDING, ESignDocument.Status.IN_REVIEW);
 
     public DashboardStats stats(AppUser caller) {
+        log.debug("Building dashboard stats for user='{}' role={}", caller.getEmail(), caller.getRole());
         boolean isPlatformAdmin = caller.getRole() == AppUser.Role.PLATFORM_ADMIN;
         String  orgId           = caller.getOrganizationId();
 
@@ -66,6 +72,7 @@ public class DashboardService {
                 .esignDraft         (esignByStatus(isPlatformAdmin, orgId, ESignDocument.Status.DRAFT))
                 .esignPending       (esignPending(isPlatformAdmin, orgId))
                 .esignCompleted     (esignByStatus(isPlatformAdmin, orgId, ESignDocument.Status.COMPLETED))
+                .esignViewed        (esignViewed(isPlatformAdmin, orgId))
                 .esignOverdue       (esignOverdue(isPlatformAdmin, orgId))
                 .esignCancelled     (esignByStatus(isPlatformAdmin, orgId, ESignDocument.Status.CANCELLED))
                 .esignExpired       (esignByStatus(isPlatformAdmin, orgId, ESignDocument.Status.EXPIRED))
@@ -156,6 +163,17 @@ public class DashboardService {
                 .boxed()
                 .findFirst()
                 .orElse(null);
+    }
+
+    private long esignViewed(boolean admin, String orgId) {
+        if (admin) {
+            return auditEventRepo.countByEvent(ESignAuditEvent.EventType.LINK_OPENED);
+        }
+        List<String> docIds = esignRepo.findByOrgIdOrderByCreatedAtDesc(orgId).stream()
+                .map(ESignDocument::getId)
+                .collect(Collectors.toList());
+        if (docIds.isEmpty()) return 0L;
+        return auditEventRepo.countByEventAndDocumentIdIn(ESignAuditEvent.EventType.LINK_OPENED, docIds);
     }
 
     private Double esignDeclineRate(boolean admin, String orgId) {

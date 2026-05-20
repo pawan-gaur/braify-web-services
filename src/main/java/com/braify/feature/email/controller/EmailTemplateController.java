@@ -12,13 +12,16 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
+@Slf4j
 @Tag(name = "Email Templates", description = "CRUD, version history, and email dispatch for HTML email templates. Emails are sent via the Resend API. Templates support placeholder substitution using {{variable}} syntax.")
 @RestController
 @RequestMapping("/api/email-templates")
@@ -39,6 +42,7 @@ public class EmailTemplateController {
     @ApiResponse(responseCode = "200", description = "List of email templates")
     @GetMapping
     public List<EmailTemplate> getAll(Authentication auth) {
+        log.debug("GET /api/email-templates caller='{}'", getUser(auth).getEmail());
         return emailTemplateService.findAll(getUser(auth));
     }
 
@@ -48,6 +52,7 @@ public class EmailTemplateController {
     @GetMapping("/{id}")
     public EmailTemplate getById(@Parameter(description = "Template ID") @PathVariable String id,
                                  Authentication auth) {
+        log.debug("GET /api/email-templates/{}", id);
         return emailTemplateService.findById(id, getUser(auth));
     }
 
@@ -55,9 +60,12 @@ public class EmailTemplateController {
                description = "Creates a new email template. Body fields: `name`, `subject`, `previewText`, `fromName`, `htmlContent`, `cssContent`, `gjsData` (GrapesJS JSON), `placeholders` (list of variable names).")
     @ApiResponse(responseCode = "200", description = "Email template created")
     @PostMapping
-    public ResponseEntity<EmailTemplate> create(@RequestBody EmailTemplate template,
+    public ResponseEntity<EmailTemplate> create(@Valid @RequestBody EmailTemplate template,
                                                 Authentication auth) {
-        return ResponseEntity.ok(emailTemplateService.create(template, getUser(auth)));
+        log.info("POST /api/email-templates name='{}' by '{}'", template.getName(), getUser(auth).getEmail());
+        ResponseEntity<EmailTemplate> result = ResponseEntity.ok(emailTemplateService.create(template, getUser(auth)));
+        log.info("Email template created: id='{}'", result.getBody() != null ? result.getBody().getId() : "unknown");
+        return result;
     }
 
     @Operation(summary = "Update email template",
@@ -65,9 +73,12 @@ public class EmailTemplateController {
     @ApiResponse(responseCode = "200", description = "Email template updated")
     @PutMapping("/{id}")
     public ResponseEntity<EmailTemplate> update(@Parameter(description = "Template ID") @PathVariable String id,
-                                                @RequestBody EmailTemplate template,
+                                                @Valid @RequestBody EmailTemplate template,
                                                 Authentication auth) {
-        return ResponseEntity.ok(emailTemplateService.update(id, template, getUser(auth)));
+        log.info("PUT /api/email-templates/{} by '{}'", id, getUser(auth).getEmail());
+        ResponseEntity<EmailTemplate> result = ResponseEntity.ok(emailTemplateService.update(id, template, getUser(auth)));
+        log.info("Email template updated: id='{}'", id);
+        return result;
     }
 
     @Operation(summary = "Soft-delete email template",
@@ -76,7 +87,9 @@ public class EmailTemplateController {
     @DeleteMapping("/{id}")
     public ResponseEntity<Void> delete(@Parameter(description = "Template ID") @PathVariable String id,
                                        Authentication auth) {
+        log.info("DELETE /api/email-templates/{} by '{}'", id, getUser(auth).getEmail());
         emailTemplateService.delete(id, getUser(auth));
+        log.info("Email template deleted: id='{}'", id);
         return ResponseEntity.noContent().build();
     }
 
@@ -90,9 +103,12 @@ public class EmailTemplateController {
     @ApiResponse(responseCode = "400", description = "Missing required fields or Resend error")
     @PostMapping("/{id}/send")
     public ResponseEntity<SendEmailResponse> send(@Parameter(description = "Template ID") @PathVariable String id,
-                                                  @RequestBody SendEmailRequest req,
+                                                  @Valid @RequestBody SendEmailRequest req,
                                                   Authentication auth) {
-        return ResponseEntity.ok(emailTemplateService.sendEmail(id, req, getUser(auth)));
+        log.info("POST /api/email-templates/{}/send to='{}' by '{}'", id, req.getTo(), getUser(auth).getEmail());
+        ResponseEntity<SendEmailResponse> result = ResponseEntity.ok(emailTemplateService.sendEmail(id, req, getUser(auth)));
+        log.info("Email sent via template '{}' to '{}'", id, req.getTo());
+        return result;
     }
 
     // ── Version history ───────────────────────────────────────────────────────
@@ -101,6 +117,7 @@ public class EmailTemplateController {
                description = "Returns all saved snapshots, newest first.")
     @GetMapping("/{id}/versions")
     public List<EmailTemplateVersion> getVersions(@Parameter(description = "Template ID") @PathVariable String id) {
+        log.debug("GET /api/email-templates/{}/versions", id);
         return versionService.getVersions(id);
     }
 
@@ -118,6 +135,9 @@ public class EmailTemplateController {
     public ResponseEntity<EmailTemplate> restoreVersion(@Parameter(description = "Template ID") @PathVariable String id,
                                                         @Parameter(description = "Version to restore") @PathVariable int version,
                                                         Authentication auth) {
-        return ResponseEntity.ok(emailTemplateService.restoreVersion(id, version, getUser(auth)));
+        log.info("POST /api/email-templates/{}/versions/{}/restore by '{}'", id, version, getUser(auth).getEmail());
+        ResponseEntity<EmailTemplate> result = ResponseEntity.ok(emailTemplateService.restoreVersion(id, version, getUser(auth)));
+        log.info("Email template '{}' restored to version {}", id, version);
+        return result;
     }
 }

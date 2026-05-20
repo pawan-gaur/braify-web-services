@@ -4,10 +4,12 @@ import com.braify.feature.email.model.EmailTemplate;
 import com.braify.feature.email.model.EmailTemplateVersion;
 import com.braify.feature.email.repository.EmailTemplateVersionRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class EmailTemplateVersionService {
@@ -36,18 +38,24 @@ public class EmailTemplateVersionService {
 
         EmailTemplateVersion saved = versionRepository.save(v);
         template.setCurrentVersion(nextVersion);
+        log.debug("Email template '{}' snapshot saved as version {}", template.getId(), nextVersion);
         return saved;
     }
 
     /** All versions for an email template, newest first. */
     public List<EmailTemplateVersion> getVersions(String emailTemplateId) {
+        log.debug("getVersions emailTemplateId='{}'", emailTemplateId);
         return versionRepository.findByEmailTemplateIdOrderByVersionDesc(emailTemplateId);
     }
 
     public EmailTemplateVersion getVersion(String emailTemplateId, int version) {
+        log.debug("getVersion emailTemplateId='{}' version={}", emailTemplateId, version);
         return versionRepository
                 .findByEmailTemplateIdAndVersion(emailTemplateId, version)
-                .orElseThrow(() -> new RuntimeException(
-                        "Email template version " + version + " not found for " + emailTemplateId));
+                .orElseThrow(() -> {
+                    log.warn("Email template version {} not found for id='{}'", version, emailTemplateId);
+                    return new RuntimeException(
+                            "Email template version " + version + " not found for " + emailTemplateId);
+                });
     }
 }

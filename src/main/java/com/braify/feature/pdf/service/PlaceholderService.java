@@ -1,5 +1,6 @@
 package com.braify.feature.pdf.service;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -8,6 +9,7 @@ import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+@Slf4j
 @Service
 public class PlaceholderService {
 
@@ -19,6 +21,7 @@ public class PlaceholderService {
      */
     public String replacePlaceholders(String html, Map<String, Object> data) {
         if (html == null || data == null) return html;
+        log.debug("replacePlaceholders: dataKeys={}", data.keySet());
 
         StringBuffer result = new StringBuffer();
         Matcher matcher = PLACEHOLDER_PATTERN.matcher(html);
@@ -37,6 +40,7 @@ public class PlaceholderService {
     public List<String> extractPlaceholders(String html) {
         List<String> found = new ArrayList<>();
         if (html == null) return found;
+        log.debug("extractPlaceholders: scanning HTML for {{...}} tokens");
 
         Matcher matcher = PLACEHOLDER_PATTERN.matcher(html);
         while (matcher.find()) {
@@ -45,6 +49,7 @@ public class PlaceholderService {
                 found.add(path);
             }
         }
+        log.debug("extractPlaceholders: found {} placeholder(s): {}", found.size(), found);
         return found;
     }
 

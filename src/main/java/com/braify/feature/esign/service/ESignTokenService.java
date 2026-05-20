@@ -5,6 +5,7 @@ import com.braify.feature.esign.model.ESignSigningToken;
 import com.braify.feature.esign.repository.ESignSigningTokenRepository;
 import com.braify.security.JwtUtil;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -12,6 +13,7 @@ import java.time.ZoneId;
 import java.util.Date;
 import java.util.Optional;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class ESignTokenService {
@@ -24,9 +26,11 @@ public class ESignTokenService {
      * Revokes any previously active token for the same document.
      */
     public String issueSigningToken(ESignDocument doc, int validDays) {
+        log.info("Issuing signing token for document='{}' validDays={}", doc.getId(), validDays);
         // Revoke previous active token if any
         tokenRepo.findByDocumentIdAndUsedFalseAndRevokedAtIsNull(doc.getId())
                  .ifPresent(t -> {
+                     log.debug("Revoking previous active token jti='{}' for document='{}'", t.getJti(), doc.getId());
                      t.setRevokedAt(LocalDateTime.now());
                      tokenRepo.save(t);
                  });
@@ -46,6 +50,7 @@ public class ESignTokenService {
                 .build();
         tokenRepo.save(record);
 
+        log.debug("Signing token issued jti='{}' for document='{}' expires={}", jti, doc.getId(), expiresAt);
         return jwt;
     }
 
@@ -56,13 +61,17 @@ public class ESignTokenService {
      */
     public Optional<ESignSigningToken> validateSigningToken(String jwt) {
         try {
-            if (!jwtUtil.isValidSigningToken(jwt)) return Optional.empty();
+            if (!jwtUtil.isValidSigningToken(jwt)) {
+                log.warn("Signing token validation failed: invalid or expired JWT");
+                return Optional.empty();
+            }
 
             String jti = jwtUtil.extractJti(jwt);
             return tokenRepo.findByJti(jti)
                     .filter(t -> !t.isUsed() && t.getRevokedAt() == null
                                  && t.getExpiresAt().isAfter(LocalDateTime.now()));
         } catch (Exception e) {
+            log.warn("Signing token validation exception: {}", e.getMessage());
             return Optional.empty();
         }
     }
@@ -73,6 +82,7 @@ public class ESignTokenService {
             t.setUsed(true);
             t.setUsedAt(LocalDateTime.now());
             tokenRepo.save(t);
+            log.info("Signing token jti='{}' marked as used", jti);
         });
     }
 
@@ -88,6 +98,9 @@ public class ESignTokenService {
             t.setRevokedAt(LocalDateTime.now());
             tokenRepo.save(t);
         });
+        if (!stale.isEmpty()) {
+            log.info("Expired {} stale signing token(s)", stale.size());
+        }
         return stale.size();
     }
 }

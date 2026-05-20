@@ -13,7 +13,9 @@ import com.braify.feature.auth.service.AuthService;
 import com.braify.feature.auth.service.EmailInviteService;
 import com.braify.feature.user.service.UserService;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -22,6 +24,7 @@ import org.springframework.web.bind.annotation.*;
 import java.time.LocalDateTime;
 import java.util.Map;
 
+@Slf4j
 @RestController
 @RequestMapping("/api/auth")
 @RequiredArgsConstructor
@@ -36,8 +39,9 @@ public class AuthController {
     private final UserService userService;
 
     @PostMapping("/login")
-    public ResponseEntity<LoginResponse> login(@RequestBody LoginRequest req,
+    public ResponseEntity<LoginResponse> login(@Valid @RequestBody LoginRequest req,
                                                HttpServletRequest httpReq) {
+        log.info("POST /api/auth/login email='{}'", req.getEmail());
         String ip = extractClientIp(httpReq);
         return ResponseEntity.ok(authService.login(req, ip));
     }
@@ -64,16 +68,19 @@ public class AuthController {
 
     @PostMapping("/logout")
     public ResponseEntity<Void> logout(@RequestHeader("Authorization") String authHeader) {
+        log.info("POST /api/auth/logout");
         if (authHeader != null && authHeader.startsWith("Bearer ")) {
             String jti = jwtUtil.extractJti(authHeader.substring(7));
             authService.logout(jti);
         }
+        log.info("Logout successful");
         return ResponseEntity.noContent().build();
     }
 
     /** Returns the current user's full profile. */
     @GetMapping("/me")
     public ResponseEntity<UserResponse> me(Authentication auth) {
+        log.debug("GET /api/auth/me");
         UserDetailsImpl ud = (UserDetailsImpl) auth.getPrincipal();
         return ResponseEntity.ok(userService.toResponse(ud.getAppUser()));
     }
@@ -86,6 +93,7 @@ public class AuthController {
      */
     @GetMapping("/validate-token")
     public ResponseEntity<Map<String, Object>> validateToken(@RequestParam String token) {
+        log.info("GET /api/auth/validate-token");
         InvitationToken it = tokenRepository.findByTokenAndUsedFalse(token)
                 .orElseThrow(() -> new RuntimeException("Invalid or expired token"));
         if (it.getExpiresAt().isBefore(LocalDateTime.now())) {
@@ -106,9 +114,11 @@ public class AuthController {
      */
     @PostMapping("/accept-invite")
     public ResponseEntity<Map<String, String>> acceptInvite(@RequestBody Map<String, String> body) {
+        log.info("POST /api/auth/accept-invite");
         String rawToken = body.get("token");
         String newPassword = body.get("password");
         if (rawToken == null || newPassword == null || newPassword.length() < 6) {
+            log.warn("Accept-invite validation failed: token or password missing/invalid");
             throw new RuntimeException("Token and a password of at least 6 characters are required");
         }
 
@@ -131,6 +141,7 @@ public class AuthController {
         it.setUsedAt(LocalDateTime.now());
         tokenRepository.save(it);
 
+        log.info("Invite accepted for user '{}'", user.getEmail());
         return ResponseEntity.ok(Map.of("message", "Password set successfully. You can now log in."));
     }
 
@@ -141,6 +152,7 @@ public class AuthController {
      */
     @PostMapping("/forgot-password")
     public ResponseEntity<Map<String, String>> forgotPassword(@RequestBody Map<String, String> body) {
+        log.info("POST /api/auth/forgot-password");
         String email = body.get("email");
         userRepository.findByEmail(email).ifPresent(user -> {
             if (user.isActive()) {
@@ -157,9 +169,11 @@ public class AuthController {
      */
     @PostMapping("/reset-password")
     public ResponseEntity<Map<String, String>> resetPassword(@RequestBody Map<String, String> body) {
+        log.info("POST /api/auth/reset-password");
         String rawToken = body.get("token");
         String newPassword = body.get("password");
         if (rawToken == null || newPassword == null || newPassword.length() < 6) {
+            log.warn("Reset-password validation failed: token or password missing/invalid");
             throw new RuntimeException("Token and a password of at least 6 characters are required");
         }
 
@@ -182,6 +196,7 @@ public class AuthController {
         it.setUsedAt(LocalDateTime.now());
         tokenRepository.save(it);
 
+        log.info("Password reset completed for user '{}'", user.getEmail());
         return ResponseEntity.ok(Map.of("message", "Password reset successfully. You can now log in."));
     }
 }

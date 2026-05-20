@@ -14,4 +14,7 @@ public interface OrgUsageRepository extends MongoRepository<OrgUsage, String> {
     Optional<OrgUsage> findByOrganizationIdAndYearAndMonth(String organizationId, int year, int month);
 
     List<OrgUsage> findByOrganizationIdOrderByYearDescMonthDesc(String organizationId, Pageable pageable);
+
+    /** Deletes records older than the given year/month boundary (for archival/purge). */
+    long deleteByYearLessThanOrYearEqualsAndMonthLessThan(int year, int yearEq, int month);
 }

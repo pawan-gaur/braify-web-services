@@ -58,7 +58,9 @@ public class EmailInviteService {
         String body    = buildInviteEmail(user.getFirstName(), link);
 
         trySend(user.getEmail(), subject, body);
-        log.info("=== INVITE LINK (also sent by email) ===\n{}\n=================", link);
+        // DEBUG only — invite tokens grant password-setting capability and must not
+        // appear in production log aggregators (Splunk, CloudWatch, Datadog, etc.)
+        log.debug("Invite link generated for {} (also sent by email): {}", user.getEmail(), link);
     }
 
     /**
@@ -86,7 +88,8 @@ public class EmailInviteService {
         String body    = buildResetEmail(user.getFirstName(), link);
 
         trySend(user.getEmail(), subject, body);
-        log.info("=== PASSWORD RESET LINK (also sent by email) ===\n{}\n=================", link);
+        // DEBUG only — reset tokens grant unauthenticated password-change capability
+        log.debug("Password-reset link generated for {} (also sent by email): {}", user.getEmail(), link);
     }
 
     /* ── Private helpers ─────────────────────────────────────────────────── */

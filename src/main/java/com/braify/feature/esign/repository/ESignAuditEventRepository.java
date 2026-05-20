@@ -11,4 +11,10 @@ public interface ESignAuditEventRepository extends MongoRepository<ESignAuditEve
 
     /** Returns the complete audit trail for a document, oldest first. */
     List<ESignAuditEvent> findByDocumentIdOrderByTimestampAsc(String documentId);
+
+    /** Counts all events of a given type across all documents (PLATFORM_ADMIN). */
+    long countByEvent(ESignAuditEvent.EventType event);
+
+    /** Counts events of a given type scoped to a set of document IDs (org-scoped). */
+    long countByEventAndDocumentIdIn(ESignAuditEvent.EventType event, List<String> documentIds);
 }

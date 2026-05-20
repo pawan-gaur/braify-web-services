@@ -4,10 +4,12 @@ import com.braify.feature.pdf.model.Template;
 import com.braify.feature.pdf.model.TemplateVersion;
 import com.braify.feature.pdf.repository.TemplateVersionRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class TemplateVersionService {
@@ -44,11 +46,13 @@ public class TemplateVersionService {
 
         // Keep currentVersion in sync on the template itself
         template.setCurrentVersion(nextVersion);
+        log.debug("Template '{}' snapshot saved as version {}", template.getId(), nextVersion);
         return saved;
     }
 
     /** List all versions for a template, newest first. */
     public List<TemplateVersion> getVersions(String templateId) {
+        log.debug("getVersions templateId='{}'", templateId);
         return versionRepository.findByTemplateIdOrderByVersionDesc(templateId);
     }
 
@@ -58,9 +62,13 @@ public class TemplateVersionService {
      * @throws RuntimeException if not found
      */
     public TemplateVersion getVersion(String templateId, int version) {
+        log.debug("getVersion templateId='{}' version={}", templateId, version);
         return versionRepository
                 .findByTemplateIdAndVersion(templateId, version)
-                .orElseThrow(() -> new RuntimeException(
-                        "Version " + version + " not found for template " + templateId));
+                .orElseThrow(() -> {
+                    log.warn("Template version {} not found for id='{}'", version, templateId);
+                    return new RuntimeException(
+                            "Version " + version + " not found for template " + templateId);
+                });
     }
 }

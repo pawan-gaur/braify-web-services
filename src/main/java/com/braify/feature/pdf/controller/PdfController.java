@@ -12,6 +12,7 @@ import com.braify.feature.pdf.service.TemplateService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
@@ -51,8 +52,9 @@ public class PdfController {
     @ApiResponse(responseCode = "200", description = "PDF binary (application/pdf)")
     @ApiResponse(responseCode = "429", description = "Monthly document quota exceeded")
     @PostMapping("/generate-pdf")
-    public ResponseEntity<byte[]> generatePdf(@RequestBody PdfRequest request,
+    public ResponseEntity<byte[]> generatePdf(@Valid @RequestBody PdfRequest request,
                                                Authentication auth) throws Exception {
+        log.info("POST /api/generate-pdf templateId='{}' by '{}'", request.getTemplateId(), getUser(auth).getEmail());
         Template    template = templateService.findById(request.getTemplateId(), getUser(auth));
         OrgBranding branding = resolveBranding(template.getOrganizationId());
         byte[]      pdfBytes = pdfGenerationService.generate(template, request.getData(), branding);
@@ -61,6 +63,7 @@ public class PdfController {
                 ? request.getFilename()
                 : template.getName().replaceAll("[^a-zA-Z0-9_-]", "_") + ".pdf";
 
+        log.info("PDF generated for template '{}' ({} bytes)", request.getTemplateId(), pdfBytes.length);
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
                 .contentType(MediaType.APPLICATION_PDF)
@@ -73,8 +76,9 @@ public class PdfController {
                              "Body: `{ templateId, data: { key: value, … } }`")
     @ApiResponse(responseCode = "200", description = "PDF binary inline (application/pdf)")
     @PostMapping("/preview-pdf")
-    public ResponseEntity<byte[]> previewPdf(@RequestBody PdfRequest request,
+    public ResponseEntity<byte[]> previewPdf(@Valid @RequestBody PdfRequest request,
                                               Authentication auth) throws Exception {
+        log.debug("POST /api/preview-pdf templateId='{}'", request.getTemplateId());
         Template    template = templateService.findById(request.getTemplateId(), getUser(auth));
         OrgBranding branding = resolveBranding(template.getOrganizationId());
         byte[]      pdfBytes = pdfGenerationService.generate(template, request.getData(), branding);

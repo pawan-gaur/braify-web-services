@@ -1,11 +1,14 @@
 package com.braify.security;
 
+import com.braify.config.RequestLoggingFilter;
+import com.braify.feature.session.model.UserSession;
 import com.braify.feature.session.repository.UserSessionRepository;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
@@ -15,7 +18,25 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
 import java.time.LocalDateTime;
+import java.util.Optional;
 
+/**
+ * Validates JWT Bearer tokens on every request and populates the SecurityContext.
+ *
+ * <h3>Performance fixes</h3>
+ * <ul>
+ *   <li>Single repository call per request — the previous code called
+ *       {@code findByJtiAndActiveTrue} <em>twice</em>; we now reuse the result.</li>
+ *   <li>{@code lastUsedAt} is still updated synchronously (single save); a future
+ *       optimisation could batch this with {@code @Async}.</li>
+ * </ul>
+ *
+ * <h3>Observability</h3>
+ * Sets the {@link RequestLoggingFilter#CALLER_ATTR} request attribute so
+ * {@link RequestLoggingFilter} can log the authenticated user's e-mail even after
+ * Spring Security has cleared the SecurityContext.
+ */
+@Slf4j
 @Component
 @RequiredArgsConstructor
 public class JwtAuthFilter extends OncePerRequestFilter {
@@ -36,30 +57,39 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
         String token = header.substring(7);
         try {
-            // Skip ESIGN signing tokens — they are handled by ESignClientController directly
+            // Skip ESIGN signing tokens — handled directly by ESignClientController
             if (jwtUtil.isValidSigningToken(token)) {
                 chain.doFilter(request, response);
                 return;
             }
+
             if (jwtUtil.isValid(token)) {
                 String jti = jwtUtil.extractJti(token);
-                // Check session is still active in DB
-                if (sessionRepository.findByJtiAndActiveTrue(jti).isPresent()) {
+
+                // Single DB call — reuse the result for both auth and lastUsedAt update
+                Optional<UserSession> sessionOpt = sessionRepository.findByJtiAndActiveTrue(jti);
+                if (sessionOpt.isPresent()) {
                     String email = jwtUtil.parseToken(token).get("email", String.class);
                     UserDetails ud = userDetailsService.loadUserByUsername(email);
+
                     UsernamePasswordAuthenticationToken auth =
                             new UsernamePasswordAuthenticationToken(ud, null, ud.getAuthorities());
                     auth.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
                     SecurityContextHolder.getContext().setAuthentication(auth);
 
-                    // Update lastUsedAt (fire and forget)
-                    sessionRepository.findByJtiAndActiveTrue(jti).ifPresent(s -> {
-                        s.setLastUsedAt(LocalDateTime.now());
-                        sessionRepository.save(s);
-                    });
+                    // Expose caller identity for RequestLoggingFilter (SecurityContext is
+                    // cleared by Spring Security before the outermost filter's finally block)
+                    request.setAttribute(RequestLoggingFilter.CALLER_ATTR, email);
+
+                    // Update lastUsedAt using the session we already fetched
+                    UserSession session = sessionOpt.get();
+                    session.setLastUsedAt(LocalDateTime.now());
+                    sessionRepository.save(session);
                 }
             }
-        } catch (Exception ignored) {
+        } catch (Exception ex) {
+            // Log at DEBUG — this is expected for malformed / expired tokens
+            log.debug("JWT authentication failed for {}: {}", request.getRequestURI(), ex.getMessage());
         }
 
         chain.doFilter(request, response);

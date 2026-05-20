@@ -53,6 +53,19 @@ public interface ESignDocumentRepository extends MongoRepository<ESignDocument, 
 
     List<ESignDocument> findByStatusIn(List<ESignDocument.Status> statuses);
 
+    /**
+     * Used by {@link com.braify.feature.esign.service.ESignExpiryScheduler} to find
+     * documents that need to be expired without loading the entire collection.
+     *
+     * <p>Previously the scheduler called {@code findAll()} which loaded every document
+     * including embedded PDF byte arrays ({@code sourcePdfData}, {@code signedPdfData})
+     * into JVM heap on every hourly tick. This targeted query fetches only the matching
+     * subset.
+     */
+    List<ESignDocument> findByStatusInAndTokenExpiresAtBefore(
+            List<ESignDocument.Status> statuses,
+            java.time.LocalDateTime cutoff);
+
     // ── Completed documents (for avg signing time calculation) ────────────────
 
     List<ESignDocument> findByOrgIdAndStatus(String orgId, ESignDocument.Status status);

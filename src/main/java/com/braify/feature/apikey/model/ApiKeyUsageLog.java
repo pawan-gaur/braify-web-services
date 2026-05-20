@@ -6,6 +6,8 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.Id;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.LocalDateTime;
@@ -15,6 +17,12 @@ import java.time.LocalDateTime;
 @NoArgsConstructor
 @AllArgsConstructor
 @Document(collection = "api_key_usage_logs")
+@CompoundIndexes({
+    // Supports: countByApiKeyIdAndCalledAtAfter(), findByApiKeyId+date range
+    @CompoundIndex(name = "idx_apikey_calledat",  def = "{'apiKeyId': 1, 'calledAt': -1}"),
+    // Supports: countByOrgIdAndCalledAtAfter(), org-level usage dashboard
+    @CompoundIndex(name = "idx_org_calledat",     def = "{'orgId': 1, 'calledAt': -1}"),
+})
 public class ApiKeyUsageLog {
 
     @Id
