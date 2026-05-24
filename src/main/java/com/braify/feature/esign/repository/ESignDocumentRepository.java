@@ -1,6 +1,8 @@
 package com.braify.feature.esign.repository;
 
 import com.braify.feature.esign.model.ESignDocument;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.mongodb.repository.MongoRepository;
 import org.springframework.stereotype.Repository;
 
@@ -13,6 +15,19 @@ public interface ESignDocumentRepository extends MongoRepository<ESignDocument, 
     // ── Existing queries ───────────────────────────────────────────────────────
 
     List<ESignDocument> findByCreatedByOrderByCreatedAtDesc(String userId);
+
+    // ── Paginated single-document queries (bulkBatchId IS NULL) ───────────────
+
+    Page<ESignDocument> findByCreatedByAndBulkBatchIdIsNullOrderByCreatedAtDesc(
+            String userId, Pageable pageable);
+
+    Page<ESignDocument> findByCreatedByAndBulkBatchIdIsNullAndStatusOrderByCreatedAtDesc(
+            String userId, ESignDocument.Status status, Pageable pageable);
+
+    // ── Paginated queries for documents belonging to a batch ──────────────────
+
+    Page<ESignDocument> findByBulkBatchIdOrderByCreatedAtDesc(
+            String bulkBatchId, Pageable pageable);
 
     List<ESignDocument> findByOrgIdOrderByCreatedAtDesc(String orgId);
 

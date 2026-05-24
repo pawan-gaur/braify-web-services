@@ -17,4 +17,6 @@ public class CreateDocumentRequest {
     @NotBlank
     private String clientName;
     private int    tokenValidDays = 7;
+    /** Optional — links this document to a bulk batch created via {@code POST /api/esign/batches/init}. */
+    private String bulkBatchId;
 }

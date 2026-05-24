@@ -18,6 +18,10 @@ public class ESignDocument {
     private String orgId;
     private String title;
 
+    /* ── Bulk batch link ────────────────────────────────────────────────── */
+    /** ID of the {@link ESignBulkBatch} this document belongs to. Null for single-sign documents. */
+    @Indexed private String bulkBatchId;
+
     /* ── Source PDF ────────────────────────────────────────────────────── */
     public enum SourceType { TEMPLATE, UPLOAD }
     private SourceType sourceType;

@@ -16,6 +16,7 @@ public class DocumentResponse {
     private String clientEmail;
     private String clientName;
     private String sourceType;
+    private String bulkBatchId;
     private String sourcePdfBase64;       // null for list view; populated on detail
     private String signedPdfBase64;       // null until COMPLETED
     private String signedPdfHash;
@@ -61,6 +62,7 @@ public class DocumentResponse {
                 .clientEmail(doc.getClientEmail())
                 .clientName(doc.getClientName())
                 .sourceType(doc.getSourceType() != null ? doc.getSourceType().name() : null)
+                .bulkBatchId(doc.getBulkBatchId())
                 .sourcePdfBase64(includePdf && doc.getSourcePdfData() != null
                         ? java.util.Base64.getEncoder().encodeToString(doc.getSourcePdfData()) : null)
                 .signedPdfBase64(includePdf && doc.getSignedPdfData() != null

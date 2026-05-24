@@ -1,9 +1,13 @@
 package com.braify.feature.esign.controller;
 
+import com.braify.feature.esign.dto.BulkCreateDocumentRequest;
+import com.braify.feature.esign.dto.BulkCreateDocumentResponse;
 import com.braify.feature.esign.dto.CreateDocumentRequest;
 import com.braify.feature.esign.dto.DocumentResponse;
 import com.braify.feature.esign.dto.FieldPlacementRequest;
+import com.braify.feature.esign.dto.PageResponse;
 import com.braify.feature.esign.model.ESignAuditEvent;
+import com.braify.feature.esign.model.ESignDocument;
 import com.braify.security.UserDetailsImpl;
 import com.braify.feature.esign.service.ESignAuditService;
 import com.braify.feature.esign.service.ESignDocumentService;
@@ -21,6 +25,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
+
 
 @Slf4j
 @Tag(name = "E-Sign — Creator", description = "Authenticated creator endpoints for managing e-sign documents: create, place fields, send signing invitations, resend, cancel, view audit trail, and download the completed signed PDF. All routes require a valid user JWT.")
@@ -49,14 +54,51 @@ public class ESignCreatorController {
         return ResponseEntity.ok(doc);
     }
 
-    @Operation(summary = "List my e-sign documents",
-               description = "Returns all documents created by the authenticated user, newest first.")
-    @ApiResponse(responseCode = "200", description = "List of documents")
+    @Operation(summary = "Bulk create and send e-sign documents",
+               description = "Accepts up to 500 document creation requests and processes them sequentially. " +
+                             "Each row is independently attempted — a failure on one row does not abort the rest. " +
+                             "Set `sendImmediately: false` to create DRAFT documents only (no emails sent). " +
+                             "When `sendImmediately` is true a quota pre-flight check runs first so the whole " +
+                             "batch fails fast if the org lacks sufficient remaining quota.")
+    @ApiResponse(responseCode = "200", description = "Per-row results with aggregate counters")
+    @ApiResponse(responseCode = "400", description = "Validation error (empty list, item missing required field, etc.)")
+    @ApiResponse(responseCode = "429", description = "Quota exceeded — not enough remaining capacity for the batch")
+    @PostMapping("/bulk")
+    public ResponseEntity<BulkCreateDocumentResponse> createBulk(
+            @Valid @RequestBody BulkCreateDocumentRequest req,
+            @AuthenticationPrincipal UserDetailsImpl principal,
+            HttpServletRequest http) {
+
+        log.info("POST /api/esign/documents/bulk count={} sendImmediately={} by '{}'",
+                req.getDocuments().size(), req.isSendImmediately(), principal.getUsername());
+
+        BulkCreateDocumentResponse result = documentService.createAndSendBulk(
+                req, principal, extractIp(http), http.getHeader("User-Agent"));
+
+        log.info("Bulk e-sign done: created={} sent={} failed={}",
+                result.getTotalCreated(), result.getTotalSent(), result.getTotalFailed());
+        return ResponseEntity.ok(result);
+    }
+
+    @Operation(summary = "List my e-sign documents (paginated)",
+               description = "Returns single-sign documents created by the authenticated user (bulk-batch documents excluded), newest first. " +
+                             "Supports optional status filter and page/size controls (default page 0, size 20).")
+    @ApiResponse(responseCode = "200", description = "Paginated list of documents")
     @GetMapping
-    public ResponseEntity<List<DocumentResponse>> list(
+    public ResponseEntity<PageResponse<DocumentResponse>> list(
+            @Parameter(description = "Filter by status (optional)") @RequestParam(required = false) String status,
+            @Parameter(description = "Zero-based page index (default 0)")  @RequestParam(defaultValue = "0")  int page,
+            @Parameter(description = "Page size (default 20, max 100)")    @RequestParam(defaultValue = "20") int size,
             @AuthenticationPrincipal UserDetailsImpl principal) {
-        log.debug("GET /api/esign/documents caller='{}'", principal.getUsername());
-        return ResponseEntity.ok(documentService.listMyDocuments(principal));
+
+        ESignDocument.Status statusEnum = null;
+        if (status != null && !status.isBlank()) {
+            try { statusEnum = ESignDocument.Status.valueOf(status.toUpperCase()); }
+            catch (IllegalArgumentException e) { /* ignore unknown — return all */ }
+        }
+        log.debug("GET /api/esign/documents caller='{}' status={} page={} size={}",
+                principal.getUsername(), status, page, size);
+        return ResponseEntity.ok(documentService.listMyDocumentsPaged(principal, statusEnum, page, size));
     }
 
     @Operation(summary = "Get e-sign document detail",

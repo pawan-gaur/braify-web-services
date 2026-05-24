@@ -115,6 +115,36 @@ public class QuotaService {
     }
 
     /**
+     * Pre-flight check for bulk e-sign operations: verifies that the org has
+     * enough remaining quota for {@code count} additional documents WITHOUT
+     * incrementing the counter.  Call this at the start of a bulk request so
+     * the operation can fail fast — before any documents are created — rather
+     * than discovering a quota problem halfway through.
+     *
+     * <p>Note: this check is advisory (no lock is held between the check and
+     * the per-row increments), so a small over-run is theoretically possible
+     * under concurrent load.  The per-row {@link #checkAndIncrementEsign}
+     * calls remain the authoritative enforcement point.</p>
+     *
+     * @param orgId org to check
+     * @param count number of documents the caller intends to send
+     * @throws QuotaExceededException if remaining capacity is less than {@code count}
+     */
+    public void checkEsignBulkCapacity(String orgId, int count) {
+        if (orgId == null || count <= 0) return;
+        OrgQuotaConfig cfg = getConfig(orgId);
+        if (cfg.getMaxDocsPerMonth() == -1) return; // unlimited
+        OrgUsage current = getCurrentUsage(orgId);
+        long used      = current.getDocsGenerated() + current.getEsignSent();
+        long remaining = cfg.getMaxDocsPerMonth() - used;
+        if (remaining < count) {
+            throw new QuotaExceededException(
+                    "Monthly documents (bulk send — need " + count + ", have " + remaining + " remaining)",
+                    cfg.getMaxDocsPerMonth(), used);
+        }
+    }
+
+    /**
      * Atomically checks and increments the monthly e-sign send counter.
      * Call this BEFORE sending an e-sign document.
      *
