@@ -54,13 +54,29 @@ public interface AuditLogRepository extends MongoRepository<AuditLog, String> {
 
     // ── Dashboard ──────────────────────────────────────────────────────────────
 
+    /** Global top-10 — PLATFORM_ADMIN only. */
     List<AuditLog> findTop10ByOrderByTimestampDesc();
+
+    /** Org-scoped top-10 — used for non-PLATFORM_ADMIN dashboard activity feed. */
+    List<AuditLog> findTop10ByOrganizationIdOrderByTimestampDesc(String organizationId);
+
+    /**
+     * Top-10 most-recent logs where the performer is in the given email set.
+     * Used for role-scoped recent-activity on the dashboard (ORG_ADMIN / ADMIN / USER).
+     */
+    List<AuditLog> findTop10ByPerformedByInOrderByTimestampDesc(Collection<String> performerEmails);
 
     /** All logs for an org since a given timestamp — used for top-user ranking. */
     List<AuditLog> findByOrganizationIdAndTimestampAfter(String organizationId, LocalDateTime after);
 
     /** Global logs since a given timestamp — used for top-user ranking (PLATFORM_ADMIN). */
     List<AuditLog> findByTimestampAfter(LocalDateTime after);
+
+    /**
+     * Logs since a given timestamp where the performer is in the given email set.
+     * Used for role-scoped top-user ranking (ORG_ADMIN / ADMIN / USER).
+     */
+    List<AuditLog> findByPerformedByInAndTimestampAfter(Collection<String> performerEmails, LocalDateTime after);
 
     @Query("{ 'performedBy': { $in: ?0 }, 'resourceType': { $in: ?1 } }")
     List<AuditLog> findRecentByPerformersAndTypes(

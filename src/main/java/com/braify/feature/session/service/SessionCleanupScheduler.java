@@ -26,7 +26,7 @@ public class SessionCleanupScheduler {
     private int expirationHours;
 
     /** Runs once every 6 hours. */
-    @Scheduled(fixedDelay = 6 * 3_600_000L)
+    //@Scheduled(fixedDelay = 6 * 3_600_000L)
     public void purgeInactiveSessions() {
         LocalDateTime cutoff = LocalDateTime.now().minusHours(expirationHours);
         long deleted = sessionRepository.deleteByActiveFalseAndLastUsedAtBefore(cutoff);

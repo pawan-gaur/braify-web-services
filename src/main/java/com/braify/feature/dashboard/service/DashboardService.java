@@ -49,6 +49,10 @@ public class DashboardService {
         boolean isPlatformAdmin = caller.getRole() == AppUser.Role.PLATFORM_ADMIN;
         String  orgId           = caller.getOrganizationId();
 
+        // Build the performer-email scope once — reused by recentActivity + topUsers.
+        // null means PLATFORM_ADMIN: no email filter (sees all activity globally).
+        List<String> scopeEmails = buildScopeEmails(caller);
+
         // Fetch all non-deleted orgs once — shared by multiple PA computations.
         // Using the existing findByDeletedFalseOrderByNameAsc() avoids issues with
         // primitive boolean fields that may be absent in older MongoDB documents.
@@ -85,9 +89,9 @@ public class DashboardService {
                 .emailGrowth(emailMonthlyGrowth(isPlatformAdmin, orgId))
                 .userGrowth (userMonthlyGrowth(isPlatformAdmin, orgId))
 
-                // ── Activity ──────────────────────────────────────────────────
-                .recentActivity(auditLogRepo.findTop10ByOrderByTimestampDesc())
-                .topUsers      (topUsers(isPlatformAdmin, orgId))
+                // ── Activity (org-scoped — no cross-org data leakage) ────────
+                .recentActivity(recentActivity(isPlatformAdmin, orgId))
+                .topUsers      (topUsers(scopeEmails))
 
                 // ── Platform Admin extras ─────────────────────────────────────
                 .orgBreakdown          (isPlatformAdmin ? orgBreakdown(allOrgs)   : List.of())
@@ -244,14 +248,60 @@ public class DashboardService {
         return result;
     }
 
-    // ── Top users ─────────────────────────────────────────────────────────────
+    // ── Role-scoped activity helpers ──────────────────────────────────────────
 
-    private List<DashboardStats.TopUser> topUsers(boolean admin, String orgId) {
+    /**
+     * Builds the set of performer emails visible to the caller based on their role.
+     * <ul>
+     *   <li>{@code null}   → PLATFORM_ADMIN: no filter, sees all activity globally</li>
+     *   <li>email list     → ORG_ADMIN: all active users in their org</li>
+     *   <li>email list     → ADMIN: only ADMIN + USER role members in their org</li>
+     *   <li>single-element → USER: their own email only</li>
+     * </ul>
+     */
+    private List<String> buildScopeEmails(AppUser caller) {
+        return switch (caller.getRole()) {
+            case PLATFORM_ADMIN -> null;  // null = unrestricted global view
+            case ORG_ADMIN      -> userRepo.findByOrganizationIdAndActiveTrue(caller.getOrganizationId())
+                                           .stream().map(AppUser::getEmail).toList();
+            case ADMIN          -> userRepo.findByOrganizationIdAndActiveTrueAndRoleIn(
+                                           caller.getOrganizationId(),
+                                           List.of(AppUser.Role.ADMIN, AppUser.Role.USER))
+                                           .stream().map(AppUser::getEmail).toList();
+            case USER           -> List.of(caller.getEmail());
+        };
+    }
+
+    /**
+     * Returns the 10 most-recent audit log entries visible to the caller.
+     * PLATFORM_ADMIN gets the unrestricted global feed; all other roles get
+     * entries scoped to their own organization to prevent cross-org data leakage.
+     */
+    private List<AuditLog> recentActivity(boolean isPlatformAdmin, String orgId) {
+        if (isPlatformAdmin) {
+            return auditLogRepo.findTop10ByOrderByTimestampDesc();
+        }
+        return auditLogRepo.findTop10ByOrganizationIdOrderByTimestampDesc(orgId);
+    }
+
+    /**
+     * Returns the top-5 most-active users within the last 30 days,
+     * scoped to the caller's visible email set.
+     * {@code null} scope → PLATFORM_ADMIN global view.
+     */
+    private List<DashboardStats.TopUser> topUsers(List<String> scopeEmails) {
         LocalDateTime since = LocalDateTime.now().minusDays(30);
 
-        List<AuditLog> logs = admin
-                ? auditLogRepo.findByTimestampAfter(since)
-                : auditLogRepo.findByOrganizationIdAndTimestampAfter(orgId, since);
+        List<AuditLog> logs;
+        if (scopeEmails == null) {
+            // PLATFORM_ADMIN: unrestricted global view
+            logs = auditLogRepo.findByTimestampAfter(since);
+        } else if (scopeEmails.isEmpty()) {
+            return List.of();
+        } else {
+            // ORG_ADMIN / ADMIN / USER: scoped to their visible performer emails
+            logs = auditLogRepo.findByPerformedByInAndTimestampAfter(scopeEmails, since);
+        }
 
         // Group by performedBy, count occurrences
         Map<String, Long> counts = logs.stream()
