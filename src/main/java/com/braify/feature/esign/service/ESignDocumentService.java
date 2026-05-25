@@ -1,25 +1,37 @@
 package com.braify.feature.esign.service;
 
+import com.braify.feature.esign.dto.BulkBatchResponse;
+import com.braify.feature.esign.dto.BulkCreateDocumentRequest;
+import com.braify.feature.esign.dto.BulkCreateDocumentResponse;
+import com.braify.feature.esign.dto.BulkDocumentResult;
 import com.braify.feature.esign.dto.CreateDocumentRequest;
 import com.braify.feature.esign.dto.DocumentResponse;
 import com.braify.feature.esign.dto.FieldPlacementRequest;
+import com.braify.feature.esign.dto.PageResponse;
 import com.braify.feature.audit.model.AuditLog;
 import com.braify.feature.audit.service.AuditLogService;
 import com.braify.feature.quota.service.QuotaService;
 import com.braify.feature.esign.model.ESignAuditEvent;
+import com.braify.feature.esign.model.ESignBulkBatch;
 import com.braify.feature.esign.model.ESignDocument;
 import com.braify.feature.esign.model.ESignSignatureField;
 import com.braify.feature.pdf.model.Template;
+import com.braify.feature.esign.repository.ESignBulkBatchRepository;
 import com.braify.feature.esign.repository.ESignDocumentRepository;
 import com.braify.feature.esign.repository.ESignSignatureFieldRepository;
 import com.braify.feature.pdf.repository.TemplateRepository;
 import com.braify.security.UserDetailsImpl;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 
 import java.security.MessageDigest;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
@@ -31,6 +43,7 @@ import java.util.Map;
 public class ESignDocumentService {
 
     private final ESignDocumentRepository       docRepo;
+    private final ESignBulkBatchRepository      batchRepo;
     private final ESignSignatureFieldRepository fieldRepo;
     private final TemplateRepository            templateRepo;
     private final ESignTokenService             tokenService;
@@ -41,10 +54,20 @@ public class ESignDocumentService {
 
     // ── Create ──────────────────────────────────────────────────────────────
 
+    /** Public entry point for single-sign document creation (no batch link unless req.bulkBatchId is set). */
     public DocumentResponse createDocument(CreateDocumentRequest req,
                                            UserDetailsImpl principal,
                                            String ip,
                                            String ua) {
+        return createDocument(req, req.getBulkBatchId(), principal, ip, ua);
+    }
+
+    /** Internal entry point used by bulk processing to attach a batch ID. */
+    private DocumentResponse createDocument(CreateDocumentRequest req,
+                                            String bulkBatchId,
+                                            UserDetailsImpl principal,
+                                            String ip,
+                                            String ua) {
         byte[] pdfBytes;
 
         if ("UPLOAD".equalsIgnoreCase(req.getSourceType())) {
@@ -73,6 +96,8 @@ public class ESignDocumentService {
                 .sourcePdfHash(sha256Hex(pdfBytes))
                 .clientEmail(req.getClientEmail())
                 .clientName(req.getClientName())
+                .bulkBatchId(bulkBatchId)
+                .emailTemplateId(req.getEmailTemplateId())
                 .status(ESignDocument.Status.DRAFT)
                 .build();
 
@@ -91,6 +116,142 @@ public class ESignDocumentService {
                 principal.getUsername(), principal.getOrgId());
 
         return DocumentResponse.from(doc, List.of(), false);
+    }
+
+    // ── Bulk Create + Send ───────────────────────────────────────────────────
+
+    /**
+     * Creates (and optionally sends) multiple e-sign documents in a single call.
+     *
+     * <p>Processing is sequential and best-effort: a failure on one row is
+     * recorded in the result but does not abort the remaining rows.  If
+     * {@code sendImmediately} is {@code true} a quota pre-flight check is run
+     * first so the whole batch fails fast before any documents are created.</p>
+     *
+     * @param bulkReq   list of document requests + send flag
+     * @param principal authenticated creator
+     * @param ip        client IP (for audit trail)
+     * @param ua        User-Agent header (for audit trail)
+     * @return per-row results + aggregate counters
+     */
+    public BulkCreateDocumentResponse createAndSendBulk(
+            BulkCreateDocumentRequest bulkReq,
+            UserDetailsImpl principal,
+            String ip, String ua) {
+
+        List<CreateDocumentRequest> items         = bulkReq.getDocuments();
+        int                         totalRequested = items.size();
+
+        // Pre-flight: verify the org has enough quota for the whole batch before
+        // creating anything.  This avoids partially-committed state where some
+        // documents are created but cannot be sent due to quota exhaustion.
+        if (bulkReq.isSendImmediately()) {
+            quotaService.checkEsignBulkCapacity(principal.getOrgId(), totalRequested);
+        }
+
+        // ── Create a batch record to group the documents ───────────────────
+        String batchLabel = (bulkReq.getLabel() != null && !bulkReq.getLabel().isBlank())
+                ? bulkReq.getLabel()
+                : "Bulk Send – " + LocalDateTime.now().toString().substring(0, 16).replace('T', ' ');
+
+        ESignBulkBatch batch = batchRepo.save(ESignBulkBatch.builder()
+                .createdBy(principal.getId())
+                .orgId(principal.getOrgId())
+                .label(batchLabel)
+                .totalRequested(totalRequested)
+                .status(ESignBulkBatch.Status.PROCESSING)
+                .build());
+        String batchId = batch.getId();
+
+        List<BulkDocumentResult> results = new ArrayList<>(totalRequested);
+        int created = 0, sent = 0, failed = 0;
+
+        for (int i = 0; i < items.size(); i++) {
+            CreateDocumentRequest item  = items.get(i);
+            String                docId = null;
+
+            // ── 1. Create document ─────────────────────────────────────────
+            try {
+                DocumentResponse doc = createDocument(item, batchId, principal, ip, ua);
+                docId = doc.getId();
+                created++;
+            } catch (Exception e) {
+                failed++;
+                log.warn("Bulk esign row {}: create failed for '{}' — {}", i, item.getTitle(), e.getMessage());
+                results.add(BulkDocumentResult.builder()
+                        .rowIndex(i)
+                        .title(item.getTitle())
+                        .clientEmail(item.getClientEmail())
+                        .success(false)
+                        .error("Create failed: " + e.getMessage())
+                        .build());
+                continue;
+            }
+
+            // ── 2. Draft-only mode ─────────────────────────────────────────
+            if (!bulkReq.isSendImmediately()) {
+                results.add(BulkDocumentResult.builder()
+                        .rowIndex(i)
+                        .title(item.getTitle())
+                        .clientEmail(item.getClientEmail())
+                        .success(true)
+                        .documentId(docId)
+                        .status("DRAFT")
+                        .build());
+                continue;
+            }
+
+            // ── 3. Send document ───────────────────────────────────────────
+            try {
+                sendDocument(docId, item.getTokenValidDays(), principal, ip, ua);
+                sent++;
+                results.add(BulkDocumentResult.builder()
+                        .rowIndex(i)
+                        .title(item.getTitle())
+                        .clientEmail(item.getClientEmail())
+                        .success(true)
+                        .documentId(docId)
+                        .status("PENDING")
+                        .build());
+            } catch (Exception e) {
+                // Document was created (DRAFT) but send failed — record docId so
+                // the caller can retry the send individually.
+                failed++;
+                log.warn("Bulk esign row {}: send failed for doc '{}' — {}", i, docId, e.getMessage());
+                results.add(BulkDocumentResult.builder()
+                        .rowIndex(i)
+                        .title(item.getTitle())
+                        .clientEmail(item.getClientEmail())
+                        .success(false)
+                        .documentId(docId)
+                        .status("DRAFT")
+                        .error("Send failed: " + e.getMessage())
+                        .build());
+            }
+        }
+
+        log.info("Bulk e-sign for '{}': requested={} created={} sent={} failed={}",
+                principal.getUsername(), totalRequested, created, sent, failed);
+
+        // ── Update batch record with final counters ────────────────────────
+        ESignBulkBatch.Status batchStatus = failed == 0 ? ESignBulkBatch.Status.COMPLETED
+                : created == 0              ? ESignBulkBatch.Status.FAILED
+                : ESignBulkBatch.Status.PARTIAL;
+
+        batch.setTotalCreated(created);
+        batch.setTotalSent(sent);
+        batch.setTotalFailed(failed);
+        batch.setStatus(batchStatus);
+        batchRepo.save(batch);
+
+        return BulkCreateDocumentResponse.builder()
+                .batchId(batchId)
+                .totalRequested(totalRequested)
+                .totalCreated(created)
+                .totalSent(sent)
+                .totalFailed(failed)
+                .results(results)
+                .build();
     }
 
     // ── Field Placement ─────────────────────────────────────────────────────
@@ -213,6 +374,120 @@ public class ESignDocumentService {
         return docs.stream()
                 .map(d -> DocumentResponse.from(d, List.of(), false))
                 .toList();
+    }
+
+    /**
+     * Paginated list of single-sign documents (excludes bulk-batch documents).
+     *
+     * @param status optional status filter; null means all statuses
+     * @param page   zero-based page index
+     * @param size   page size (max 100)
+     */
+    public PageResponse<DocumentResponse> listMyDocumentsPaged(
+            UserDetailsImpl principal,
+            ESignDocument.Status status,
+            int page, int size) {
+
+        Pageable pageable = PageRequest.of(page, Math.min(size, 100));
+        Page<ESignDocument> pageResult = (status != null)
+                ? docRepo.findByCreatedByAndBulkBatchIdIsNullAndStatusOrderByCreatedAtDesc(
+                        principal.getId(), status, pageable)
+                : docRepo.findByCreatedByAndBulkBatchIdIsNullOrderByCreatedAtDesc(
+                        principal.getId(), pageable);
+
+        List<DocumentResponse> content = pageResult.getContent().stream()
+                .map(d -> DocumentResponse.from(d, List.of(), false))
+                .toList();
+
+        return PageResponse.of(pageResult, content);
+    }
+
+    /**
+     * Creates an empty batch record (status = PROCESSING) so the frontend can obtain a
+     * batch ID before starting its own individual-document loop.
+     */
+    public BulkBatchResponse initBatch(String label, int totalRequested, UserDetailsImpl principal) {
+        String resolvedLabel = (label != null && !label.isBlank())
+                ? label
+                : "Bulk Send – " + LocalDateTime.now().toString().substring(0, 16).replace('T', ' ');
+
+        ESignBulkBatch batch = batchRepo.save(ESignBulkBatch.builder()
+                .createdBy(principal.getId())
+                .orgId(principal.getOrgId())
+                .label(resolvedLabel)
+                .totalRequested(totalRequested)
+                .status(ESignBulkBatch.Status.PROCESSING)
+                .build());
+
+        return BulkBatchResponse.from(batch);
+    }
+
+    /**
+     * Updates the batch with final counters after the frontend has finished processing.
+     * Ownership is enforced.
+     */
+    public BulkBatchResponse finalizeBatch(String batchId, int totalCreated, int totalSent, int totalFailed,
+                                           UserDetailsImpl principal) {
+        ESignBulkBatch batch = batchRepo.findById(batchId)
+                .orElseThrow(() -> new IllegalArgumentException("Batch not found: " + batchId));
+        if (!batch.getCreatedBy().equals(principal.getId()))
+            throw new AccessDeniedException("Access denied to batch: " + batchId);
+
+        ESignBulkBatch.Status status = totalFailed == 0     ? ESignBulkBatch.Status.COMPLETED
+                                     : totalCreated == 0    ? ESignBulkBatch.Status.FAILED
+                                     : ESignBulkBatch.Status.PARTIAL;
+
+        batch.setTotalCreated(totalCreated);
+        batch.setTotalSent(totalSent);
+        batch.setTotalFailed(totalFailed);
+        batch.setStatus(status);
+        return BulkBatchResponse.from(batchRepo.save(batch));
+    }
+
+    /**
+     * Paginated list of bulk batches created by the authenticated user.
+     */
+    public PageResponse<BulkBatchResponse> listMyBatches(UserDetailsImpl principal, int page, int size) {
+        Pageable pageable = PageRequest.of(page, Math.min(size, 100));
+        Page<ESignBulkBatch> pageResult =
+                batchRepo.findByCreatedByOrderByCreatedAtDesc(principal.getId(), pageable);
+
+        List<BulkBatchResponse> content = pageResult.getContent().stream()
+                .map(BulkBatchResponse::from)
+                .toList();
+
+        return PageResponse.of(pageResult, content);
+    }
+
+    /**
+     * Returns summary for a single batch (ownership enforced).
+     */
+    public BulkBatchResponse getBatch(String batchId, UserDetailsImpl principal) {
+        ESignBulkBatch batch = batchRepo.findById(batchId)
+                .orElseThrow(() -> new IllegalArgumentException("Batch not found: " + batchId));
+        if (!batch.getCreatedBy().equals(principal.getId()))
+            throw new AccessDeniedException("Access denied to batch: " + batchId);
+        return BulkBatchResponse.from(batch);
+    }
+
+    /**
+     * Paginated list of documents belonging to a specific batch (ownership enforced).
+     */
+    public PageResponse<DocumentResponse> listBatchDocuments(
+            String batchId, UserDetailsImpl principal, int page, int size) {
+
+        // Verify batch ownership first
+        getBatch(batchId, principal);
+
+        Pageable pageable = PageRequest.of(page, Math.min(size, 100));
+        Page<ESignDocument> pageResult =
+                docRepo.findByBulkBatchIdOrderByCreatedAtDesc(batchId, pageable);
+
+        List<DocumentResponse> content = pageResult.getContent().stream()
+                .map(d -> DocumentResponse.from(d, List.of(), false))
+                .toList();
+
+        return PageResponse.of(pageResult, content);
     }
 
     public DocumentResponse getDocument(String docId, UserDetailsImpl principal) {

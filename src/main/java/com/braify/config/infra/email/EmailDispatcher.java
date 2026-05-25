@@ -69,12 +69,28 @@ public class EmailDispatcher {
                                              String subject,
                                              String html,
                                              Map<String, Object> placeholders) {
+        return sendHtmlEmail(email, subject, html, placeholders, null);
+    }
+
+    /**
+     * Sends an HTML email with an optional sender display-name override.
+     * The email address portion of {@code resend.from-email} is preserved;
+     * only the "Display Name" part is replaced with {@code senderDisplayName}.
+     *
+     * @param senderDisplayName  display name shown in the "From:" field (e.g. the org name).
+     *                           Pass {@code null} to use the value from {@code resend.from-email} unchanged.
+     */
+    public CreateEmailResponse sendHtmlEmail(String email,
+                                             String subject,
+                                             String html,
+                                             Map<String, Object> placeholders,
+                                             String senderDisplayName) {
         String renderedSubject = replacePlaceholders(
                 isBlank(subject) ? DEFAULT_SUBJECT : subject,
                 safePlaceholders(placeholders));
         String renderedHtml = replacePlaceholders(html, safePlaceholders(placeholders));
 
-        return send(email, renderedSubject, renderedHtml, Collections.emptyList());
+        return send(email, renderedSubject, renderedHtml, Collections.emptyList(), senderDisplayName);
     }
 
     /**
@@ -87,6 +103,23 @@ public class EmailDispatcher {
                                                            Map<String, Object> placeholders,
                                                            byte[] attachmentData,
                                                            String attachmentFileName) {
+        return sendHtmlEmailWithAttachment(
+                email, subject, html, placeholders, attachmentData, attachmentFileName, null);
+    }
+
+    /**
+     * Sends an HTML email with a single binary attachment and an optional sender display-name override.
+     *
+     * @param senderDisplayName  display name shown in the "From:" field (e.g. the org name).
+     *                           Pass {@code null} to use the value from {@code resend.from-email} unchanged.
+     */
+    public CreateEmailResponse sendHtmlEmailWithAttachment(String email,
+                                                           String subject,
+                                                           String html,
+                                                           Map<String, Object> placeholders,
+                                                           byte[] attachmentData,
+                                                           String attachmentFileName,
+                                                           String senderDisplayName) {
         String renderedSubject = replacePlaceholders(
                 isBlank(subject) ? DEFAULT_SUBJECT : subject,
                 safePlaceholders(placeholders));
@@ -95,7 +128,7 @@ public class EmailDispatcher {
         List<Attachment> attachments = new ArrayList<>();
         buildAttachment(attachmentFileName, attachmentData).ifPresent(attachments::add);
 
-        return send(email, renderedSubject, renderedHtml, attachments);
+        return send(email, renderedSubject, renderedHtml, attachments, senderDisplayName);
     }
 
     private CreateEmailResponse sendTemplatedEmail(String email,
@@ -116,6 +149,14 @@ public class EmailDispatcher {
                                      String subject,
                                      String html,
                                      List<Attachment> attachments) {
+        return send(email, subject, html, attachments, null);
+    }
+
+    private CreateEmailResponse send(String email,
+                                     String subject,
+                                     String html,
+                                     List<Attachment> attachments,
+                                     String senderDisplayName) {
         validateEmailSettings();
 
         if (isBlank(email)) {
@@ -126,7 +167,7 @@ public class EmailDispatcher {
         }
 
         CreateEmailOptions.Builder builder = CreateEmailOptions.builder()
-                .from(fromEmail)
+                .from(buildFrom(senderDisplayName))
                 .to(email)
                 .subject(subject)
                 .html(html);
@@ -188,6 +229,30 @@ public class EmailDispatcher {
 
     private Map<String, Object> safePlaceholders(Map<String, Object> placeholders) {
         return placeholders != null ? placeholders : Collections.emptyMap();
+    }
+
+    /**
+     * Builds the "From" string by keeping the email address from {@code resend.from-email}
+     * and replacing the display name portion with {@code displayName}.
+     *
+     * <p>Examples:
+     * <pre>
+     *   fromEmail = "Braify &lt;no-reply@example.com&gt;"
+     *   displayName = "Acme Corp"  →  "Acme Corp &lt;no-reply@example.com&gt;"
+     *   displayName = null          →  "Braify &lt;no-reply@example.com&gt;"  (unchanged)
+     * </pre>
+     */
+    private String buildFrom(String displayName) {
+        if (isBlank(displayName)) return fromEmail;
+
+        // Extract the bare email address from "Display Name <addr>" or "addr"
+        String address;
+        if (fromEmail.contains("<") && fromEmail.contains(">")) {
+            address = fromEmail.substring(fromEmail.indexOf('<') + 1, fromEmail.lastIndexOf('>')).trim();
+        } else {
+            address = fromEmail.trim();
+        }
+        return displayName.trim() + " <" + address + ">";
     }
 
     private void validateEmailSettings() {

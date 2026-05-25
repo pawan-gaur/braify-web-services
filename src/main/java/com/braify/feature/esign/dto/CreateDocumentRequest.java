@@ -17,4 +17,14 @@ public class CreateDocumentRequest {
     @NotBlank
     private String clientName;
     private int    tokenValidDays = 7;
+    /** Optional — links this document to a bulk batch created via {@code POST /api/esign/batches/init}. */
+    private String bulkBatchId;
+
+    /**
+     * Optional — ID of an {@link com.braify.feature.email.model.EmailTemplate} to use for the
+     * signing invitation email instead of the default hardcoded HTML.
+     * Placeholders {@code {{clientName}}}, {@code {{documentTitle}}}, {@code {{signingLink}}},
+     * and {@code {{orgName}}} are substituted automatically.
+     */
+    private String emailTemplateId;
 }

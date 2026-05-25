@@ -18,6 +18,10 @@ public class ESignDocument {
     private String orgId;
     private String title;
 
+    /* ── Bulk batch link ────────────────────────────────────────────────── */
+    /** ID of the {@link ESignBulkBatch} this document belongs to. Null for single-sign documents. */
+    @Indexed private String bulkBatchId;
+
     /* ── Source PDF ────────────────────────────────────────────────────── */
     public enum SourceType { TEMPLATE, UPLOAD }
     private SourceType sourceType;
@@ -45,6 +49,13 @@ public class ESignDocument {
     /* ── Signed output ─────────────────────────────────────────────────── */
     private byte[] signedPdfData;
     private String signedPdfHash;        // SHA-256 — tamper-proof verification
+
+    /* ── Email template ────────────────────────────────────────────────── */
+    /**
+     * Optional ID of the org's email template to use for the signing invitation.
+     * When set, the template's HTML is used instead of the default built-in HTML.
+     */
+    private String emailTemplateId;
 
     /* ── Token ─────────────────────────────────────────────────────────── */
     private String        signingTokenJti;
