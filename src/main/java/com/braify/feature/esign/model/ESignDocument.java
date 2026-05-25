@@ -50,6 +50,13 @@ public class ESignDocument {
     private byte[] signedPdfData;
     private String signedPdfHash;        // SHA-256 — tamper-proof verification
 
+    /* ── Email template ────────────────────────────────────────────────── */
+    /**
+     * Optional ID of the org's email template to use for the signing invitation.
+     * When set, the template's HTML is used instead of the default built-in HTML.
+     */
+    private String emailTemplateId;
+
     /* ── Token ─────────────────────────────────────────────────────────── */
     private String        signingTokenJti;
     private LocalDateTime tokenExpiresAt;

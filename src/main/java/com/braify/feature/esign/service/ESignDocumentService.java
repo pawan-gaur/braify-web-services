@@ -97,6 +97,7 @@ public class ESignDocumentService {
                 .clientEmail(req.getClientEmail())
                 .clientName(req.getClientName())
                 .bulkBatchId(bulkBatchId)
+                .emailTemplateId(req.getEmailTemplateId())
                 .status(ESignDocument.Status.DRAFT)
                 .build();
 

@@ -1,6 +1,8 @@
 package com.braify.feature.esign.service;
 
 import com.braify.config.infra.email.EmailDispatcher;
+import com.braify.feature.email.model.EmailTemplate;
+import com.braify.feature.email.repository.EmailTemplateRepository;
 import com.braify.feature.esign.model.ESignDocument;
 import com.braify.feature.organization.repository.OrganizationRepository;
 import lombok.RequiredArgsConstructor;
@@ -10,31 +12,68 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.util.Map;
+import java.util.Optional;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class ESignEmailService {
 
-    private final EmailDispatcher        emailDispatcher;
-    private final OrganizationRepository orgRepo;
+    private final EmailDispatcher          emailDispatcher;
+    private final OrganizationRepository   orgRepo;
+    private final EmailTemplateRepository  emailTemplateRepo;
 
     @Value("${app.base-url:https://braify.com}")
     private String baseUrl;
 
     /**
      * Sends the signing invitation to the client with the signing link.
-     * The "From" display name is the organization's name resolved from {@code doc.getOrgId()}.
+     * <p>
+     * If the document has an {@code emailTemplateId}, the org's saved email template is loaded
+     * and its {@code htmlContent} is used after substituting the following placeholders:
+     * <ul>
+     *   <li>{@code {{clientName}}} → signer's name</li>
+     *   <li>{@code {{documentTitle}}} → document title</li>
+     *   <li>{@code {{signingLink}}} → one-time signing URL</li>
+     *   <li>{@code {{orgName}}} → organisation display name</li>
+     * </ul>
+     * When no template is found the hardcoded default HTML is used as a safe fallback.
+     * The "From" display name is always the organisation's name.
      */
     public void sendSigningInvitation(ESignDocument doc, String signingToken) {
         String signingLink = baseUrl + "/sign/" + signingToken;
         String orgName     = resolveOrgName(doc.getOrgId());
-        String html        = buildInvitationHtml(doc, signingLink, orgName);
+
+        // ── Resolve email body: custom template or built-in fallback ────────
+        String subject;
+        String html;
+
+        if (doc.getEmailTemplateId() != null && !doc.getEmailTemplateId().isBlank()) {
+            Optional<EmailTemplate> tplOpt =
+                    emailTemplateRepo.findByIdAndDeletedFalse(doc.getEmailTemplateId());
+
+            if (tplOpt.isPresent()) {
+                EmailTemplate tpl = tplOpt.get();
+                subject = tpl.getSubject() != null && !tpl.getSubject().isBlank()
+                        ? tpl.getSubject()
+                        : "You have a document to sign — " + doc.getTitle();
+                html = applyESignPlaceholders(tpl.getHtmlContent(), doc, signingLink, orgName);
+                log.debug("Using email template '{}' for doc {}", tpl.getName(), doc.getId());
+            } else {
+                log.warn("Email template '{}' not found for doc {} — using default",
+                        doc.getEmailTemplateId(), doc.getId());
+                subject = "You have a document to sign — " + doc.getTitle();
+                html    = buildInvitationHtml(doc, signingLink, orgName);
+            }
+        } else {
+            subject = "You have a document to sign — " + doc.getTitle();
+            html    = buildInvitationHtml(doc, signingLink, orgName);
+        }
 
         try {
             emailDispatcher.sendHtmlEmail(
                     doc.getClientEmail(),
-                    "You have a document to sign — " + doc.getTitle(),
+                    subject,
                     html,
                     Map.of(
                             "clientName",    doc.getClientName(),
@@ -47,6 +86,30 @@ public class ESignEmailService {
         } catch (Exception e) {
             log.error("Failed to send signing invitation for doc {}: {}", doc.getId(), e.getMessage());
         }
+    }
+
+    /**
+     * Substitutes e-sign–specific placeholders inside an email template's HTML content.
+     * Handles both {@code {{placeholder}}} and {@code {{ placeholder }}} (with spaces).
+     */
+    private String applyESignPlaceholders(String html, ESignDocument doc,
+                                          String signingLink, String orgName) {
+        if (html == null) return "";
+        return html
+                .replaceAll("\\{\\{\\s*clientName\\s*\\}\\}",    escapeReplacement(doc.getClientName()))
+                .replaceAll("\\{\\{\\s*documentTitle\\s*\\}\\}",  escapeReplacement(doc.getTitle()))
+                .replaceAll("\\{\\{\\s*signingLink\\s*\\}\\}",    escapeReplacement(signingLink))
+                .replaceAll("\\{\\{\\s*orgName\\s*\\}\\}",        escapeReplacement(orgName))
+                // common aliases users may have typed in the template editor
+                .replaceAll("\\{\\{\\s*client_name\\s*\\}\\}",    escapeReplacement(doc.getClientName()))
+                .replaceAll("\\{\\{\\s*document_title\\s*\\}\\}", escapeReplacement(doc.getTitle()))
+                .replaceAll("\\{\\{\\s*signing_link\\s*\\}\\}",   escapeReplacement(signingLink))
+                .replaceAll("\\{\\{\\s*org_name\\s*\\}\\}",       escapeReplacement(orgName));
+    }
+
+    /** Escapes special characters that {@link String#replaceAll} treats as replacement meta-chars. */
+    private static String escapeReplacement(String value) {
+        return value == null ? "" : value.replace("\\", "\\\\").replace("$", "\\$");
     }
 
     /**
