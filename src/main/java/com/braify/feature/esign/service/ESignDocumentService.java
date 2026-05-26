@@ -96,6 +96,7 @@ public class ESignDocumentService {
                 .sourcePdfHash(sha256Hex(pdfBytes))
                 .clientEmail(req.getClientEmail())
                 .clientName(req.getClientName())
+                .ccEmails(req.getCcEmails())
                 .bulkBatchId(bulkBatchId)
                 .emailTemplateId(req.getEmailTemplateId())
                 .status(ESignDocument.Status.DRAFT)
@@ -523,6 +524,39 @@ public class ESignDocumentService {
     public List<ESignAuditEvent> getAuditTrail(String docId, UserDetailsImpl principal) {
         getOwnedDoc(docId, principal.getId()); // ownership check
         return auditService.getAuditTrail(docId);
+    }
+
+    // ── Client attachments (creator access) ──────────────────────────────────
+
+    /**
+     * Returns attachment metadata (no file bytes) for the creator's document detail view.
+     */
+    public List<java.util.Map<String, Object>> listAttachments(String docId, UserDetailsImpl principal) {
+        ESignDocument doc = getOwnedDoc(docId, principal.getId());
+        if (doc.getClientAttachments() == null || doc.getClientAttachments().isEmpty())
+            return java.util.List.of();
+        return doc.getClientAttachments().stream()
+                .map(a -> java.util.Map.<String, Object>of(
+                        "id",          a.getId(),
+                        "fileName",    a.getFileName()    != null ? a.getFileName()    : "",
+                        "contentType", a.getContentType() != null ? a.getContentType() : "",
+                        "fileSize",    a.getFileSize(),
+                        "uploadedAt",  a.getUploadedAt()  != null ? a.getUploadedAt().toString() : ""
+                ))
+                .toList();
+    }
+
+    /**
+     * Returns the full attachment (including bytes) so the creator can download it.
+     */
+    public ESignDocument.ClientAttachment getAttachment(String docId,
+                                                        String attachmentId,
+                                                        UserDetailsImpl principal) {
+        ESignDocument doc = getOwnedDoc(docId, principal.getId());
+        return doc.getClientAttachments().stream()
+                .filter(a -> attachmentId.equals(a.getId()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Attachment not found: " + attachmentId));
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

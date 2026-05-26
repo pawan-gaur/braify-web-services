@@ -6,6 +6,8 @@ import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
 @Document(collection = "esign_documents")
@@ -43,8 +45,14 @@ public class ESignDocument {
     private Status status = Status.DRAFT;
 
     /* ── Client ────────────────────────────────────────────────────────── */
-    private String clientEmail;
-    private String clientName;
+    private String       clientEmail;
+    private String       clientName;
+    /**
+     * Optional CC recipients for the signing invitation email.
+     * Populated from the Excel sheet's CC column during bulk send;
+     * also settable on single-sign documents.
+     */
+    private List<String> ccEmails;
 
     /* ── Signed output ─────────────────────────────────────────────────── */
     private byte[] signedPdfData;
@@ -69,4 +77,23 @@ public class ESignDocument {
 
     @CreatedDate  private LocalDateTime createdAt;
     @LastModifiedDate private LocalDateTime updatedAt;
+
+    /* ── Client-uploaded attachments (optional, post-signing) ─────────── */
+    /**
+     * Files the client voluntarily uploads after signing — e.g. ID proof, supporting docs.
+     * Stored inline as embedded sub-documents; capped at 5 files × 10 MB each in the service layer.
+     */
+    @Builder.Default
+    private List<ClientAttachment> clientAttachments = new ArrayList<>();
+
+    @Data @Builder @NoArgsConstructor @AllArgsConstructor
+    public static class ClientAttachment {
+        private String        id;           // UUID
+        private String        fileName;     // original file name
+        private String        contentType;  // MIME type
+        private byte[]        data;         // raw bytes
+        private long          fileSize;     // bytes
+        private LocalDateTime uploadedAt;
+        private String        uploadedFromIp;
+    }
 }

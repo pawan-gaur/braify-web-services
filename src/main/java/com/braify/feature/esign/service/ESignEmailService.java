@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -70,9 +71,17 @@ public class ESignEmailService {
             html    = buildInvitationHtml(doc, signingLink, orgName);
         }
 
+        // Collect non-blank CC addresses stored on the document
+        List<String> ccList = (doc.getCcEmails() != null)
+                ? doc.getCcEmails().stream()
+                      .filter(cc -> cc != null && !cc.isBlank())
+                      .toList()
+                : List.of();
+
         try {
             emailDispatcher.sendHtmlEmail(
                     doc.getClientEmail(),
+                    ccList.isEmpty() ? null : ccList,
                     subject,
                     html,
                     Map.of(
@@ -82,7 +91,10 @@ public class ESignEmailService {
                     ),
                     orgName
             );
-            log.info("Signing invitation sent to {} for doc {}", doc.getClientEmail(), doc.getId());
+            log.info("Signing invitation sent to {} (cc: {}) for doc {}",
+                    doc.getClientEmail(),
+                    ccList.isEmpty() ? "none" : String.join(", ", ccList),
+                    doc.getId());
         } catch (Exception e) {
             log.error("Failed to send signing invitation for doc {}: {}", doc.getId(), e.getMessage());
         }

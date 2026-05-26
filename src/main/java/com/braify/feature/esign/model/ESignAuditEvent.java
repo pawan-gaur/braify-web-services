@@ -40,6 +40,7 @@ public class ESignAuditEvent {
         PDF_GENERATED,
         COMPLETION_EMAIL_SENT,
         DOCUMENT_DOWNLOADED,    // creator downloaded final PDF
+        CLIENT_ATTACHMENT_UPLOADED, // client uploaded a supporting document post-signing
         LINK_EXPIRED,
         DOCUMENT_CANCELLED
     }

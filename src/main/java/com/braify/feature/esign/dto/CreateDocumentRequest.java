@@ -4,6 +4,8 @@ import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 
+import java.util.List;
+
 @Data
 public class CreateDocumentRequest {
     @NotBlank
@@ -27,4 +29,10 @@ public class CreateDocumentRequest {
      * and {@code {{orgName}}} are substituted automatically.
      */
     private String emailTemplateId;
+
+    /**
+     * Optional — list of CC email addresses included in the signing invitation.
+     * For bulk send these are populated per-row from the Excel sheet's CC column.
+     */
+    private List<String> ccEmails;
 }

@@ -133,6 +133,13 @@
             <version>2.3.0</version>
         </dependency>
 
+        <!-- jsoup — HTML parser used by the CSS inliner (also a transitive dep of openhtmltopdf) -->
+        <dependency>
+            <groupId>org.jsoup</groupId>
+            <artifactId>jsoup</artifactId>
+            <version>1.17.2</version>
+        </dependency>
+
         <!-- ── Cloud Storage SDKs ──────────────────────────────────────────── -->
 
         <!-- AWS S3 (upload, presigned URLs) -->

@@ -86,6 +86,27 @@ public class ESignTokenService {
         });
     }
 
+    /**
+     * Extracts the document ID from a signing JWT <em>without</em> checking whether the
+     * token has already been used.  Used exclusively for post-submission attachment uploads
+     * where the token was legitimately consumed during {@code submitDocument()} but the
+     * JWT itself is still cryptographically valid (not expired, correct type).
+     *
+     * @return the documentId claim, or {@link Optional#empty()} if the JWT is invalid/expired
+     */
+    public Optional<String> extractDocumentIdFromToken(String jwt) {
+        try {
+            if (!jwtUtil.isValidSigningToken(jwt)) return Optional.empty();
+            String documentId = jwtUtil.extractDocumentId(jwt);
+            return documentId != null && !documentId.isBlank()
+                    ? Optional.of(documentId)
+                    : Optional.empty();
+        } catch (Exception e) {
+            log.warn("extractDocumentIdFromToken failed: {}", e.getMessage());
+            return Optional.empty();
+        }
+    }
+
     /** Expires all signing tokens whose expiresAt has passed (called by scheduler). */
     public int expireStaleTokens() {
         // MongoDB query done in-service: fetch all unused, unrevoked, past expiry
