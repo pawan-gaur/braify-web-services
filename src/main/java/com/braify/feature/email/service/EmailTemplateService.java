@@ -1,5 +1,6 @@
 package com.braify.feature.email.service;
 
+import com.braify.config.infra.email.CssInliner;
 import com.braify.config.infra.email.EmailDispatcher;
 import com.braify.feature.email.dto.SendEmailRequest;
 import com.braify.feature.email.dto.SendEmailResponse;
@@ -31,6 +32,7 @@ public class EmailTemplateService {
     private final EmailTemplateVersionService  versionService;
     private final AuditLogService              auditLogService;
     private final EmailDispatcher              emailDispatcher;
+    private final CssInliner                   cssInliner;
 
     private static final AuditLog.ResourceType RESOURCE = AuditLog.ResourceType.EMAIL_TEMPLATE;
 
@@ -207,7 +209,10 @@ public class EmailTemplateService {
                 : Collections.emptyMap();
 
         CreateEmailResponse resendResponse =
-                emailDispatcher.sendHtmlEmail(req.getTo(), subject, template.getHtmlContent(), placeholders);
+                emailDispatcher.sendHtmlEmail(
+                        req.getTo(), subject,
+                        cssInliner.inline(template.getHtmlContent(), template.getCssContent()),
+                        placeholders);
 
         // Audit the send event
         auditLogService.log(

@@ -85,12 +85,28 @@ public class EmailDispatcher {
                                              String html,
                                              Map<String, Object> placeholders,
                                              String senderDisplayName) {
+        return sendHtmlEmail(email, null, subject, html, placeholders, senderDisplayName);
+    }
+
+    /**
+     * Sends an HTML email with optional CC recipients and an optional sender display-name override.
+     *
+     * @param email              primary To recipient
+     * @param ccEmails           optional CC recipients (null or empty = no CC)
+     * @param senderDisplayName  display name shown in the "From:" field. {@code null} keeps the configured default.
+     */
+    public CreateEmailResponse sendHtmlEmail(String email,
+                                             List<String> ccEmails,
+                                             String subject,
+                                             String html,
+                                             Map<String, Object> placeholders,
+                                             String senderDisplayName) {
         String renderedSubject = replacePlaceholders(
                 isBlank(subject) ? DEFAULT_SUBJECT : subject,
                 safePlaceholders(placeholders));
         String renderedHtml = replacePlaceholders(html, safePlaceholders(placeholders));
 
-        return send(email, renderedSubject, renderedHtml, Collections.emptyList(), senderDisplayName);
+        return send(email, ccEmails, renderedSubject, renderedHtml, Collections.emptyList(), senderDisplayName);
     }
 
     /**
@@ -149,10 +165,19 @@ public class EmailDispatcher {
                                      String subject,
                                      String html,
                                      List<Attachment> attachments) {
-        return send(email, subject, html, attachments, null);
+        return send(email, null, subject, html, attachments, null);
     }
 
     private CreateEmailResponse send(String email,
+                                     String subject,
+                                     String html,
+                                     List<Attachment> attachments,
+                                     String senderDisplayName) {
+        return send(email, null, subject, html, attachments, senderDisplayName);
+    }
+
+    private CreateEmailResponse send(String email,
+                                     List<String> ccEmails,
                                      String subject,
                                      String html,
                                      List<Attachment> attachments,
@@ -172,13 +197,19 @@ public class EmailDispatcher {
                 .subject(subject)
                 .html(html);
 
+        if (ccEmails != null && !ccEmails.isEmpty()) {
+            builder.cc(ccEmails);
+        }
         if (attachments != null && !attachments.isEmpty()) {
             builder.attachments(attachments);
         }
 
         try {
             CreateEmailResponse response = new Resend(apiKey).emails().send(builder.build());
-            log.info("Email sent to {} with Resend id {}", email, response != null ? response.getId() : null);
+            log.info("Email sent to {} (cc: {}) with Resend id {}",
+                    email,
+                    ccEmails != null && !ccEmails.isEmpty() ? String.join(", ", ccEmails) : "none",
+                    response != null ? response.getId() : null);
             return response;
         } catch (ResendException e) {
             log.error("Email sent failed to {} with Resend error :  {}", email, e.getMessage());

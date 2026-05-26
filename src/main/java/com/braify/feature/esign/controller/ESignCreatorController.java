@@ -215,6 +215,38 @@ public class ESignCreatorController {
                 .body(pdfBytes);
     }
 
+    @Operation(summary = "List client-uploaded attachments",
+               description = "Returns metadata (id, fileName, contentType, fileSize, uploadedAt) for all supporting documents " +
+                             "uploaded by the signing client after submission. File bytes are not included.")
+    @ApiResponse(responseCode = "200", description = "Attachment metadata list")
+    @GetMapping("/{id}/attachments")
+    public ResponseEntity<List<Map<String, Object>>> listAttachments(
+            @Parameter(description = "Document ID") @PathVariable String id,
+            @AuthenticationPrincipal UserDetailsImpl principal) {
+        log.debug("GET /api/esign/documents/{}/attachments by '{}'", id, principal.getUsername());
+        return ResponseEntity.ok(documentService.listAttachments(id, principal));
+    }
+
+    @Operation(summary = "Download a client-uploaded attachment",
+               description = "Returns the raw file bytes of a client-uploaded supporting document. " +
+                             "Only accessible by the document owner.")
+    @ApiResponse(responseCode = "200", description = "File bytes")
+    @ApiResponse(responseCode = "404", description = "Attachment not found")
+    @GetMapping("/{id}/attachments/{attachmentId}")
+    public ResponseEntity<byte[]> downloadAttachment(
+            @Parameter(description = "Document ID") @PathVariable String id,
+            @Parameter(description = "Attachment ID") @PathVariable String attachmentId,
+            @AuthenticationPrincipal UserDetailsImpl principal) {
+        log.info("GET /api/esign/documents/{}/attachments/{} by '{}'", id, attachmentId, principal.getUsername());
+        ESignDocument.ClientAttachment att = documentService.getAttachment(id, attachmentId, principal);
+        String ct = att.getContentType() != null ? att.getContentType() : "application/octet-stream";
+        return ResponseEntity.ok()
+                .header("Content-Type", ct)
+                .header("Content-Disposition",
+                        "attachment; filename=\"" + sanitize(att.getFileName()) + "\"")
+                .body(att.getData());
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private String extractIp(HttpServletRequest request) {

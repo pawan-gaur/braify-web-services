@@ -2,6 +2,7 @@ package com.braify.feature.esign.controller;
 
 import com.braify.feature.esign.dto.DocumentResponse;
 import com.braify.feature.esign.dto.SignFieldRequest;
+import com.braify.feature.esign.model.ESignDocument;
 import com.braify.feature.esign.service.ESignClientService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -12,8 +13,13 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.IOException;
+import java.util.Map;
 
 @Slf4j
 @Tag(name = "E-Sign — Client Signing", description = "Public endpoints used by the signing recipient (no user account required). Access is controlled by a short-lived ESIGN signing JWT embedded in the emailed link. Pass the token as a Bearer token in the Authorization header.")
@@ -80,6 +86,52 @@ public class ESignClientController {
         return ResponseEntity.ok(doc);
     }
 
+    @Operation(summary = "Upload supporting document after signing",
+               description = "Allows the client to optionally attach a supporting document (e.g. ID copy) " +
+                             "after submitting their signature. Requires the original signing JWT (still within " +
+                             "its expiry window). Up to 5 files, each max 10 MB. " +
+                             "The upload is recorded in the document's audit trail.")
+    @ApiResponse(responseCode = "200", description = "Attachment stored — returns metadata without the file bytes")
+    @ApiResponse(responseCode = "400", description = "File too large, limit reached, or invalid state")
+    @ApiResponse(responseCode = "401", description = "Invalid or expired signing token")
+    @PostMapping(value = "/{token}/attachments", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<Map<String, Object>> uploadAttachment(
+            @Parameter(description = "ESIGN signing token") @PathVariable String token,
+            @Parameter(description = "File to upload (max 10 MB)") @RequestParam("file") MultipartFile file,
+            HttpServletRequest http) throws IOException {
+
+        log.info("POST /api/esign/sign/{token}/attachments file='{}' size={}",
+                file.getOriginalFilename(), file.getSize());
+        ESignDocument.ClientAttachment att = clientService.uploadAttachment(
+                token, file, extractIp(http));
+        return ResponseEntity.ok(Map.of(
+                "id",          att.getId(),
+                "fileName",    att.getFileName(),
+                "contentType", att.getContentType() != null ? att.getContentType() : "",
+                "fileSize",    att.getFileSize(),
+                "uploadedAt",  att.getUploadedAt().toString()
+        ));
+    }
+
+    @Operation(summary = "Download a client-uploaded attachment",
+               description = "Returns the binary file content of a previously uploaded attachment. " +
+                             "Requires the original signing JWT.")
+    @ApiResponse(responseCode = "200", description = "File bytes")
+    @ApiResponse(responseCode = "404", description = "Attachment not found")
+    @GetMapping("/{token}/attachments/{attachmentId}")
+    public ResponseEntity<byte[]> downloadAttachment(
+            @Parameter(description = "ESIGN signing token") @PathVariable String token,
+            @Parameter(description = "Attachment ID") @PathVariable String attachmentId) {
+
+        log.info("GET /api/esign/sign/{token}/attachments/{}", attachmentId);
+        ESignDocument.ClientAttachment att = clientService.getClientAttachment(token, attachmentId);
+        String ct = att.getContentType() != null ? att.getContentType() : "application/octet-stream";
+        return ResponseEntity.ok()
+                .header("Content-Type", ct)
+                .header("Content-Disposition", "attachment; filename=\"" + sanitize(att.getFileName()) + "\"")
+                .body(att.getData());
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private String extractIp(HttpServletRequest request) {
@@ -88,5 +140,10 @@ public class ESignClientController {
         String xri = request.getHeader("X-Real-IP");
         if (xri != null && !xri.isBlank()) return xri.trim();
         return request.getRemoteAddr();
+    }
+
+    private String sanitize(String name) {
+        return name == null ? "attachment" :
+                name.replaceAll("[^a-zA-Z0-9._\\- ]", "").trim();
     }
 }

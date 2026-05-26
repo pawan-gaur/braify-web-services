@@ -13,10 +13,14 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 @Slf4j
 @Service
@@ -152,6 +156,99 @@ public class ESignClientService {
         } catch (Exception e) {
             log.error("Async PDF finalization failed for doc {}: {}", doc.getId(), e.getMessage(), e);
         }
+    }
+
+    // ── Post-submission: client attachment upload ───────────────────────────
+
+    private static final int  MAX_ATTACHMENTS = 5;
+    private static final long MAX_FILE_BYTES  = 10 * 1024 * 1024L; // 10 MB
+
+    /**
+     * Allows the client to upload a supporting document after signing.
+     * The signing JWT must still be cryptographically valid (not expired), but it is
+     * allowed to have been already "used" (i.e. after submission).
+     *
+     * @return the metadata of the stored attachment (without file bytes)
+     */
+    public ESignDocument.ClientAttachment uploadAttachment(String rawJwt,
+                                                           MultipartFile file,
+                                                           String ip) throws IOException {
+        // Resolve document ID from token (skips "used" check)
+        String docId = tokenService.extractDocumentIdFromToken(rawJwt)
+                .orElseThrow(() -> new SecurityException("Invalid or expired signing token"));
+
+        ESignDocument doc = fetchDoc(docId);
+
+        // Document must have been submitted
+        if (doc.getStatus() == ESignDocument.Status.DRAFT
+         || doc.getStatus() == ESignDocument.Status.PENDING
+         || doc.getStatus() == ESignDocument.Status.IN_REVIEW) {
+            throw new IllegalStateException("Attachments can only be added after the document has been submitted");
+        }
+        if (doc.getStatus() == ESignDocument.Status.CANCELLED) {
+            throw new IllegalStateException("Cannot add attachments to a cancelled document");
+        }
+
+        // Validate limits
+        List<ESignDocument.ClientAttachment> existing = doc.getClientAttachments();
+        if (existing == null) existing = new ArrayList<>();
+        if (existing.size() >= MAX_ATTACHMENTS)
+            throw new IllegalStateException("Maximum of " + MAX_ATTACHMENTS + " attachments already reached");
+
+        if (file.isEmpty())
+            throw new IllegalArgumentException("Uploaded file is empty");
+        if (file.getSize() > MAX_FILE_BYTES)
+            throw new IllegalArgumentException("File exceeds the 10 MB size limit");
+
+        // Build and persist attachment
+        ESignDocument.ClientAttachment attachment = ESignDocument.ClientAttachment.builder()
+                .id(UUID.randomUUID().toString())
+                .fileName(file.getOriginalFilename())
+                .contentType(file.getContentType())
+                .data(file.getBytes())
+                .fileSize(file.getSize())
+                .uploadedAt(LocalDateTime.now())
+                .uploadedFromIp(ip)
+                .build();
+
+        existing.add(attachment);
+        doc.setClientAttachments(existing);
+        docRepo.save(doc);
+
+        auditService.logAsync(docId, doc.getClientEmail(),
+                ESignAuditEvent.ActorType.CLIENT,
+                ESignAuditEvent.EventType.CLIENT_ATTACHMENT_UPLOADED, ip, null,
+                Map.of("fileName",    attachment.getFileName(),
+                       "fileSize",    attachment.getFileSize(),
+                       "contentType", attachment.getContentType() != null ? attachment.getContentType() : "unknown",
+                       "attachmentId", attachment.getId()));
+
+        log.info("Client attachment '{}' ({} bytes) uploaded for doc '{}'",
+                attachment.getFileName(), attachment.getFileSize(), docId);
+
+        // Return metadata only (strip bytes to avoid sending full payload back)
+        return ESignDocument.ClientAttachment.builder()
+                .id(attachment.getId())
+                .fileName(attachment.getFileName())
+                .contentType(attachment.getContentType())
+                .fileSize(attachment.getFileSize())
+                .uploadedAt(attachment.getUploadedAt())
+                .build();
+    }
+
+    /**
+     * Returns the raw bytes of a client attachment for download.
+     * Accessible by the client (via signing JWT) and by the creator (via the creator service).
+     */
+    public ESignDocument.ClientAttachment getClientAttachment(String rawJwt, String attachmentId) {
+        String docId = tokenService.extractDocumentIdFromToken(rawJwt)
+                .orElseThrow(() -> new SecurityException("Invalid or expired signing token"));
+
+        ESignDocument doc = fetchDoc(docId);
+        return doc.getClientAttachments().stream()
+                .filter(a -> attachmentId.equals(a.getId()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Attachment not found: " + attachmentId));
     }
 
     // ── Public verify ────────────────────────────────────────────────────────
