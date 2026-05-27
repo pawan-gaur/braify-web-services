@@ -27,6 +27,10 @@ public class ESignAuditService {
                                String ipAddress,
                                String userAgent,
                                Map<String, Object> metadata) {
+        // createdBy records the userId of the platform user who triggered the event;
+        // for CLIENT and SYSTEM events the actor is not an AppUser, so we leave it null.
+        String createdBy = (actorType == ESignAuditEvent.ActorType.CREATOR) ? actor : null;
+
         ESignAuditEvent entry = ESignAuditEvent.builder()
                 .documentId(documentId)
                 .actor(actor)
@@ -35,6 +39,7 @@ public class ESignAuditService {
                 .ipAddress(ipAddress)
                 .userAgent(userAgent)
                 .metadata(metadata)
+                .createdBy(createdBy)
                 .build();
         ESignAuditEvent saved = auditRepo.save(entry);
         log.debug("ESign audit: event={} document='{}' actor='{}'", event, documentId, actor);

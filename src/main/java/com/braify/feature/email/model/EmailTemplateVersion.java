@@ -45,6 +45,9 @@ public class EmailTemplateVersion {
     private String savedBy;
     private String changeNote;
 
+    /** ID of the AppUser who triggered this snapshot (email template creator / updater). */
+    private String createdBy;
+
     @CreatedDate
     private LocalDateTime savedAt;
 }

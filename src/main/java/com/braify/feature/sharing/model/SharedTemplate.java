@@ -69,6 +69,9 @@ public class SharedTemplate {
     /** Stable user-ID snapshot of the sharer. */
     private String sharedByUserId;
 
+    /** ID of the AppUser who created this share (alias for sharedByUserId for consistency). */
+    private String createdBy;
+
     /** Optional message from the sharer. Max 300 chars. */
     private String note;
 

@@ -175,66 +175,54 @@ public class BulkEmailService {
     // ── Resend failed rows ───────────────────────────────────────────────────
 
     public BulkEmailJobResponse resendFailed(String jobId, UserDetailsImpl principal) {
-        BulkEmailJob original = jobRepo.findByIdAndCreatedBy(jobId, principal.getId())
+        BulkEmailJob job = jobRepo.findByIdAndCreatedBy(jobId, principal.getId())
                 .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
 
-        List<BulkEmailJob.BulkEmailRow> failedRows = original.getRows().stream()
-                .filter(r -> r.getStatus() == BulkEmailJob.BulkEmailRow.RowStatus.FAILED)
-                .map(r -> BulkEmailJob.BulkEmailRow.builder()
-                        .rowIndex(r.getRowIndex())
-                        .recipientEmail(r.getRecipientEmail())
-                        .recipientName(r.getRecipientName())
-                        .data(r.getData())
-                        .status(BulkEmailJob.BulkEmailRow.RowStatus.PENDING)
-                        .build())
-                .toList();
+        // Guard: only PARTIAL or FAILED jobs can be retried
+        if (job.getStatus() != BulkEmailJob.JobStatus.PARTIAL
+                && job.getStatus() != BulkEmailJob.JobStatus.FAILED) {
+            throw new IllegalStateException(
+                    "Can only resend failed rows from a PARTIAL or FAILED job. Current status: "
+                    + job.getStatus());
+        }
 
-        if (failedRows.isEmpty())
+        // Collect the failed rows (we need the count before mutating)
+        long failedCount = job.getRows().stream()
+                .filter(r -> r.getStatus() == BulkEmailJob.BulkEmailRow.RowStatus.FAILED)
+                .count();
+
+        if (failedCount == 0)
             throw new IllegalStateException("No failed rows to resend");
 
-        BulkEmailJob resendJob = BulkEmailJob.builder()
-                .createdBy(original.getCreatedBy())
-                .orgId(original.getOrgId())
-                .orgName(original.getOrgName())
-                .label("Resend: " + original.getLabel())
-                .emailTemplateId(original.getEmailTemplateId())
-                .emailTemplateName(original.getEmailTemplateName())
-                .emailTemplateSubject(original.getEmailTemplateSubject())
-                .emailTemplateHtml(original.getEmailTemplateHtml())
-                .emailColumn(original.getEmailColumn())
-                .nameColumn(original.getNameColumn())
-                .columnMapping(original.getColumnMapping())
-                .attachmentType(original.getAttachmentType())
-                .uploadedPdfData(original.getUploadedPdfData())
-                .uploadedPdfName(original.getUploadedPdfName())
-                .pdfTemplateId(original.getPdfTemplateId())
-                .pdfTemplateName(original.getPdfTemplateName())
-                .pdfColumnMapping(original.getPdfColumnMapping())
-                .externalApiUrl(original.getExternalApiUrl())
-                .externalApiMethod(original.getExternalApiMethod())
-                .externalApiHeaders(original.getExternalApiHeaders())
-                .externalApiBody(original.getExternalApiBody())
-                .status(BulkEmailJob.JobStatus.PENDING)
-                .totalCount(failedRows.size())
-                .pendingCount(failedRows.size())
-                .sentCount(0)
-                .failedCount(0)
-                .rows(failedRows)
-                .build();
+        // ── Reset every FAILED row to PENDING in-place ───────────────────────
+        //    sentCount / totalCount are intentionally preserved so the progress
+        //    bar reflects the full picture (already-sent + now-retrying rows).
+        job.getRows().stream()
+                .filter(r -> r.getStatus() == BulkEmailJob.BulkEmailRow.RowStatus.FAILED)
+                .forEach(r -> {
+                    r.setStatus(BulkEmailJob.BulkEmailRow.RowStatus.PENDING);
+                    r.setError(null);
+                    r.setMessageId(null);
+                    r.setSentAt(null);
+                });
 
-        addAuditEvent(resendJob, BulkEmailJob.BulkEmailAuditEvent.EventType.JOB_CREATED,
-                "Resend job created from job '" + jobId + "' with " + failedRows.size() + " failed row(s)");
-        resendJob = jobRepo.save(resendJob);
-        log.info("Resend job '{}' created from '{}' with {} rows", resendJob.getId(), jobId, failedRows.size());
+        // ── Update counters ──────────────────────────────────────────────────
+        job.setPendingCount((int) failedCount);   // the just-reset rows are now pending
+        job.setFailedCount(0);
+        // sentCount and totalCount stay the same
 
-        // Also record on the original job that a resend was triggered
-        addAuditEvent(original, BulkEmailJob.BulkEmailAuditEvent.EventType.RESEND_CREATED,
-                "Resend job '" + resendJob.getId() + "' created for " + failedRows.size() + " failed row(s)");
-        jobRepo.save(original);
+        // ── Reset status & timestamps ────────────────────────────────────────
+        job.setStatus(BulkEmailJob.JobStatus.PENDING);
+        job.setCompletedAt(null);
+
+        addAuditEvent(job, BulkEmailJob.BulkEmailAuditEvent.EventType.RESEND_CREATED,
+                "Resend initiated — " + failedCount + " failed row(s) reset to PENDING");
+        job = jobRepo.save(job);
+        log.info("Resend initiated for job '{}': {} failed row(s) reset to PENDING", jobId, failedCount);
 
         // Cross-bean call so @Async proxy is honoured
-        bulkEmailProcessor.processJobAsync(resendJob.getId());
-        return BulkEmailJobResponse.from(resendJob, false);
+        bulkEmailProcessor.processJobAsync(job.getId());
+        return BulkEmailJobResponse.from(job, false);
     }
 
     // ── Cancel ───────────────────────────────────────────────────────────────

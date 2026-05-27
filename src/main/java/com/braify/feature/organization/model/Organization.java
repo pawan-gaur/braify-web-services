@@ -89,6 +89,11 @@ public class Organization {
     private boolean deleted = false;
     private LocalDateTime deletedAt;
 
+    // ── Auditing ──────────────────────────────────────────────────────────────
+
+    /** ID of the AppUser (PLATFORM_ADMIN) who originally created this organisation. */
+    private String createdBy;
+
     @CreatedDate
     private LocalDateTime createdAt;
 

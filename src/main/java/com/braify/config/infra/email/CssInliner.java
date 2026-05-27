@@ -36,28 +36,69 @@ public class CssInliner {
             "([^{@]+)\\{([^}]*)\\}", Pattern.DOTALL);
 
     /**
-     * Returns HTML with all CSS rules from {@code css} inlined as {@code style}
-     * attributes on matching elements.
+     * Returns a complete, email-client-safe HTML document with all CSS rules from
+     * {@code css} inlined as {@code style} attributes on matching elements.
      *
-     * <p>Falls back to wrapping the HTML with a {@code <style>} block if anything
-     * goes wrong (e.g. malformed CSS), so the email is never completely unstyled.
+     * <p>The output is always wrapped in a full XHTML document shell
+     * (DOCTYPE + {@code <html>/<head>/<body>}) containing an email reset
+     * {@code <style>} block.  This ensures Gmail, Outlook, and other clients
+     * render in standards mode, honour image references, and respect layout.
+     *
+     * <p>Falls back to embedding a {@code <style>} block inside the wrapper if
+     * anything goes wrong (e.g. malformed CSS), so the email is never unstyled.
      *
      * @param html  GrapesJS HTML fragment (body content, not a full document)
      * @param css   GrapesJS CSS string
-     * @return      HTML ready for sending via Resend / any email provider
+     * @return      Complete HTML document ready for sending via Resend / any email provider
      */
     public String inline(String html, String css) {
         if (html == null || html.isBlank()) return "";
-        if (css  == null || css.isBlank())  return html;   // already uses inline styles
+
+        // No external CSS — blocks already carry inline styles; just add the document shell
+        if (css == null || css.isBlank()) return wrapEmailDocument(html);
 
         try {
             Document doc = Jsoup.parseBodyFragment(html);
             applyRules(doc, css);
-            return doc.body().html();
+            return wrapEmailDocument(doc.body().html());
         } catch (Exception ex) {
             log.warn("CSS inlining failed — falling back to <style> block: {}", ex.getMessage());
-            return "<style>" + css + "</style>\n" + html;
+            return wrapEmailDocument("<style>" + css + "</style>\n" + html);
         }
+    }
+
+    /**
+     * Wraps a body-fragment string in a complete, email-client-safe HTML document.
+     *
+     * <ul>
+     *   <li>XHTML 1.0 Transitional DOCTYPE — keeps Outlook out of quirks mode.</li>
+     *   <li>Content-Type + viewport meta — correct charset and mobile scaling.</li>
+     *   <li>MSO conditional comment — enables PNG support in Outlook.</li>
+     *   <li>Baseline reset rules — collapses table borders, removes body margins,
+     *       prevents iOS auto-linking, and suppresses phantom gaps under images.</li>
+     * </ul>
+     */
+    private static String wrapEmailDocument(String bodyContent) {
+        return "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\"\n"
+             + "  \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\n"
+             + "<html xmlns=\"http://www.w3.org/1999/xhtml\" lang=\"en\">\n"
+             + "<head>\n"
+             + "  <meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />\n"
+             + "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n"
+             + "  <!--[if mso]><xml><o:OfficeDocumentSettings>"
+             +     "<o:AllowPNG/></o:OfficeDocumentSettings></xml><![endif]-->\n"
+             + "  <style type=\"text/css\">\n"
+             + "    body,#bodyTable{margin:0;padding:0;width:100%!important;}\n"
+             + "    body{-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;}\n"
+             + "    table,td{border-collapse:collapse;mso-table-lspace:0pt;mso-table-rspace:0pt;}\n"
+             + "    img{border:0;height:auto;line-height:100%;outline:none;text-decoration:none;}\n"
+             + "    a[x-apple-data-detectors]{color:inherit!important;text-decoration:none!important;"
+             +   "font-size:inherit!important;font-family:inherit!important;}\n"
+             + "  </style>\n"
+             + "</head>\n"
+             + "<body style=\"margin:0;padding:0;\">\n"
+             + bodyContent + "\n"
+             + "</body>\n</html>";
     }
 
     // ── private helpers ──────────────────────────────────────────────────────

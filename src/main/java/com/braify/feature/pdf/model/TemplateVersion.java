@@ -56,6 +56,9 @@ public class TemplateVersion {
     /** Optional human-readable note about what changed */
     private String changeNote;
 
+    /** ID of the AppUser who triggered this snapshot (template creator / updater). */
+    private String createdBy;
+
     @CreatedDate
     private LocalDateTime savedAt;
 }

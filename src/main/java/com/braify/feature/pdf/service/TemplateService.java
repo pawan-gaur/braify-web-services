@@ -63,13 +63,14 @@ public class TemplateService {
         template.setDeleted(false);
         template.setCurrentVersion(0);
         template.setOrganizationId(currentUser.getOrganizationId());
+        template.setCreatedBy(currentUser.getId());
         template.setPlaceholders(
                 placeholderService.extractPlaceholders(template.getHtmlContent()));
 
         Template saved = templateRepository.save(template);
 
         // Version snapshot v1
-        versionService.snapshot(saved, "Initial version");
+        versionService.snapshot(saved, "Initial version", currentUser.getId());
         templateRepository.save(saved);   // persist currentVersion=1
 
         auditLogService.log(
@@ -107,7 +108,7 @@ public class TemplateService {
 
         Template saved = templateRepository.save(existing);
 
-        versionService.snapshot(saved, "Updated");
+        versionService.snapshot(saved, "Updated", currentUser.getId());
         templateRepository.save(saved);   // persist new currentVersion
 
         auditLogService.log(
@@ -167,7 +168,7 @@ public class TemplateService {
 
         Template saved = templateRepository.save(existing);
 
-        versionService.snapshot(saved, "Restored from v" + versionNumber);
+        versionService.snapshot(saved, "Restored from v" + versionNumber, currentUser.getId());
         templateRepository.save(saved);
 
         auditLogService.log(

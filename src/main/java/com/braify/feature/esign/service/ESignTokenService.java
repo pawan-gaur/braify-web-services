@@ -45,6 +45,7 @@ public class ESignTokenService {
                 .jti(jti)
                 .documentId(doc.getId())
                 .clientEmail(doc.getClientEmail())
+                .createdBy(doc.getCreatedBy())   // userId of the document owner who sent the document
                 .issuedAt(LocalDateTime.now())
                 .expiresAt(expiresAt)
                 .build();

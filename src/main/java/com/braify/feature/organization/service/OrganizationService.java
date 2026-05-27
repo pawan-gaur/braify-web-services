@@ -48,10 +48,11 @@ public class OrganizationService {
     /**
      * Creates a new organisation and logs the action.
      *
-     * @param req         request payload
-     * @param performedBy email of the PLATFORM_ADMIN creating the org
+     * @param req          request payload
+     * @param performedBy  email of the PLATFORM_ADMIN creating the org
+     * @param createdById  user ID of the PLATFORM_ADMIN creating the org
      */
-    public Organization create(OrganizationRequest req, String performedBy) {
+    public Organization create(OrganizationRequest req, String performedBy, String createdById) {
         if (orgRepository.existsByCode(req.getCode())) {
             throw new RuntimeException("Code already taken: " + req.getCode());
         }
@@ -62,6 +63,7 @@ public class OrganizationService {
                 .features(Feature.sanitise(req.getFeatures()))
                 .active(true)
                 .deleted(false)
+                .createdBy(createdById)
                 .build();
         Organization saved = orgRepository.save(org);
         log.info("Created organization '{}' with features {}", saved.getName(), saved.getFeatures());
@@ -79,11 +81,19 @@ public class OrganizationService {
     }
 
     /**
+     * Backward-compatible overload (performer email only, no creator ID).
+     * Prefer {@link #create(OrganizationRequest, String, String)} when a user context is available.
+     */
+    public Organization create(OrganizationRequest req, String performedBy) {
+        return create(req, performedBy, null);
+    }
+
+    /**
      * Backward-compatible overload (no performer) — kept so existing callers still compile.
-     * Should migrate to {@link #create(OrganizationRequest, String)} when possible.
+     * Should migrate to {@link #create(OrganizationRequest, String, String)} when possible.
      */
     public Organization create(OrganizationRequest req) {
-        return create(req, "system");
+        return create(req, "system", null);
     }
 
     /**

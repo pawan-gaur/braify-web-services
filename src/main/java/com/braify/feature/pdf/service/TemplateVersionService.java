@@ -19,8 +19,12 @@ public class TemplateVersionService {
     /**
      * Snapshot the current state of a template as a new version.
      * The version number is  max(existing) + 1,  or 1 for brand-new templates.
+     *
+     * @param template    the template to snapshot
+     * @param changeNote  human-readable note describing the change
+     * @param createdById userId of the AppUser triggering the snapshot
      */
-    public TemplateVersion snapshot(Template template, String changeNote) {
+    public TemplateVersion snapshot(Template template, String changeNote, String createdById) {
         int nextVersion = versionRepository.countByTemplateId(template.getId()) + 1;
 
         TemplateVersion v = TemplateVersion.builder()
@@ -38,7 +42,8 @@ public class TemplateVersionService {
                 .marginLeft(template.getMarginLeft())
                 .marginRight(template.getMarginRight())
                 .placeholders(template.getPlaceholders())
-                .savedBy("system")              // replace with auth principal later
+                .savedBy(createdById != null ? createdById : "system")
+                .createdBy(createdById)
                 .changeNote(changeNote)
                 .build();
 
@@ -48,6 +53,11 @@ public class TemplateVersionService {
         template.setCurrentVersion(nextVersion);
         log.debug("Template '{}' snapshot saved as version {}", template.getId(), nextVersion);
         return saved;
+    }
+
+    /** Backward-compatible overload (no caller context). */
+    public TemplateVersion snapshot(Template template, String changeNote) {
+        return snapshot(template, changeNote, null);
     }
 
     /** List all versions for a template, newest first. */

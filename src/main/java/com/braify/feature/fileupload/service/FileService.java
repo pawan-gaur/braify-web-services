@@ -82,16 +82,18 @@ public class FileService {
     /**
      * Uploads a file to the org's configured cloud storage.
      *
-     * @param orgId    target organisation ID
-     * @param file     multipart file from the request
-     * @param meta     optional metadata (folder, type, description, tags)
-     * @param uploader identity string of the caller, e.g. email or "api-key:AKIAXXXX"
+     * @param orgId       target organisation ID
+     * @param file        multipart file from the request
+     * @param meta        optional metadata (folder, type, description, tags)
+     * @param uploader    identity string of the caller, e.g. email or "api-key:AKIAXXXX"
+     * @param createdById userId of the AppUser performing the upload; null for API-key uploads
      * @return persisted file metadata
      */
     public FileUploadResponse upload(String orgId,
                                      MultipartFile file,
                                      FileMetadataRequest meta,
-                                     String uploader) {
+                                     String uploader,
+                                     String createdById) {
         Organization org = requireOrg(orgId);
         OrgCloudConfig cfg = requireCloudConfig(org);
 
@@ -132,6 +134,7 @@ public class FileService {
                 .fileId(fileId)
                 .organizationId(orgId)
                 .uploadedBy(uploader)
+                .createdBy(createdById)
                 .originalFilename(file.getOriginalFilename())
                 .storageKey(result.getStorageKey())
                 .bucket(result.getBucket())
@@ -170,6 +173,17 @@ public class FileService {
                 orgId, fileId, file.getOriginalFilename(), fileSizeMb, cfg.getCloud());
 
         return FileUploadResponse.from(saved);
+    }
+
+    /**
+     * Backward-compatible overload — createdById defaults to null.
+     * Used by API-key callers where no AppUser identity is available.
+     */
+    public FileUploadResponse upload(String orgId,
+                                     MultipartFile file,
+                                     FileMetadataRequest meta,
+                                     String uploader) {
+        return upload(orgId, file, meta, uploader, null);
     }
 
     // ── Download ──────────────────────────────────────────────────────────────

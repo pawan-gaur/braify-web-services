@@ -47,6 +47,9 @@ public class AppUser {
     /** Optional short bio / display note */
     private String bio;
 
+    /** ID of the AppUser (admin) who created this account; null for self-registered / system-created accounts. */
+    private String createdBy;
+
     @CreatedDate
     private LocalDateTime createdAt;
 

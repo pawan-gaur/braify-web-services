@@ -86,6 +86,14 @@ public class ESignDocumentService {
             throw new IllegalArgumentException("sourceType must be UPLOAD or TEMPLATE");
         }
 
+        // Inherit allowClientUpload from the parent batch (if this document belongs to one)
+        boolean allowClientUpload = false;
+        if (bulkBatchId != null && !bulkBatchId.isBlank()) {
+            allowClientUpload = batchRepo.findById(bulkBatchId)
+                    .map(ESignBulkBatch::isAllowClientUpload)
+                    .orElse(false);
+        }
+
         ESignDocument doc = ESignDocument.builder()
                 .createdBy(principal.getId())
                 .orgId(principal.getOrgId())
@@ -99,6 +107,7 @@ public class ESignDocumentService {
                 .ccEmails(req.getCcEmails())
                 .bulkBatchId(bulkBatchId)
                 .emailTemplateId(req.getEmailTemplateId())
+                .allowClientUpload(allowClientUpload)
                 .status(ESignDocument.Status.DRAFT)
                 .build();
 
@@ -269,6 +278,7 @@ public class ESignDocumentService {
         List<ESignSignatureField> fields = requests.stream()
                 .map(r -> ESignSignatureField.builder()
                         .documentId(docId)
+                        .createdBy(principal.getId())
                         .page(r.getPage())
                         .x(r.getX()).y(r.getY())
                         .width(r.getWidth()).height(r.getHeight())
@@ -406,8 +416,12 @@ public class ESignDocumentService {
     /**
      * Creates an empty batch record (status = PROCESSING) so the frontend can obtain a
      * batch ID before starting its own individual-document loop.
+     *
+     * @param allowClientUpload when {@code true}, every document created under this batch
+     *                          will show the client an optional post-signing file-upload section
      */
-    public BulkBatchResponse initBatch(String label, int totalRequested, UserDetailsImpl principal) {
+    public BulkBatchResponse initBatch(String label, int totalRequested,
+                                       boolean allowClientUpload, UserDetailsImpl principal) {
         String resolvedLabel = (label != null && !label.isBlank())
                 ? label
                 : "Bulk Send – " + LocalDateTime.now().toString().substring(0, 16).replace('T', ' ');
@@ -417,6 +431,7 @@ public class ESignDocumentService {
                 .orgId(principal.getOrgId())
                 .label(resolvedLabel)
                 .totalRequested(totalRequested)
+                .allowClientUpload(allowClientUpload)
                 .status(ESignBulkBatch.Status.PROCESSING)
                 .build());
 

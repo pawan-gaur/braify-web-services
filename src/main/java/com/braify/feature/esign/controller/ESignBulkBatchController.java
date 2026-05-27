@@ -27,7 +27,7 @@ public class ESignBulkBatchController {
     private final ESignDocumentService documentService;
 
     /** Inline request body for initBatch. */
-    @Data static class InitBatchRequest  { private String label; private int totalRequested; }
+    @Data static class InitBatchRequest  { private String label; private int totalRequested; private boolean allowClientUpload; }
 
     /** Inline request body for finalizeBatch. */
     @Data static class FinalizeBatchRequest { private int totalCreated; private int totalSent; private int totalFailed; }
@@ -41,9 +41,10 @@ public class ESignBulkBatchController {
     public ResponseEntity<BulkBatchResponse> initBatch(
             @RequestBody InitBatchRequest req,
             @AuthenticationPrincipal UserDetailsImpl principal) {
-        log.info("POST /api/esign/batches/init label='{}' total={} by '{}'",
-                req.getLabel(), req.getTotalRequested(), principal.getUsername());
-        return ResponseEntity.ok(documentService.initBatch(req.getLabel(), req.getTotalRequested(), principal));
+        log.info("POST /api/esign/batches/init label='{}' total={} allowClientUpload={} by '{}'",
+                req.getLabel(), req.getTotalRequested(), req.isAllowClientUpload(), principal.getUsername());
+        return ResponseEntity.ok(documentService.initBatch(
+                req.getLabel(), req.getTotalRequested(), req.isAllowClientUpload(), principal));
     }
 
     @Operation(summary = "Finalize a bulk batch",

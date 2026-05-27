@@ -72,12 +72,13 @@ public class EmailTemplateService {
         template.setDeleted(false);
         template.setCurrentVersion(0);
         template.setOrganizationId(currentUser.getOrganizationId());
+        template.setCreatedBy(currentUser.getId());
         template.setPlaceholders(
                 placeholderService.extractPlaceholders(template.getHtmlContent()));
 
         EmailTemplate saved = emailTemplateRepository.save(template);
 
-        versionService.snapshot(saved, "Initial version");
+        versionService.snapshot(saved, "Initial version", currentUser.getId());
         emailTemplateRepository.save(saved);
 
         auditLogService.log(saved.getId(), saved.getName(),
@@ -110,7 +111,7 @@ public class EmailTemplateService {
 
         EmailTemplate saved = emailTemplateRepository.save(existing);
 
-        versionService.snapshot(saved, "Updated");
+        versionService.snapshot(saved, "Updated", currentUser.getId());
         emailTemplateRepository.save(saved);
 
         auditLogService.log(saved.getId(), saved.getName(),
@@ -163,7 +164,7 @@ public class EmailTemplateService {
 
         EmailTemplate saved = emailTemplateRepository.save(existing);
 
-        versionService.snapshot(saved, "Restored from v" + versionNumber);
+        versionService.snapshot(saved, "Restored from v" + versionNumber, currentUser.getId());
         emailTemplateRepository.save(saved);
 
         auditLogService.log(saved.getId(), saved.getName(),

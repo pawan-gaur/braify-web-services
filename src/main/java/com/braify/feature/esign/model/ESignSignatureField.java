@@ -15,6 +15,9 @@ public class ESignSignatureField {
 
     @Indexed private String documentId;
 
+    /** ID of the AppUser who placed these signature fields. */
+    private String createdBy;
+
     /* ── Placement — all values as % of page dimensions ───────────────── */
     private int    page;    // 1-based; 0 = stamp on EVERY page
     private double x;       // left edge %

@@ -60,6 +60,12 @@ public class OrgBrandingService {
 
         Organization org = findOrg(orgId);
 
+        // Preserve the original creator's ID — only set on first save
+        OrgBranding existing  = org.getBranding();
+        String      createdBy = (existing != null && existing.getCreatedBy() != null)
+                ? existing.getCreatedBy()
+                : caller.getId();
+
         OrgBranding branding = OrgBranding.builder()
                 .logoBase64(req.getLogoBase64())
                 .primaryColor(req.getPrimaryColor())
@@ -68,6 +74,7 @@ public class OrgBrandingService {
                 .emailReplyTo(req.getEmailReplyTo())
                 .footerText(req.getFooterText())
                 .featureRoleAccess(normalised)
+                .createdBy(createdBy)
                 .build();
 
         org.setBranding(branding);

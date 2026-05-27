@@ -103,8 +103,11 @@ public class OrgCloudConfigService {
             throw new RuntimeException("retentionDays must be greater than zero");
 
         // ── Preserve immutable fields from existing config ────────────────────
-        OrgCloudConfig existing  = org.getCloudConfig();
-        LocalDateTime  createdAt = (existing != null) ? existing.getCreatedAt() : LocalDateTime.now();
+        OrgCloudConfig existing   = org.getCloudConfig();
+        LocalDateTime  createdAt  = (existing != null) ? existing.getCreatedAt() : LocalDateTime.now();
+        String         createdBy  = (existing != null && existing.getCreatedBy() != null)
+                ? existing.getCreatedBy()
+                : caller.getId();
         OrgCloudConfig.ConfigStatus status = (existing != null && existing.getStatus() != null)
                 ? existing.getStatus()
                 : OrgCloudConfig.ConfigStatus.ONBOARD;
@@ -141,6 +144,7 @@ public class OrgCloudConfigService {
                 .retentionDays(req.getRetentionDays())
                 .presignedUrlExpiration(req.getPresignedUrlExpiration())
                 .status(status)
+                .createdBy(createdBy)
                 .createdAt(createdAt)
                 .updatedAt(LocalDateTime.now())
                 .build();

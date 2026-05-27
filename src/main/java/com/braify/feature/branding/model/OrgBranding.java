@@ -73,4 +73,7 @@ public class OrgBranding {
      * </ul>
      */
     private Map<String, List<String>> featureRoleAccess;
+
+    /** ID of the AppUser who first configured this branding; preserved across subsequent updates. */
+    private String createdBy;
 }

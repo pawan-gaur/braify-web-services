@@ -78,6 +78,15 @@ public class ESignDocument {
     @CreatedDate  private LocalDateTime createdAt;
     @LastModifiedDate private LocalDateTime updatedAt;
 
+    /* ── Post-signing upload permission ────────────────────────────────── */
+    /**
+     * When {@code true}, the client is shown an optional file-upload section after signing.
+     * Inherited from {@link ESignBulkBatch#isAllowClientUpload()} at document-creation time;
+     * always {@code false} for single-sign documents unless explicitly set.
+     */
+    @Builder.Default
+    private boolean allowClientUpload = false;
+
     /* ── Client-uploaded attachments (optional, post-signing) ─────────── */
     /**
      * Files the client voluntarily uploads after signing — e.g. ID proof, supporting docs.

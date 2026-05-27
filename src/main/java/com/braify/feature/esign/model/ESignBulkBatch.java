@@ -30,6 +30,15 @@ public class ESignBulkBatch {
     private int totalSent;
     private int totalFailed;
 
+    /* ── Configuration ────────────────────────────────────────────────────── */
+    /**
+     * When {@code true}, clients are shown an optional file-upload section after
+     * signing so they can attach supporting documents (ID proof, etc.).
+     * Set by the creator at batch-init time; propagated to every document in the batch.
+     */
+    @Builder.Default
+    private boolean allowClientUpload = false;
+
     /* ── Batch status ─────────────────────────────────────────────────────── */
     public enum Status { PROCESSING, COMPLETED, PARTIAL, FAILED }
     @Builder.Default
