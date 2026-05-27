@@ -93,7 +93,7 @@ public class FileController {
         meta.setTags(tags);
 
         try {
-            FileUploadResponse response = fileService.upload(orgId, file, meta, caller.getEmail());
+            FileUploadResponse response = fileService.upload(orgId, file, meta, caller.getEmail(), caller.getId());
             return ResponseEntity.status(HttpStatus.CREATED).body(response);
         } catch (RuntimeException e) {
             String msg = e.getMessage();

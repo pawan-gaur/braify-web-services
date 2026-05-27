@@ -35,8 +35,11 @@ public class EmailInviteService {
     /**
      * Creates an INVITE token (7-day expiry) and sends a "set your password" email.
      * Safe to call even when Resend is not configured — falls back to console logging.
+     *
+     * @param user        target user whose invite is being sent
+     * @param createdById userId of the admin / system that triggered the invite
      */
-    public void sendInvite(AppUser user) {
+    public void sendInvite(AppUser user, String createdById) {
         // Invalidate any previous pending invites
         List<InvitationToken> old = tokenRepository
                 .findByUserIdAndTypeAndUsedFalse(user.getId(), InvitationToken.TokenType.INVITE);
@@ -50,6 +53,7 @@ public class EmailInviteService {
                 .type(InvitationToken.TokenType.INVITE)
                 .expiresAt(LocalDateTime.now().plusDays(7))
                 .used(false)
+                .createdBy(createdById)
                 .build();
         tokenRepository.save(token);
 
@@ -64,7 +68,16 @@ public class EmailInviteService {
     }
 
     /**
+     * Backward-compatible overload — createdById defaults to null.
+     * Prefer {@link #sendInvite(AppUser, String)} when the admin's userId is available.
+     */
+    public void sendInvite(AppUser user) {
+        sendInvite(user, null);
+    }
+
+    /**
      * Creates a PASSWORD_RESET token (1-hour expiry) and sends a reset email.
+     * Self-service flow — createdBy is set to the requesting user's own ID.
      */
     public void sendPasswordReset(AppUser user) {
         // Invalidate previous pending resets
@@ -80,6 +93,7 @@ public class EmailInviteService {
                 .type(InvitationToken.TokenType.PASSWORD_RESET)
                 .expiresAt(LocalDateTime.now().plusHours(1))
                 .used(false)
+                .createdBy(user.getId())   // self-service — requester is the creator
                 .build();
         tokenRepository.save(token);
 

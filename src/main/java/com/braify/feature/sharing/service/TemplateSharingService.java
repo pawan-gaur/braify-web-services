@@ -90,6 +90,7 @@ public class TemplateSharingService {
                 .permission(permission)
                 .sharedBy(caller.getEmail())
                 .sharedByUserId(caller.getId())
+                .createdBy(caller.getId())
                 .note(req.getNote())
                 .forkedTemplateId(forkedId)
                 .build();

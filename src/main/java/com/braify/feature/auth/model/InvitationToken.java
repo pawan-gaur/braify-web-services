@@ -39,6 +39,9 @@ public class InvitationToken {
 
     private TokenType type;
 
+    /** ID of the AppUser who triggered the creation of this token (admin for INVITE, the user themselves for PASSWORD_RESET). */
+    private String createdBy;
+
     /** Invite = 7 days; Password reset = 1 hour. */
     private LocalDateTime expiresAt;
 

@@ -52,6 +52,9 @@ public class OrgFile {
     /** Email of the user (or "api-key:<keyPrefix>") who uploaded the file. */
     private String uploadedBy;
 
+    /** ID of the AppUser who uploaded the file; null for API-key uploads. */
+    private String createdBy;
+
     /** The original filename as provided by the client. */
     private String originalFilename;
 

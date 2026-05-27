@@ -60,6 +60,10 @@ public class EmailTemplate {
     private boolean forked = false;
 
     // ── Auditing ──────────────────────────────────────────────────────────────
+
+    /** ID of the AppUser who originally created this email template. */
+    private String createdBy;
+
     @CreatedDate
     private LocalDateTime createdAt;
 

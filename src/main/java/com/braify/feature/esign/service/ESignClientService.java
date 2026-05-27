@@ -179,6 +179,11 @@ public class ESignClientService {
 
         ESignDocument doc = fetchDoc(docId);
 
+        // Creator must have enabled client uploads for this document
+        if (!doc.isAllowClientUpload()) {
+            throw new IllegalStateException("Client document upload is not enabled for this document");
+        }
+
         // Document must have been submitted
         if (doc.getStatus() == ESignDocument.Status.DRAFT
          || doc.getStatus() == ESignDocument.Status.PENDING

@@ -93,6 +93,9 @@ public class OrgCloudConfig {
     @Builder.Default
     private ConfigStatus status = ConfigStatus.ONBOARD;
 
+    /** ID of the AppUser who first saved this config; preserved across subsequent updates. */
+    private String createdBy;
+
     /** Timestamp when this config was first persisted. */
     private LocalDateTime createdAt;
 

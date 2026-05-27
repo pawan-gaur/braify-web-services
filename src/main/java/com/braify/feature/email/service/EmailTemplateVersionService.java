@@ -16,8 +16,14 @@ public class EmailTemplateVersionService {
 
     private final EmailTemplateVersionRepository versionRepository;
 
-    /** Snapshot the current state of an email template as a new version. */
-    public EmailTemplateVersion snapshot(EmailTemplate template, String changeNote) {
+    /**
+     * Snapshot the current state of an email template as a new version.
+     *
+     * @param template    the email template to snapshot
+     * @param changeNote  human-readable note describing the change
+     * @param createdById userId of the AppUser triggering the snapshot
+     */
+    public EmailTemplateVersion snapshot(EmailTemplate template, String changeNote, String createdById) {
         int nextVersion = versionRepository.countByEmailTemplateId(template.getId()) + 1;
 
         EmailTemplateVersion v = EmailTemplateVersion.builder()
@@ -32,7 +38,8 @@ public class EmailTemplateVersionService {
                 .cssContent(template.getCssContent())
                 .gjsData(template.getGjsData())
                 .placeholders(template.getPlaceholders())
-                .savedBy("system")
+                .savedBy(createdById != null ? createdById : "system")
+                .createdBy(createdById)
                 .changeNote(changeNote)
                 .build();
 
@@ -40,6 +47,11 @@ public class EmailTemplateVersionService {
         template.setCurrentVersion(nextVersion);
         log.debug("Email template '{}' snapshot saved as version {}", template.getId(), nextVersion);
         return saved;
+    }
+
+    /** Backward-compatible overload (no caller context). */
+    public EmailTemplateVersion snapshot(EmailTemplate template, String changeNote) {
+        return snapshot(template, changeNote, null);
     }
 
     /** All versions for an email template, newest first. */

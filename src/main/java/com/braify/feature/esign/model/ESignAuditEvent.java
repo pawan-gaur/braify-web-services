@@ -27,6 +27,9 @@ public class ESignAuditEvent {
     private String    ipAddress;
     private String    userAgent;
 
+    /** userId of the AppUser who initiated this event (same as actor when actorType == CREATOR; null for CLIENT / SYSTEM events). */
+    private String    createdBy;
+
     /* ── What ──────────────────────────────────────────────────────────── */
     public enum EventType {
         DOCUMENT_CREATED,

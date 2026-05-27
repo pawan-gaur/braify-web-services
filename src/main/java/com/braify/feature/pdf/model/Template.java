@@ -63,6 +63,10 @@ public class Template {
     private boolean forked = false;
 
     // ── Auditing ──────────────────────────────────────────────────────────────
+
+    /** ID of the AppUser who originally created this template. */
+    private String createdBy;
+
     @CreatedDate
     private LocalDateTime createdAt;
 

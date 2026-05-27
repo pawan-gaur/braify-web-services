@@ -39,6 +39,14 @@ public class OrganizationController {
         return auth.getName();
     }
 
+    /** Extracts the acting user's ID from the JWT principal (null when not a known principal type). */
+    private String createdById(Authentication auth) {
+        if (auth == null) return null;
+        Object principal = auth.getPrincipal();
+        if (principal instanceof UserDetailsImpl ud) return ud.getId();
+        return null;
+    }
+
     // ── CRUD ──────────────────────────────────────────────────────────────────
 
     @Operation(summary = "List all organisations",
@@ -79,7 +87,7 @@ public class OrganizationController {
     public ResponseEntity<Organization> create(@Valid @RequestBody OrganizationRequest req,
                                                Authentication auth) {
         log.info("POST /api/organizations name='{}' by '{}'", req.getName(), performedBy(auth));
-        ResponseEntity<Organization> result = ResponseEntity.ok(orgService.create(req, performedBy(auth)));
+        ResponseEntity<Organization> result = ResponseEntity.ok(orgService.create(req, performedBy(auth), createdById(auth)));
         log.info("Organisation created: id='{}'", result.getBody() != null ? result.getBody().getId() : "unknown");
         return result;
     }

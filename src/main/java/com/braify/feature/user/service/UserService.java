@@ -113,6 +113,7 @@ public class UserService {
                 .organizationId(orgId)
                 .active(true)
                 .mustChangePassword(sendInvite) // must reset via invite link
+                .createdBy(currentUser.getId())
                 .build();
         user = userRepository.save(user);
 
@@ -126,7 +127,7 @@ public class UserService {
 
         // Send invite email asynchronously (fire-and-forget; errors are logged)
         if (sendInvite) {
-            emailInviteService.sendInvite(user);
+            emailInviteService.sendInvite(user, currentUser.getId());
         }
 
         return toResponse(user);
