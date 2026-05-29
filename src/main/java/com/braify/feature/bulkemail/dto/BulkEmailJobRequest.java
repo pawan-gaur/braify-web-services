@@ -41,4 +41,11 @@ public class BulkEmailJobRequest {
     private String externalApiMethod;       // GET or POST
     private String externalApiHeaders;      // JSON string
     private String externalApiBody;         // POST body template
+
+    /* ── EXCEL_SHEET ── */
+    private List<Map<String, String>> detailSheetRows;    // all Sheet 2 rows from the workbook
+    private List<String> detailSheetColumns;              // Sheet 2 column names (ordered)
+    private String detailSheetIdColumn;                   // Sheet 2 column to match against
+    private String mainSheetIdColumn;                     // Sheet 1 column that holds the matching key
+    private String detailSheetFileName;                   // filename template e.g. "Statement_{{name}}.xlsx"
 }

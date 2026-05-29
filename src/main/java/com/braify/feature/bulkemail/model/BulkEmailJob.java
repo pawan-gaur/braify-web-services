@@ -38,7 +38,7 @@ public class BulkEmailJob {
     private Map<String, String> columnMapping;   // emailTemplatePlaceholder → xlsxColumn
 
     /* ── Attachment config ───────────────────────────────────────────────── */
-    public enum AttachmentType { NONE, UPLOAD, PDF_TEMPLATE, EXTERNAL_API }
+    public enum AttachmentType { NONE, UPLOAD, PDF_TEMPLATE, EXTERNAL_API, EXCEL_SHEET }
     @Builder.Default
     private AttachmentType attachmentType = AttachmentType.NONE;
 
@@ -56,6 +56,15 @@ public class BulkEmailJob {
     private String externalApiMethod;     // GET or POST
     private String externalApiHeaders;    // JSON string of header key→value pairs
     private String externalApiBody;       // POST body template with {{col}} placeholders
+
+    // EXCEL_SHEET — generate per-recipient Excel from Sheet 2 of the uploaded workbook
+    @Builder.Default
+    private List<Map<String, String>> detailSheetRows = new ArrayList<>(); // all Sheet 2 rows
+    @Builder.Default
+    private List<String> detailSheetColumns = new ArrayList<>();            // Sheet 2 column names
+    private String detailSheetIdColumn;     // Sheet 2 column to match against
+    private String mainSheetIdColumn;       // Sheet 1 column that holds the matching key
+    private String detailSheetFileName;     // e.g. "Statement_{{name}}.xlsx"
 
     /* ── Progress ────────────────────────────────────────────────────────── */
     public enum JobStatus { PENDING, PROCESSING, COMPLETED, PARTIAL, FAILED, CANCELLED }

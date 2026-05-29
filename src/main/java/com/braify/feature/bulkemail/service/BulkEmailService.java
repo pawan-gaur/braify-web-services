@@ -111,6 +111,15 @@ public class BulkEmailService {
                 throw new IllegalArgumentException("API URL is required for EXTERNAL_API attachment type");
         }
 
+        if (attType == BulkEmailJob.AttachmentType.EXCEL_SHEET) {
+            if (req.getDetailSheetRows() == null || req.getDetailSheetRows().isEmpty())
+                throw new IllegalArgumentException("Detail sheet rows are required for EXCEL_SHEET attachment type");
+            if (req.getDetailSheetIdColumn() == null || req.getDetailSheetIdColumn().isBlank())
+                throw new IllegalArgumentException("Detail sheet ID column is required for EXCEL_SHEET attachment type");
+            if (req.getMainSheetIdColumn() == null || req.getMainSheetIdColumn().isBlank())
+                throw new IllegalArgumentException("Main sheet ID column is required for EXCEL_SHEET attachment type");
+        }
+
         // Resolve organisation display name (used as email "From:" sender)
         String orgName = orgRepo.findById(principal.getOrgId())
                 .map(org -> org.getName())
@@ -144,6 +153,11 @@ public class BulkEmailService {
                 .externalApiMethod(req.getExternalApiMethod())
                 .externalApiHeaders(req.getExternalApiHeaders())
                 .externalApiBody(req.getExternalApiBody())
+                .detailSheetRows(req.getDetailSheetRows() != null ? req.getDetailSheetRows() : List.of())
+                .detailSheetColumns(req.getDetailSheetColumns() != null ? req.getDetailSheetColumns() : List.of())
+                .detailSheetIdColumn(req.getDetailSheetIdColumn())
+                .mainSheetIdColumn(req.getMainSheetIdColumn())
+                .detailSheetFileName(req.getDetailSheetFileName())
                 .status(BulkEmailJob.JobStatus.PENDING)
                 .totalCount(rows.size())
                 .pendingCount(rows.size())
