@@ -1,5 +1,7 @@
 package com.braify.feature.auth.service;
 
+import com.braify.feature.audit.model.AuditLog;
+import com.braify.feature.audit.service.AuditLogService;
 import com.braify.feature.auth.dto.LoginRequest;
 import com.braify.feature.auth.dto.LoginResponse;
 import com.braify.feature.user.model.AppUser;
@@ -17,17 +19,19 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class AuthService {
 
-    private final AppUserRepository userRepository;
+    private final AppUserRepository     userRepository;
     private final UserSessionRepository sessionRepository;
     private final OrganizationRepository orgRepository;
-    private final PasswordEncoder passwordEncoder;
-    private final JwtUtil jwtUtil;
+    private final PasswordEncoder       passwordEncoder;
+    private final JwtUtil               jwtUtil;
+    private final AuditLogService       auditLogService;
 
     private static final int MAX_SESSIONS = 3;
 
@@ -78,6 +82,14 @@ public class AuthService {
                 .build();
         sessionRepository.save(session);
 
+        // Audit: record login event against SESSION resource
+        auditLogService.logByUser(
+                session.getId(), null,
+                AuditLog.Action.LOGIN, AuditLog.ResourceType.SESSION,
+                0, Map.of("ip",         ipAddress  != null ? ipAddress : "unknown",
+                           "deviceInfo", req.getDeviceInfo() != null ? req.getDeviceInfo() : ""),
+                user);
+
         // Fetch org (name + features) if applicable
         Organization org = user.getOrganizationId() != null
                 ? orgRepository.findById(user.getOrganizationId()).orElse(null)
@@ -113,6 +125,13 @@ public class AuthService {
             s.setActive(false);
             sessionRepository.save(s);
             log.info("Session revoked for user '{}'", s.getUserId());
+            // Audit: record logout — look up user once for full details
+            userRepository.findById(s.getUserId()).ifPresent(u ->
+                auditLogService.logByUser(
+                        s.getId(), null,
+                        AuditLog.Action.LOGOUT, AuditLog.ResourceType.SESSION,
+                        0, null, u)
+            );
         });
     }
 }

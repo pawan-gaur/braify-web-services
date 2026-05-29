@@ -18,11 +18,25 @@ public interface ESignDocumentRepository extends MongoRepository<ESignDocument, 
 
     // ── Paginated single-document queries (bulkBatchId IS NULL) ───────────────
 
+    /** User-scoped: own documents (ADMIN / USER). */
     Page<ESignDocument> findByCreatedByAndBulkBatchIdIsNullOrderByCreatedAtDesc(
             String userId, Pageable pageable);
 
     Page<ESignDocument> findByCreatedByAndBulkBatchIdIsNullAndStatusOrderByCreatedAtDesc(
             String userId, ESignDocument.Status status, Pageable pageable);
+
+    /** Org-scoped: all documents in an org (ORG_ADMIN). */
+    Page<ESignDocument> findByOrgIdAndBulkBatchIdIsNullOrderByCreatedAtDesc(
+            String orgId, Pageable pageable);
+
+    Page<ESignDocument> findByOrgIdAndBulkBatchIdIsNullAndStatusOrderByCreatedAtDesc(
+            String orgId, ESignDocument.Status status, Pageable pageable);
+
+    /** Cross-org: all documents (PLATFORM_ADMIN). */
+    Page<ESignDocument> findByBulkBatchIdIsNullOrderByCreatedAtDesc(Pageable pageable);
+
+    Page<ESignDocument> findByBulkBatchIdIsNullAndStatusOrderByCreatedAtDesc(
+            ESignDocument.Status status, Pageable pageable);
 
     // ── Paginated queries for documents belonging to a batch ──────────────────
 

@@ -20,7 +20,8 @@ public class DocumentResponse {
     private String sourcePdfBase64;       // null for list view; populated on detail
     private String signedPdfBase64;       // null until COMPLETED
     private String signedPdfHash;
-    private boolean allowClientUpload;    // whether client may upload supporting docs after signing
+    private boolean allowClientUpload;              // whether client may upload supporting docs after signing
+    private List<String> allowedClientUploadFileTypes; // empty = all types accepted
     private LocalDateTime sentAt;
     private LocalDateTime viewedAt;
     private LocalDateTime submittedAt;
@@ -70,6 +71,7 @@ public class DocumentResponse {
                         ? java.util.Base64.getEncoder().encodeToString(doc.getSignedPdfData()) : null)
                 .signedPdfHash(doc.getSignedPdfHash())
                 .allowClientUpload(doc.isAllowClientUpload())
+                .allowedClientUploadFileTypes(doc.getAllowedClientUploadFileTypes())
                 .sentAt(doc.getSentAt())
                 .viewedAt(doc.getViewedAt())
                 .submittedAt(doc.getSubmittedAt())

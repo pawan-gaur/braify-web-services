@@ -68,7 +68,7 @@ public class FileController {
      * </ul>
      */
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @PreAuthorize("hasAnyRole('PLATFORM_ADMIN','ORG_ADMIN','ORG_USER')")
+    @PreAuthorize("hasAnyRole('PLATFORM_ADMIN','ORG_ADMIN','ADMIN','USER')")
     @Operation(summary = "Upload file",
                description = "Uploads a file to the organisation's configured cloud storage. " +
                              "Returns file metadata including the assigned fileId.")
@@ -118,7 +118,7 @@ public class FileController {
     // ── Download ──────────────────────────────────────────────────────────────
 
     @GetMapping("/{fileId}/download")
-    @PreAuthorize("hasAnyRole('PLATFORM_ADMIN','ORG_ADMIN','ORG_USER')")
+    @PreAuthorize("hasAnyRole('PLATFORM_ADMIN','ORG_ADMIN','ADMIN','USER')")
     @Operation(summary = "Get download URL",
                description = "Returns a time-limited pre-signed URL for downloading the specified file.")
     public ResponseEntity<FileDownloadResponse> download(
@@ -148,7 +148,7 @@ public class FileController {
     // ── List / Dashboard ──────────────────────────────────────────────────────
 
     @GetMapping
-    @PreAuthorize("hasAnyRole('PLATFORM_ADMIN','ORG_ADMIN','ORG_USER')")
+    @PreAuthorize("hasAnyRole('PLATFORM_ADMIN','ORG_ADMIN','ADMIN','USER')")
     @Operation(summary = "List files",
                description = "Paginated file dashboard with optional filters for documentType, status, and keyword search.")
     public ResponseEntity<FileListResponse> listFiles(
@@ -170,7 +170,7 @@ public class FileController {
     // ── Get single file metadata ──────────────────────────────────────────────
 
     @GetMapping("/{fileId}")
-    @PreAuthorize("hasAnyRole('PLATFORM_ADMIN','ORG_ADMIN','ORG_USER')")
+    @PreAuthorize("hasAnyRole('PLATFORM_ADMIN','ORG_ADMIN','ADMIN','USER')")
     @Operation(summary = "Get file metadata",
                description = "Returns metadata for a single file.")
     public ResponseEntity<FileUploadResponse> getFile(

@@ -11,6 +11,8 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
+
+import java.util.List;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -27,7 +29,12 @@ public class ESignBulkBatchController {
     private final ESignDocumentService documentService;
 
     /** Inline request body for initBatch. */
-    @Data static class InitBatchRequest  { private String label; private int totalRequested; private boolean allowClientUpload; }
+    @Data static class InitBatchRequest  {
+        private String label;
+        private int totalRequested;
+        private boolean allowClientUpload;
+        private List<String> allowedClientUploadFileTypes;
+    }
 
     /** Inline request body for finalizeBatch. */
     @Data static class FinalizeBatchRequest { private int totalCreated; private int totalSent; private int totalFailed; }
@@ -41,10 +48,12 @@ public class ESignBulkBatchController {
     public ResponseEntity<BulkBatchResponse> initBatch(
             @RequestBody InitBatchRequest req,
             @AuthenticationPrincipal UserDetailsImpl principal) {
-        log.info("POST /api/esign/batches/init label='{}' total={} allowClientUpload={} by '{}'",
-                req.getLabel(), req.getTotalRequested(), req.isAllowClientUpload(), principal.getUsername());
+        log.info("POST /api/esign/batches/init label='{}' total={} allowClientUpload={} allowedTypes={} by '{}'",
+                req.getLabel(), req.getTotalRequested(), req.isAllowClientUpload(),
+                req.getAllowedClientUploadFileTypes(), principal.getUsername());
         return ResponseEntity.ok(documentService.initBatch(
-                req.getLabel(), req.getTotalRequested(), req.isAllowClientUpload(), principal));
+                req.getLabel(), req.getTotalRequested(), req.isAllowClientUpload(),
+                req.getAllowedClientUploadFileTypes(), principal));
     }
 
     @Operation(summary = "Finalize a bulk batch",
