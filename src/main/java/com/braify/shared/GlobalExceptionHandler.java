@@ -108,6 +108,21 @@ public class GlobalExceptionHandler {
                 .body(errorBody(HttpStatus.FORBIDDEN, "Access denied"));
     }
 
+    /**
+     * Business-rule conflict — e.g. "cannot resend a COMPLETED document",
+     * "job already in terminal state".  Returns HTTP 409 Conflict.
+     *
+     * <p>Must be declared before the {@link RuntimeException} handler because
+     * {@link IllegalStateException} is a subclass of {@link RuntimeException};
+     * Spring picks the most specific handler first.
+     */
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<Map<String, Object>> handleIllegalState(IllegalStateException ex) {
+        log.warn("Illegal state: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(errorBody(HttpStatus.CONFLICT, ex.getMessage()));
+    }
+
     /** Resource not found — RuntimeException thrown by services. */
     @ExceptionHandler(RuntimeException.class)
     public ResponseEntity<Map<String, Object>> handleRuntime(RuntimeException ex) {

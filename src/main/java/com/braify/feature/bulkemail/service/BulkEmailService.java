@@ -1,6 +1,8 @@
 package com.braify.feature.bulkemail.service;
 
 import com.braify.config.infra.email.CssInliner;
+import com.braify.feature.audit.model.AuditLog;
+import com.braify.feature.audit.service.AuditLogService;
 import com.braify.feature.bulkemail.dto.BulkEmailJobRequest;
 import com.braify.feature.bulkemail.dto.BulkEmailJobResponse;
 import com.braify.feature.bulkemail.model.BulkEmailJob;
@@ -9,11 +11,13 @@ import com.braify.feature.email.model.EmailTemplate;
 import com.braify.feature.email.repository.EmailTemplateRepository;
 import com.braify.feature.organization.repository.OrganizationRepository;
 import com.braify.feature.pdf.repository.TemplateRepository;
+import com.braify.feature.user.model.AppUser;
 import com.braify.security.UserDetailsImpl;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -35,6 +39,7 @@ public class BulkEmailService {
     private final OrganizationRepository   orgRepo;
     private final TemplateRepository       pdfTemplateRepo;
     private final CssInliner               cssInliner;
+    private final AuditLogService          auditLogService;
 
     /**
      * Injected as a separate bean so that the {@code @Async} proxy on
@@ -106,6 +111,15 @@ public class BulkEmailService {
                 throw new IllegalArgumentException("API URL is required for EXTERNAL_API attachment type");
         }
 
+        if (attType == BulkEmailJob.AttachmentType.EXCEL_SHEET) {
+            if (req.getDetailSheetRows() == null || req.getDetailSheetRows().isEmpty())
+                throw new IllegalArgumentException("Detail sheet rows are required for EXCEL_SHEET attachment type");
+            if (req.getDetailSheetIdColumn() == null || req.getDetailSheetIdColumn().isBlank())
+                throw new IllegalArgumentException("Detail sheet ID column is required for EXCEL_SHEET attachment type");
+            if (req.getMainSheetIdColumn() == null || req.getMainSheetIdColumn().isBlank())
+                throw new IllegalArgumentException("Main sheet ID column is required for EXCEL_SHEET attachment type");
+        }
+
         // Resolve organisation display name (used as email "From:" sender)
         String orgName = orgRepo.findById(principal.getOrgId())
                 .map(org -> org.getName())
@@ -139,6 +153,11 @@ public class BulkEmailService {
                 .externalApiMethod(req.getExternalApiMethod())
                 .externalApiHeaders(req.getExternalApiHeaders())
                 .externalApiBody(req.getExternalApiBody())
+                .detailSheetRows(req.getDetailSheetRows() != null ? req.getDetailSheetRows() : List.of())
+                .detailSheetColumns(req.getDetailSheetColumns() != null ? req.getDetailSheetColumns() : List.of())
+                .detailSheetIdColumn(req.getDetailSheetIdColumn())
+                .mainSheetIdColumn(req.getMainSheetIdColumn())
+                .detailSheetFileName(req.getDetailSheetFileName())
                 .status(BulkEmailJob.JobStatus.PENDING)
                 .totalCount(rows.size())
                 .pendingCount(rows.size())
@@ -153,6 +172,14 @@ public class BulkEmailService {
         job = jobRepo.save(job);
         log.info("BulkEmailJob '{}' created: {} rows, attachment={}", job.getId(), rows.size(), attType);
 
+        // Unified audit log (visible on the main Audit Log page)
+        auditLogService.log(
+                job.getId(), job.getLabel(),
+                AuditLog.Action.CREATED, AuditLog.ResourceType.BULK_EMAIL,
+                0, Map.of("rows", rows.size(), "attachment", attType.name(),
+                           "emailTemplate", emailTemplate.getName()),
+                principal.getUsername(), principal.getOrgId());
+
         // Delegate to BulkEmailProcessor — cross-bean call so @Async proxy is honoured
         bulkEmailProcessor.processJobAsync(job.getId());
         return BulkEmailJobResponse.from(job, false);
@@ -160,23 +187,64 @@ public class BulkEmailService {
 
     // ── List & get ───────────────────────────────────────────────────────────
 
+    /**
+     * Returns jobs based on the caller's role:
+     * <ul>
+     *   <li>PLATFORM_ADMIN — all jobs across all orgs</li>
+     *   <li>ORG_ADMIN      — all jobs within their organisation</li>
+     *   <li>ADMIN / USER   — only jobs created by themselves</li>
+     * </ul>
+     */
     public Page<BulkEmailJobResponse> listJobs(UserDetailsImpl principal, int page, int size) {
-        return jobRepo.findByCreatedByOrderByCreatedAtDesc(
-                        principal.getId(), PageRequest.of(page, Math.min(size, 50)))
-                .map(j -> BulkEmailJobResponse.from(j, false));
+        PageRequest pageable = PageRequest.of(page, Math.min(size, 50));
+        AppUser.Role role = principal.getAppUser().getRole();
+
+        Page<BulkEmailJob> result = switch (role) {
+            case PLATFORM_ADMIN ->
+                    jobRepo.findAllByOrderByCreatedAtDesc(pageable);
+            case ORG_ADMIN ->
+                    jobRepo.findByOrgIdOrderByCreatedAtDesc(principal.getOrgId(), pageable);
+            default ->
+                    jobRepo.findByCreatedByOrderByCreatedAtDesc(principal.getId(), pageable);
+        };
+        return result.map(j -> BulkEmailJobResponse.from(j, false));
     }
 
+    /**
+     * Returns a single job. Access rules:
+     * <ul>
+     *   <li>PLATFORM_ADMIN — any job</li>
+     *   <li>ORG_ADMIN      — any job in their org</li>
+     *   <li>ADMIN / USER   — only their own jobs</li>
+     * </ul>
+     */
     public BulkEmailJobResponse getJob(String jobId, UserDetailsImpl principal) {
-        BulkEmailJob job = jobRepo.findByIdAndCreatedBy(jobId, principal.getId())
-                .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
+        BulkEmailJob job = resolveJob(jobId, principal);
         return BulkEmailJobResponse.from(job, true);
+    }
+
+    /**
+     * Resolves a job with role-based access enforcement.
+     */
+    private BulkEmailJob resolveJob(String jobId, UserDetailsImpl principal) {
+        AppUser.Role role = principal.getAppUser().getRole();
+        return switch (role) {
+            case PLATFORM_ADMIN ->
+                    jobRepo.findById(jobId)
+                            .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
+            case ORG_ADMIN ->
+                    jobRepo.findByIdAndOrgId(jobId, principal.getOrgId())
+                            .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
+            default ->
+                    jobRepo.findByIdAndCreatedBy(jobId, principal.getId())
+                            .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
+        };
     }
 
     // ── Resend failed rows ───────────────────────────────────────────────────
 
     public BulkEmailJobResponse resendFailed(String jobId, UserDetailsImpl principal) {
-        BulkEmailJob job = jobRepo.findByIdAndCreatedBy(jobId, principal.getId())
-                .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
+        BulkEmailJob job = resolveJob(jobId, principal);
 
         // Guard: only PARTIAL or FAILED jobs can be retried
         if (job.getStatus() != BulkEmailJob.JobStatus.PARTIAL
@@ -228,8 +296,7 @@ public class BulkEmailService {
     // ── Cancel ───────────────────────────────────────────────────────────────
 
     public BulkEmailJobResponse cancelJob(String jobId, UserDetailsImpl principal) {
-        BulkEmailJob job = jobRepo.findByIdAndCreatedBy(jobId, principal.getId())
-                .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
+        BulkEmailJob job = resolveJob(jobId, principal);
         if (job.getStatus() == BulkEmailJob.JobStatus.COMPLETED
          || job.getStatus() == BulkEmailJob.JobStatus.FAILED
          || job.getStatus() == BulkEmailJob.JobStatus.CANCELLED)
@@ -240,6 +307,14 @@ public class BulkEmailService {
                 "Job cancelled. Sent=" + job.getSentCount() + ", Failed=" + job.getFailedCount()
                 + ", Pending=" + job.getPendingCount());
         jobRepo.save(job);
+
+        // Unified audit log
+        auditLogService.log(
+                job.getId(), job.getLabel(),
+                AuditLog.Action.CANCELLED, AuditLog.ResourceType.BULK_EMAIL,
+                0, Map.of("sentCount", job.getSentCount(), "failedCount", job.getFailedCount()),
+                principal.getUsername(), job.getOrgId());
+
         return BulkEmailJobResponse.from(job, false);
     }
 

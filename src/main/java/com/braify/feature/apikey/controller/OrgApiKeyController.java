@@ -3,6 +3,7 @@ package com.braify.feature.apikey.controller;
 import com.braify.feature.apikey.dto.ApiKeyCreateRequest;
 import com.braify.feature.apikey.model.ApiKeyUsageLog;
 import com.braify.feature.apikey.model.OrgApiKey;
+import com.braify.feature.user.model.AppUser;
 import com.braify.security.UserDetailsImpl;
 import com.braify.feature.audit.model.AuditLog;
 import com.braify.feature.audit.service.AuditLogService;
@@ -14,6 +15,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -36,8 +38,22 @@ public class OrgApiKeyController {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    private UserDetailsImpl principal(Authentication auth) {
+        return (UserDetailsImpl) auth.getPrincipal();
+    }
+
     private String performedBy(Authentication auth) {
-        return ((UserDetailsImpl) auth.getPrincipal()).getUsername();
+        return principal(auth).getUsername();
+    }
+
+    /**
+     * Enforces org isolation — non-PLATFORM_ADMIN callers can only manage their own org's keys.
+     */
+    private void assertOrgAccess(Authentication auth, String orgId) {
+        UserDetailsImpl p = principal(auth);
+        if (p.getAppUser().getRole() == AppUser.Role.PLATFORM_ADMIN) return;
+        if (!orgId.equals(p.getOrgId()))
+            throw new AccessDeniedException("You can only manage API keys for your own organisation");
     }
 
     /**
@@ -71,7 +87,8 @@ public class OrgApiKeyController {
      */
     @GetMapping
     @Operation(summary = "List API keys", description = "Returns all API keys for the organisation, keyHash excluded.")
-    public List<Map<String, Object>> listKeys(@PathVariable String orgId) {
+    public List<Map<String, Object>> listKeys(@PathVariable String orgId, Authentication auth) {
+        assertOrgAccess(auth, orgId);
         log.debug("GET /api/organizations/{}/api-keys", orgId);
         return orgApiKeyService.listKeys(orgId)
                 .stream()
@@ -93,6 +110,7 @@ public class OrgApiKeyController {
             @Valid @RequestBody ApiKeyCreateRequest request,
             Authentication auth) {
 
+        assertOrgAccess(auth, orgId);
         String createdBy = performedBy(auth);
         log.info("POST /api/organizations/{}/api-keys name='{}' by '{}'", orgId, request.getName(), createdBy);
 
@@ -108,7 +126,7 @@ public class OrgApiKeyController {
         auditLogService.log(
                 result.keyMeta().getId(),
                 result.keyMeta().getName(),
-                AuditLog.Action.CREATED,
+                AuditLog.Action.API_KEY_CREATED,
                 AuditLog.ResourceType.API_KEY,
                 0,
                 Map.of("allowedFeatures", result.keyMeta().getAllowedFeatures()),
@@ -135,17 +153,19 @@ public class OrgApiKeyController {
     public void revokeKey(@PathVariable String orgId,
                           @PathVariable String keyId,
                           Authentication auth) {
-        log.info("DELETE /api/organizations/{}/api-keys/{} by '{}'", orgId, keyId, performedBy(auth));
+        assertOrgAccess(auth, orgId);
+        String performer = performedBy(auth);
+        log.info("DELETE /api/organizations/{}/api-keys/{} by '{}'", orgId, keyId, performer);
         OrgApiKey revoked = orgApiKeyService.revokeKey(orgId, keyId);
 
         auditLogService.log(
                 revoked.getId(),
                 revoked.getName(),
-                AuditLog.Action.DEACTIVATED,
+                AuditLog.Action.API_KEY_REVOKED,
                 AuditLog.ResourceType.API_KEY,
                 0,
                 null,
-                performedBy(auth),
+                performer,
                 orgId
         );
         log.info("API key '{}' revoked for org '{}'", keyId, orgId);
@@ -159,9 +179,23 @@ public class OrgApiKeyController {
     @PatchMapping("/{keyId}/toggle")
     @Operation(summary = "Toggle API key", description = "Flips the active state of an API key.")
     public Map<String, Object> toggleKey(@PathVariable String orgId,
-                                         @PathVariable String keyId) {
-        log.info("PATCH /api/organizations/{}/api-keys/{}/toggle", orgId, keyId);
+                                         @PathVariable String keyId,
+                                         Authentication auth) {
+        assertOrgAccess(auth, orgId);
+        String performer = performedBy(auth);
+        log.info("PATCH /api/organizations/{}/api-keys/{}/toggle by '{}'", orgId, keyId, performer);
         OrgApiKey toggled = orgApiKeyService.toggleKey(orgId, keyId);
+
+        auditLogService.log(
+                toggled.getId(),
+                toggled.getName(),
+                AuditLog.Action.API_KEY_TOGGLED,
+                AuditLog.ResourceType.API_KEY,
+                0,
+                Map.of("active", toggled.isActive()),
+                performer,
+                orgId
+        );
         log.info("API key '{}' toggled to active={} for org '{}'", keyId, toggled.isActive(), orgId);
         return sanitize(toggled);
     }
@@ -174,7 +208,8 @@ public class OrgApiKeyController {
     @GetMapping("/usage")
     @Operation(summary = "Get API key usage",
                description = "Returns recent usage logs (last 30 days) and a per-key call-count summary.")
-    public Map<String, Object> getUsage(@PathVariable String orgId) {
+    public Map<String, Object> getUsage(@PathVariable String orgId, Authentication auth) {
+        assertOrgAccess(auth, orgId);
         log.debug("GET /api/organizations/{}/api-keys/usage", orgId);
         List<ApiKeyUsageLog> logs  = orgApiKeyService.getRecentUsage(orgId, 30);
         Map<String, Long>  summary = orgApiKeyService.getUsageSummaryByKey(orgId);

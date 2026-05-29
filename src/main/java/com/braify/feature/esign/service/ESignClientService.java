@@ -205,6 +205,22 @@ public class ESignClientService {
         if (file.getSize() > MAX_FILE_BYTES)
             throw new IllegalArgumentException("File exceeds the 10 MB size limit");
 
+        // Validate file type against the allowed-types list (if configured for this document)
+        List<String> allowedTypes = doc.getAllowedClientUploadFileTypes();
+        if (allowedTypes != null && !allowedTypes.isEmpty()) {
+            String fileName = file.getOriginalFilename() != null ? file.getOriginalFilename() : "";
+            int dotIdx = fileName.lastIndexOf('.');
+            String ext = dotIdx >= 0 ? fileName.substring(dotIdx + 1).toLowerCase() : "";
+            boolean typeAllowed = allowedTypes.stream()
+                    .anyMatch(t -> t.equalsIgnoreCase(ext));
+            if (!typeAllowed) {
+                String allowedList = String.join(", ", allowedTypes);
+                throw new IllegalArgumentException(
+                        "File type '" + (ext.isEmpty() ? "(unknown)" : "." + ext) +
+                        "' is not supported. Allowed types: " + allowedList);
+            }
+        }
+
         // Build and persist attachment
         ESignDocument.ClientAttachment attachment = ESignDocument.ClientAttachment.builder()
                 .id(UUID.randomUUID().toString())

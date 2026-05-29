@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Date;
+import java.util.List;
 import java.util.Optional;
 
 @Slf4j
@@ -110,14 +111,13 @@ public class ESignTokenService {
 
     /** Expires all signing tokens whose expiresAt has passed (called by scheduler). */
     public int expireStaleTokens() {
-        // MongoDB query done in-service: fetch all unused, unrevoked, past expiry
-        var stale = tokenRepo.findAll().stream()
-                .filter(t -> !t.isUsed()
-                          && t.getRevokedAt() == null
-                          && t.getExpiresAt().isBefore(LocalDateTime.now()))
-                .toList();
+        // Use targeted repository query instead of findAll() to avoid loading every token
+        // (including completed/revoked ones) into JVM heap on every scheduled tick.
+        LocalDateTime now = LocalDateTime.now();
+        List<ESignSigningToken> stale =
+                tokenRepo.findByUsedFalseAndRevokedAtIsNullAndExpiresAtBefore(now);
         stale.forEach(t -> {
-            t.setRevokedAt(LocalDateTime.now());
+            t.setRevokedAt(now);
             tokenRepo.save(t);
         });
         if (!stale.isEmpty()) {

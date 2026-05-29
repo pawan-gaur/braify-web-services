@@ -38,14 +38,18 @@ public class AuditLogService {
             AuditLog.Action.SESSION_REVOKED,
             AuditLog.Action.FEATURES_UPDATED,
             AuditLog.Action.SUBSCRIPTION_CHANGED,
-            AuditLog.Action.QUOTA_EXCEEDED
+            AuditLog.Action.QUOTA_EXCEEDED,
+            AuditLog.Action.API_KEY_REVOKED,
+            AuditLog.Action.API_KEY_TOGGLED
     );
     private static final Set<AuditLog.Action> WARNING_ACTIONS = Set.of(
             AuditLog.Action.DELETED,
             AuditLog.Action.CANCELLED,
             AuditLog.Action.PASSWORD_CHANGED,
             AuditLog.Action.TEMPLATE_SHARED,
-            AuditLog.Action.TEMPLATE_UNSHARED
+            AuditLog.Action.TEMPLATE_UNSHARED,
+            AuditLog.Action.API_KEY_CREATED,
+            AuditLog.Action.LOGOUT
     );
 
     private static AuditLog.Severity resolveSeverity(AuditLog.Action action) {
@@ -142,6 +146,25 @@ public class AuditLogService {
     }
 
     /**
+     * Preferred overload — accepts the {@link AppUser} directly so that
+     * {@code performedByUserId}, {@code performedByRole} and display name are
+     * captured without an extra database round-trip.
+     *
+     * <p>Use this in new code; the email-based overloads are kept for backward
+     * compatibility with existing call sites.
+     */
+    public AuditLog logByUser(String resourceId,
+                              String resourceName,
+                              AuditLog.Action action,
+                              AuditLog.ResourceType resourceType,
+                              int version,
+                              Map<String, Object> changes,
+                              AppUser performer) {
+        return persistByUser(resourceId, resourceName, action, resourceType, version,
+                changes, performer, AuditLog.Outcome.SUCCESS, null);
+    }
+
+    /**
      * Records a failed action for compliance trail.
      * Outcome is set to FAILURE and the failure reason is stored.
      */
@@ -156,8 +179,25 @@ public class AuditLogService {
                 performedBy, organizationId, AuditLog.Outcome.FAILURE, failureReason);
     }
 
+    /**
+     * Records a failed action by a known AppUser.
+     */
+    public AuditLog logFailureByUser(String resourceId,
+                                     String resourceName,
+                                     AuditLog.Action action,
+                                     AuditLog.ResourceType resourceType,
+                                     AppUser performer,
+                                     String failureReason) {
+        return persistByUser(resourceId, resourceName, action, resourceType, 0,
+                null, performer, AuditLog.Outcome.FAILURE, failureReason);
+    }
+
     // ── Core write ────────────────────────────────────────────────────────────
 
+    /**
+     * Core write path — performer identified by email (backward-compat).
+     * Looks up the user record from the email to obtain userId, role, and name.
+     */
     private AuditLog persist(String resourceId,
                              String resourceName,
                              AuditLog.Action action,
@@ -172,6 +212,7 @@ public class AuditLogService {
         // Snapshot performer display info (non-blocking; failures silently skipped)
         String performedByUserId = null;
         String performedByName   = null;
+        String performedByRole   = null;
         String performer         = (performedBy != null) ? performedBy : "system";
         if (!"system".equals(performer)) {
             try {
@@ -179,6 +220,7 @@ public class AuditLogService {
                 if (opt.isPresent()) {
                     var u = opt.get();
                     performedByUserId = u.getId();
+                    performedByRole   = u.getRole() != null ? u.getRole().name() : null;
                     String full = (u.getFirstName() + " " + u.getLastName()).trim();
                     if (!full.isBlank()) performedByName = full;
                 }
@@ -197,6 +239,7 @@ public class AuditLogService {
                 .performedBy(performer)
                 .performedByUserId(performedByUserId)
                 .performedByName(performedByName)
+                .performedByRole(performedByRole)
                 .changes(changes)
                 .organizationId(organizationId)
                 .timestamp(now)
@@ -210,8 +253,55 @@ public class AuditLogService {
         entry.setIntegrityHash(computeHash(entry));
 
         AuditLog saved = auditLogRepository.save(entry);
-        log.debug("Audit logged: action={} resource={} resourceId='{}' by='{}'",
-                action, resourceType, resourceId, performer);
+        log.debug("Audit logged: action={} resource={} resourceId='{}' by='{}' role='{}'",
+                action, resourceType, resourceId, performer, performedByRole);
+        return saved;
+    }
+
+    /**
+     * Preferred core write path — performer supplied as an {@link AppUser} object.
+     * No extra DB lookup needed; userId, role, and name are taken directly from the user.
+     */
+    private AuditLog persistByUser(String resourceId,
+                                   String resourceName,
+                                   AuditLog.Action action,
+                                   AuditLog.ResourceType resourceType,
+                                   int version,
+                                   Map<String, Object> changes,
+                                   AppUser performer,
+                                   AuditLog.Outcome outcome,
+                                   String failureReason) {
+
+        String displayName = (performer.getFirstName() + " " + performer.getLastName()).trim();
+
+        LocalDateTime now = LocalDateTime.now();
+
+        AuditLog entry = AuditLog.builder()
+                .templateId(resourceId)
+                .templateName(resourceName)
+                .action(action)
+                .resourceType(resourceType)
+                .versionNumber(version)
+                .performedByUserId(performer.getId())
+                .performedBy(performer.getEmail())
+                .performedByName(displayName.isBlank() ? null : displayName)
+                .performedByRole(performer.getRole() != null ? performer.getRole().name() : null)
+                .changes(changes)
+                .organizationId(performer.getOrganizationId())
+                .timestamp(now)
+                .ipAddress(extractIp())
+                .userAgent(extractUa())
+                .severity(resolveSeverity(action))
+                .outcome(outcome)
+                .failureReason(failureReason)
+                .build();
+
+        entry.setIntegrityHash(computeHash(entry));
+
+        AuditLog saved = auditLogRepository.save(entry);
+        log.debug("Audit logged: action={} resource={} resourceId='{}' userId='{}' role='{}'",
+                action, resourceType, resourceId, performer.getId(),
+                performer.getRole() != null ? performer.getRole().name() : "null");
         return saved;
     }
 
@@ -329,20 +419,22 @@ public class AuditLogService {
         DateTimeFormatter fmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
         StringBuilder csv = new StringBuilder();
         csv.append("Timestamp,Action,Severity,Outcome,ResourceType,ResourceName,ResourceId,")
-           .append("OrganizationId,PerformedBy,PerformedByName,IpAddress,UserAgent,")
-           .append("Reason,FailureReason,IntegrityHash\n");
+           .append("OrganizationId,PerformedByUserId,PerformedBy,PerformedByName,PerformedByRole,")
+           .append("IpAddress,UserAgent,Reason,FailureReason,IntegrityHash\n");
 
         for (AuditLog l : logs) {
-            csv.append(csv(l.getTimestamp() != null ? l.getTimestamp().format(fmt) : "")).append(',');
-            csv.append(csv(l.getAction()        != null ? l.getAction().name()        : "")).append(',');
-            csv.append(csv(l.getSeverity()      != null ? l.getSeverity().name()      : "")).append(',');
-            csv.append(csv(l.getOutcome()       != null ? l.getOutcome().name()       : "")).append(',');
-            csv.append(csv(l.getResourceType()  != null ? l.getResourceType().name()  : "")).append(',');
+            csv.append(csv(l.getTimestamp()     != null ? l.getTimestamp().format(fmt) : "")).append(',');
+            csv.append(csv(l.getAction()        != null ? l.getAction().name()         : "")).append(',');
+            csv.append(csv(l.getSeverity()      != null ? l.getSeverity().name()       : "")).append(',');
+            csv.append(csv(l.getOutcome()       != null ? l.getOutcome().name()        : "")).append(',');
+            csv.append(csv(l.getResourceType()  != null ? l.getResourceType().name()   : "")).append(',');
             csv.append(csv(l.getTemplateName())).append(',');
             csv.append(csv(l.getTemplateId())).append(',');
             csv.append(csv(l.getOrganizationId())).append(',');
+            csv.append(csv(l.getPerformedByUserId())).append(',');
             csv.append(csv(l.getPerformedBy())).append(',');
             csv.append(csv(l.getPerformedByName())).append(',');
+            csv.append(csv(l.getPerformedByRole())).append(',');
             csv.append(csv(l.getIpAddress())).append(',');
             csv.append(csv(l.getUserAgent())).append(',');
             csv.append(csv(l.getReason())).append(',');
@@ -354,24 +446,59 @@ public class AuditLogService {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    /** Adds role-based scoping criteria to the provided list. */
+    /**
+     * Adds role-based scoping criteria to the provided list.
+     *
+     * <p>Visibility rules (per compliance spec):
+     * <ul>
+     *   <li>PLATFORM_ADMIN — all entries; optionally scoped to one org via {@code orgId}</li>
+     *   <li>ORG_ADMIN      — all entries within their org
+     *                        (performedByRole ∈ {ORG_ADMIN, ADMIN, USER})</li>
+     *   <li>ADMIN          — ADMIN + USER entries within their org
+     *                        (ORG_ADMIN actions are hidden from ADMIN)</li>
+     *   <li>USER           — only their own entries (matched by performedByUserId)</li>
+     * </ul>
+     *
+     * <p>Filtering uses the stored {@code performedByRole} field rather than looking up
+     * current user emails, so historical entries are evaluated against the role that was
+     * held <em>at the time of the action</em>.  This prevents role changes from
+     * retroactively altering what is visible.  Entries written before {@code performedByRole}
+     * was introduced fall back to the {@code performedBy} (email) field.
+     */
     private void addRoleScope(AppUser caller, String orgId, List<Criteria> parts) {
         switch (caller.getRole()) {
             case PLATFORM_ADMIN -> {
+                // Sees everything; optionally scoped to one org
                 if (orgId != null && !orgId.isBlank())
                     parts.add(Criteria.where("organizationId").is(orgId));
-                // else no restriction — sees everything
             }
             case ORG_ADMIN -> {
-                List<String> emails = performerEmails(caller.getOrganizationId(), null);
-                parts.add(Criteria.where("performedBy").in(emails));
+                // All entries within own org — ORG_ADMIN, ADMIN, and USER actions all visible
+                parts.add(Criteria.where("organizationId").is(caller.getOrganizationId()));
+                // ORG_ADMIN does NOT see PLATFORM_ADMIN actions (those have no orgId)
             }
             case ADMIN -> {
-                List<String> emails = performerEmails(caller.getOrganizationId(),
-                        List.of(AppUser.Role.ADMIN, AppUser.Role.USER));
-                parts.add(Criteria.where("performedBy").in(emails));
+                // Only ADMIN + USER role actions within own org; ORG_ADMIN actions hidden
+                parts.add(Criteria.where("organizationId").is(caller.getOrganizationId()));
+                // Filter by performedByRole — hide ORG_ADMIN entries
+                // Legacy entries without performedByRole fall back to userId match
+                Criteria byRole = Criteria.where("performedByRole")
+                        .in(List.of("ADMIN", "USER"));
+                Criteria legacyOwn = new Criteria().andOperator(
+                        Criteria.where("performedByRole").exists(false),
+                        Criteria.where("performedByUserId").is(caller.getId())
+                );
+                parts.add(new Criteria().orOperator(byRole, legacyOwn));
             }
-            default -> parts.add(Criteria.where("performedBy").is(caller.getEmail()));
+            default -> {
+                // USER — own entries only, matched by stable userId
+                if (caller.getId() != null) {
+                    parts.add(Criteria.where("performedByUserId").is(caller.getId()));
+                } else {
+                    // Fallback for legacy entries without userId stored
+                    parts.add(Criteria.where("performedBy").is(caller.getEmail()));
+                }
+            }
         }
     }
 
@@ -385,14 +512,6 @@ public class AuditLogService {
     /** Combines an existing criteria with one more condition via $and. */
     private static Criteria and(Criteria base, Criteria extra) {
         return new Criteria().andOperator(base, extra);
-    }
-
-    /** Returns performer emails for all active users in an org, optionally filtered by role. */
-    private List<String> performerEmails(String orgId, List<AppUser.Role> roles) {
-        List<AppUser> users = (roles != null)
-                ? userRepository.findByOrganizationIdAndActiveTrueAndRoleIn(orgId, roles)
-                : userRepository.findByOrganizationIdAndActiveTrue(orgId);
-        return users.stream().map(AppUser::getEmail).toList();
     }
 
     /** RFC-4180-compliant CSV field quoting. */

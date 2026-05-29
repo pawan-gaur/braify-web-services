@@ -119,6 +119,14 @@ public class BulkEmailProcessor {
                         attachmentData     = fetchExternalPdf(restTemplate, job, row);
                         attachmentFileName = "attachment.pdf";
                     }
+                    case EXCEL_SHEET -> {
+                        String idValue = row.getData().getOrDefault(job.getMainSheetIdColumn(), "");
+                        attachmentData = generateDetailExcel(job, idValue);
+                        String tpl = (job.getDetailSheetFileName() != null && !job.getDetailSheetFileName().isBlank())
+                                ? job.getDetailSheetFileName()
+                                : "details_{{" + job.getMainSheetIdColumn() + "}}.xlsx";
+                        attachmentFileName = substituteVars(tpl, row.getData());
+                    }
                     default -> { /* NONE — no attachment */ }
                 }
 
@@ -255,6 +263,62 @@ public class BulkEmailProcessor {
         if (resp.getBody() == null || resp.getBody().length == 0)
             throw new RuntimeException("External API returned empty response");
         return resp.getBody();
+    }
+
+    /**
+     * Generates an .xlsx file containing the Sheet 2 rows whose
+     * {@code detailSheetIdColumn} value matches the given {@code idValue}.
+     * Always produces a valid workbook — if no rows match, the file will
+     * contain only the header row.
+     */
+    private byte[] generateDetailExcel(BulkEmailJob job, String idValue) {
+        List<Map<String, String>> allDetailRows = job.getDetailSheetRows();
+        List<String> columns = job.getDetailSheetColumns();
+
+        // Filter rows for this recipient
+        List<Map<String, String>> matchingRows = (allDetailRows == null || job.getDetailSheetIdColumn() == null)
+                ? List.of()
+                : allDetailRows.stream()
+                        .filter(r -> idValue.equalsIgnoreCase(
+                                r.getOrDefault(job.getDetailSheetIdColumn(), "")))
+                        .toList();
+
+        // Fall back to keys from first matched row if no explicit column list
+        if ((columns == null || columns.isEmpty()) && !matchingRows.isEmpty()) {
+            columns = new java.util.ArrayList<>(matchingRows.get(0).keySet());
+        }
+        if (columns == null) columns = List.of();
+
+        try (org.apache.poi.xssf.usermodel.XSSFWorkbook wb =
+                     new org.apache.poi.xssf.usermodel.XSSFWorkbook()) {
+
+            org.apache.poi.ss.usermodel.Sheet sheet = wb.createSheet("Details");
+
+            // Header row
+            if (!columns.isEmpty()) {
+                org.apache.poi.ss.usermodel.Row header = sheet.createRow(0);
+                for (int i = 0; i < columns.size(); i++) {
+                    header.createCell(i).setCellValue(columns.get(i));
+                }
+            }
+
+            // Data rows
+            for (int ri = 0; ri < matchingRows.size(); ri++) {
+                org.apache.poi.ss.usermodel.Row dataRow = sheet.createRow(ri + 1);
+                Map<String, String> rowData = matchingRows.get(ri);
+                for (int ci = 0; ci < columns.size(); ci++) {
+                    dataRow.createCell(ci).setCellValue(
+                            rowData.getOrDefault(columns.get(ci), ""));
+                }
+            }
+
+            java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+            wb.write(baos);
+            return baos.toByteArray();
+
+        } catch (java.io.IOException e) {
+            throw new RuntimeException("Failed to generate Excel attachment: " + e.getMessage(), e);
+        }
     }
 
     private String sanitize(String name) {

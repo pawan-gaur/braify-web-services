@@ -20,6 +20,7 @@ import com.braify.feature.esign.repository.ESignBulkBatchRepository;
 import com.braify.feature.esign.repository.ESignDocumentRepository;
 import com.braify.feature.esign.repository.ESignSignatureFieldRepository;
 import com.braify.feature.pdf.repository.TemplateRepository;
+import com.braify.feature.user.model.AppUser;
 import com.braify.security.UserDetailsImpl;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -86,12 +87,16 @@ public class ESignDocumentService {
             throw new IllegalArgumentException("sourceType must be UPLOAD or TEMPLATE");
         }
 
-        // Inherit allowClientUpload from the parent batch (if this document belongs to one)
+        // Inherit allowClientUpload and allowedClientUploadFileTypes from the parent batch
         boolean allowClientUpload = false;
+        List<String> allowedClientUploadFileTypes = List.of();
         if (bulkBatchId != null && !bulkBatchId.isBlank()) {
-            allowClientUpload = batchRepo.findById(bulkBatchId)
-                    .map(ESignBulkBatch::isAllowClientUpload)
-                    .orElse(false);
+            ESignBulkBatch parentBatch = batchRepo.findById(bulkBatchId).orElse(null);
+            if (parentBatch != null) {
+                allowClientUpload = parentBatch.isAllowClientUpload();
+                allowedClientUploadFileTypes = parentBatch.getAllowedClientUploadFileTypes() != null
+                        ? parentBatch.getAllowedClientUploadFileTypes() : List.of();
+            }
         }
 
         ESignDocument doc = ESignDocument.builder()
@@ -108,6 +113,7 @@ public class ESignDocumentService {
                 .bulkBatchId(bulkBatchId)
                 .emailTemplateId(req.getEmailTemplateId())
                 .allowClientUpload(allowClientUpload)
+                .allowedClientUploadFileTypes(allowedClientUploadFileTypes)
                 .status(ESignDocument.Status.DRAFT)
                 .build();
 
@@ -169,6 +175,9 @@ public class ESignDocumentService {
                 .orgId(principal.getOrgId())
                 .label(batchLabel)
                 .totalRequested(totalRequested)
+                .allowClientUpload(bulkReq.isAllowClientUpload())
+                .allowedClientUploadFileTypes(bulkReq.getAllowedClientUploadFileTypes() != null
+                        ? bulkReq.getAllowedClientUploadFileTypes() : List.of())
                 .status(ESignBulkBatch.Status.PROCESSING)
                 .build());
         String batchId = batch.getId();
@@ -270,7 +279,7 @@ public class ESignDocumentService {
                                        List<FieldPlacementRequest> requests,
                                        UserDetailsImpl principal,
                                        String ip, String ua) {
-        ESignDocument doc = getOwnedDoc(docId, principal.getId());
+        ESignDocument doc = getAccessibleDoc(docId, principal);
 
         // Replace all existing fields
         fieldRepo.deleteByDocumentId(docId);
@@ -304,7 +313,7 @@ public class ESignDocumentService {
                                          int tokenValidDays,
                                          UserDetailsImpl principal,
                                          String ip, String ua) {
-        ESignDocument doc = getOwnedDoc(docId, principal.getId());
+        ESignDocument doc = getAccessibleDoc(docId, principal);
 
         if (doc.getStatus() == ESignDocument.Status.COMPLETED ||
             doc.getStatus() == ESignDocument.Status.CANCELLED) {
@@ -345,7 +354,7 @@ public class ESignDocumentService {
                                            int tokenValidDays,
                                            UserDetailsImpl principal,
                                            String ip, String ua) {
-        ESignDocument doc = getOwnedDoc(docId, principal.getId());
+        ESignDocument doc = getAccessibleDoc(docId, principal);
 
         if (doc.getStatus() == ESignDocument.Status.COMPLETED ||
             doc.getStatus() == ESignDocument.Status.CANCELLED ||
@@ -389,6 +398,12 @@ public class ESignDocumentService {
 
     /**
      * Paginated list of single-sign documents (excludes bulk-batch documents).
+     * Scope is determined by the caller's role:
+     * <ul>
+     *   <li>PLATFORM_ADMIN — all documents across all orgs</li>
+     *   <li>ORG_ADMIN      — all documents in their org</li>
+     *   <li>ADMIN / USER   — only documents they created</li>
+     * </ul>
      *
      * @param status optional status filter; null means all statuses
      * @param page   zero-based page index
@@ -400,11 +415,23 @@ public class ESignDocumentService {
             int page, int size) {
 
         Pageable pageable = PageRequest.of(page, Math.min(size, 100));
-        Page<ESignDocument> pageResult = (status != null)
-                ? docRepo.findByCreatedByAndBulkBatchIdIsNullAndStatusOrderByCreatedAtDesc(
-                        principal.getId(), status, pageable)
-                : docRepo.findByCreatedByAndBulkBatchIdIsNullOrderByCreatedAtDesc(
-                        principal.getId(), pageable);
+        AppUser.Role role = principal.getAppUser().getRole();
+
+        Page<ESignDocument> pageResult = switch (role) {
+            case PLATFORM_ADMIN -> (status != null)
+                    ? docRepo.findByBulkBatchIdIsNullAndStatusOrderByCreatedAtDesc(status, pageable)
+                    : docRepo.findByBulkBatchIdIsNullOrderByCreatedAtDesc(pageable);
+            case ORG_ADMIN -> (status != null)
+                    ? docRepo.findByOrgIdAndBulkBatchIdIsNullAndStatusOrderByCreatedAtDesc(
+                            principal.getOrgId(), status, pageable)
+                    : docRepo.findByOrgIdAndBulkBatchIdIsNullOrderByCreatedAtDesc(
+                            principal.getOrgId(), pageable);
+            default -> (status != null)
+                    ? docRepo.findByCreatedByAndBulkBatchIdIsNullAndStatusOrderByCreatedAtDesc(
+                            principal.getId(), status, pageable)
+                    : docRepo.findByCreatedByAndBulkBatchIdIsNullOrderByCreatedAtDesc(
+                            principal.getId(), pageable);
+        };
 
         List<DocumentResponse> content = pageResult.getContent().stream()
                 .map(d -> DocumentResponse.from(d, List.of(), false))
@@ -421,7 +448,9 @@ public class ESignDocumentService {
      *                          will show the client an optional post-signing file-upload section
      */
     public BulkBatchResponse initBatch(String label, int totalRequested,
-                                       boolean allowClientUpload, UserDetailsImpl principal) {
+                                       boolean allowClientUpload,
+                                       List<String> allowedClientUploadFileTypes,
+                                       UserDetailsImpl principal) {
         String resolvedLabel = (label != null && !label.isBlank())
                 ? label
                 : "Bulk Send – " + LocalDateTime.now().toString().substring(0, 16).replace('T', ' ');
@@ -432,6 +461,8 @@ public class ESignDocumentService {
                 .label(resolvedLabel)
                 .totalRequested(totalRequested)
                 .allowClientUpload(allowClientUpload)
+                .allowedClientUploadFileTypes(allowedClientUploadFileTypes != null
+                        ? allowedClientUploadFileTypes : List.of())
                 .status(ESignBulkBatch.Status.PROCESSING)
                 .build());
 
@@ -444,10 +475,11 @@ public class ESignDocumentService {
      */
     public BulkBatchResponse finalizeBatch(String batchId, int totalCreated, int totalSent, int totalFailed,
                                            UserDetailsImpl principal) {
+        // Reuse the role-aware getBatch() which already enforces access rules
+        getBatch(batchId, principal); // throws AccessDeniedException if not allowed
+
         ESignBulkBatch batch = batchRepo.findById(batchId)
                 .orElseThrow(() -> new IllegalArgumentException("Batch not found: " + batchId));
-        if (!batch.getCreatedBy().equals(principal.getId()))
-            throw new AccessDeniedException("Access denied to batch: " + batchId);
 
         ESignBulkBatch.Status status = totalFailed == 0     ? ESignBulkBatch.Status.COMPLETED
                                      : totalCreated == 0    ? ESignBulkBatch.Status.FAILED
@@ -461,12 +493,25 @@ public class ESignDocumentService {
     }
 
     /**
-     * Paginated list of bulk batches created by the authenticated user.
+     * Paginated list of bulk batches, scoped by the caller's role:
+     * <ul>
+     *   <li>PLATFORM_ADMIN — all batches</li>
+     *   <li>ORG_ADMIN      — all batches in their org</li>
+     *   <li>ADMIN / USER   — only their own batches</li>
+     * </ul>
      */
     public PageResponse<BulkBatchResponse> listMyBatches(UserDetailsImpl principal, int page, int size) {
         Pageable pageable = PageRequest.of(page, Math.min(size, 100));
-        Page<ESignBulkBatch> pageResult =
-                batchRepo.findByCreatedByOrderByCreatedAtDesc(principal.getId(), pageable);
+        AppUser.Role role = principal.getAppUser().getRole();
+
+        Page<ESignBulkBatch> pageResult = switch (role) {
+            case PLATFORM_ADMIN ->
+                    batchRepo.findAllByOrderByCreatedAtDesc(pageable);
+            case ORG_ADMIN ->
+                    batchRepo.findByOrgIdOrderByCreatedAtDesc(principal.getOrgId(), pageable);
+            default ->
+                    batchRepo.findByCreatedByOrderByCreatedAtDesc(principal.getId(), pageable);
+        };
 
         List<BulkBatchResponse> content = pageResult.getContent().stream()
                 .map(BulkBatchResponse::from)
@@ -476,23 +521,36 @@ public class ESignDocumentService {
     }
 
     /**
-     * Returns summary for a single batch (ownership enforced).
+     * Returns summary for a single batch.
+     * PLATFORM_ADMIN sees any batch; ORG_ADMIN sees batches in their org;
+     * others are restricted to their own.
      */
     public BulkBatchResponse getBatch(String batchId, UserDetailsImpl principal) {
         ESignBulkBatch batch = batchRepo.findById(batchId)
                 .orElseThrow(() -> new IllegalArgumentException("Batch not found: " + batchId));
+
+        AppUser.Role role = principal.getAppUser().getRole();
+        if (role == AppUser.Role.PLATFORM_ADMIN) {
+            return BulkBatchResponse.from(batch);
+        }
+        if (role == AppUser.Role.ORG_ADMIN) {
+            if (!principal.getOrgId().equals(batch.getOrgId()))
+                throw new AccessDeniedException("Access denied to batch: " + batchId);
+            return BulkBatchResponse.from(batch);
+        }
         if (!batch.getCreatedBy().equals(principal.getId()))
             throw new AccessDeniedException("Access denied to batch: " + batchId);
         return BulkBatchResponse.from(batch);
     }
 
     /**
-     * Paginated list of documents belonging to a specific batch (ownership enforced).
+     * Paginated list of documents belonging to a specific batch.
+     * Access is verified via {@link #getBatch(String, UserDetailsImpl)} before listing.
      */
     public PageResponse<DocumentResponse> listBatchDocuments(
             String batchId, UserDetailsImpl principal, int page, int size) {
 
-        // Verify batch ownership first
+        // Verify access to the batch first (enforces role-based rules)
         getBatch(batchId, principal);
 
         Pageable pageable = PageRequest.of(page, Math.min(size, 100));
@@ -507,7 +565,7 @@ public class ESignDocumentService {
     }
 
     public DocumentResponse getDocument(String docId, UserDetailsImpl principal) {
-        ESignDocument doc = getOwnedDoc(docId, principal.getId());
+        ESignDocument doc = getAccessibleDoc(docId, principal);
         List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(docId);
         return DocumentResponse.from(doc, fields, true);  // include PDF for detail view
     }
@@ -516,7 +574,7 @@ public class ESignDocumentService {
 
     public DocumentResponse cancelDocument(String docId, UserDetailsImpl principal,
                                            String ip, String ua) {
-        ESignDocument doc = getOwnedDoc(docId, principal.getId());
+        ESignDocument doc = getAccessibleDoc(docId, principal);
         doc.setStatus(ESignDocument.Status.CANCELLED);
         docRepo.save(doc);
         auditService.log(docId, principal.getUsername(),
@@ -537,7 +595,7 @@ public class ESignDocumentService {
     // ── Audit trail ──────────────────────────────────────────────────────────
 
     public List<ESignAuditEvent> getAuditTrail(String docId, UserDetailsImpl principal) {
-        getOwnedDoc(docId, principal.getId()); // ownership check
+        getAccessibleDoc(docId, principal); // access check
         return auditService.getAuditTrail(docId);
     }
 
@@ -547,7 +605,7 @@ public class ESignDocumentService {
      * Returns attachment metadata (no file bytes) for the creator's document detail view.
      */
     public List<java.util.Map<String, Object>> listAttachments(String docId, UserDetailsImpl principal) {
-        ESignDocument doc = getOwnedDoc(docId, principal.getId());
+        ESignDocument doc = getAccessibleDoc(docId, principal);
         if (doc.getClientAttachments() == null || doc.getClientAttachments().isEmpty())
             return java.util.List.of();
         return doc.getClientAttachments().stream()
@@ -567,7 +625,7 @@ public class ESignDocumentService {
     public ESignDocument.ClientAttachment getAttachment(String docId,
                                                         String attachmentId,
                                                         UserDetailsImpl principal) {
-        ESignDocument doc = getOwnedDoc(docId, principal.getId());
+        ESignDocument doc = getAccessibleDoc(docId, principal);
         return doc.getClientAttachments().stream()
                 .filter(a -> attachmentId.equals(a.getId()))
                 .findFirst()
@@ -576,6 +634,38 @@ public class ESignDocumentService {
 
     // ── Helpers ──────────────────────────────────────────────────────────────
 
+    /**
+     * Role-aware document access check.
+     * <ul>
+     *   <li>PLATFORM_ADMIN — any document</li>
+     *   <li>ORG_ADMIN      — any document in their org</li>
+     *   <li>ADMIN / USER   — only documents they created</li>
+     * </ul>
+     */
+    private ESignDocument getAccessibleDoc(String docId, UserDetailsImpl principal) {
+        ESignDocument doc = docRepo.findById(docId)
+                .orElseThrow(() -> new IllegalArgumentException("Document not found: " + docId));
+
+        AppUser.Role role = principal.getAppUser().getRole();
+
+        if (role == AppUser.Role.PLATFORM_ADMIN) {
+            return doc; // platform admin sees everything
+        }
+        if (role == AppUser.Role.ORG_ADMIN) {
+            if (!principal.getOrgId().equals(doc.getOrgId()))
+                throw new AccessDeniedException("Access denied to document: " + docId);
+            return doc;
+        }
+        // ADMIN / USER — strict ownership
+        if (!doc.getCreatedBy().equals(principal.getId()))
+            throw new AccessDeniedException("Access denied to document: " + docId);
+        return doc;
+    }
+
+    /**
+     * Strict ownership check — kept for the internal bulk-create send flow
+     * where the creator is the expected owner and no elevated-role bypass is needed.
+     */
     private ESignDocument getOwnedDoc(String docId, String userId) {
         ESignDocument doc = docRepo.findById(docId)
                 .orElseThrow(() -> new IllegalArgumentException("Document not found: " + docId));

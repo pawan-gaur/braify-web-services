@@ -16,6 +16,20 @@ import java.util.Map;
  * Immutable audit-trail entry.  Every action that changes a resource is recorded here.
  * As of the compliance upgrade the document also captures IP address, User-Agent,
  * severity, outcome and a SHA-256 integrity hash for tamper detection.
+ *
+ * <p><b>Visibility rules</b>
+ * <ul>
+ *   <li>PLATFORM_ADMIN — sees all entries across all organisations</li>
+ *   <li>ORG_ADMIN      — sees all entries within their own organisation
+ *                        (performedByRole = ORG_ADMIN | ADMIN | USER)</li>
+ *   <li>ADMIN          — sees only ADMIN + USER entries within their org
+ *                        (ORG_ADMIN actions are hidden)</li>
+ *   <li>USER           — sees only their own entries</li>
+ * </ul>
+ *
+ * <p>The {@code performedByRole} field is the authoritative source for role-based
+ * filtering.  Storing the role at write-time means visibility is always evaluated
+ * against the role the user <em>held when they acted</em>, not their current role.
  */
 @Data
 @Builder
@@ -27,18 +41,37 @@ public class AuditLog {
     // ── Enumerations ──────────────────────────────────────────────────────────
 
     public enum Action {
+        // Generic CRUD
         CREATED, UPDATED, DELETED, RESTORED,
-        READ,                 // read / download access
+        READ,                   // read / download access
+
+        // User profile
         PASSWORD_CHANGED, AVATAR_UPDATED,
         DEACTIVATED, ACTIVATED,
-        SESSION_REVOKED, SENT,
-        FEATURES_UPDATED,     // org feature assignment changed
-        CANCELLED,            // e-sign document cancelled
-        SUBSCRIPTION_CHANGED, // org subscription plan changed
-        BRANDING_UPDATED,     // org branding settings changed
-        QUOTA_EXCEEDED,       // a quota limit was hit (recorded as FAILURE)
-        TEMPLATE_SHARED,      // template shared with another org
-        TEMPLATE_UNSHARED     // template share revoked
+
+        // Session
+        LOGIN,                  // user authenticated
+        LOGOUT,                 // user logged out / session revoked
+        SESSION_REVOKED,        // admin-forced revocation
+
+        // E-Sign
+        SENT,                   // document sent to client
+        CANCELLED,              // e-sign document cancelled
+
+        // API Keys
+        API_KEY_CREATED,        // new API key provisioned
+        API_KEY_REVOKED,        // API key permanently deactivated
+        API_KEY_TOGGLED,        // API key enabled/disabled
+
+        // Org-level
+        FEATURES_UPDATED,       // org feature assignment changed
+        SUBSCRIPTION_CHANGED,   // org subscription plan changed
+        BRANDING_UPDATED,       // org branding settings changed
+        QUOTA_EXCEEDED,         // a quota limit was hit (recorded as FAILURE)
+
+        // Sharing
+        TEMPLATE_SHARED,        // template shared with another org
+        TEMPLATE_UNSHARED       // template share revoked
     }
 
     /** Distinguishes which resource type generated this entry. */
@@ -50,7 +83,11 @@ public class AuditLog {
         E_SIGN,          // E-Sign document lifecycle
         SHARING,         // Org-to-org template sharing
         API_KEY,         // Organisation API key lifecycle
-        DOCUMENT         // Uploaded file / document
+        DOCUMENT,        // Uploaded file / document (legacy alias for FILE)
+        FILE,            // File storage operations
+        SESSION,         // Login / logout / session management
+        BULK_EMAIL,      // Bulk email job lifecycle
+        CLOUD_CONFIG     // Cloud storage configuration
     }
 
     /** Compliance risk level — auto-assigned from the action. */
@@ -97,14 +134,27 @@ public class AuditLog {
     /** Version that resulted from this action (0 when not applicable / DELETED). */
     private int versionNumber;
 
-    /** Email of the acting user. */
-    private String performedBy;
-
-    /** Stable user-ID snapshot (does not change if the user renames or changes e-mail). */
+    /** Primary user identifier — the userId of the acting user (stable across renames). */
     private String performedByUserId;
+
+    /**
+     * Email of the acting user at the time of the action (display / search convenience).
+     * Use {@code performedByUserId} as the stable key; this field may change if the
+     * user updates their e-mail address.
+     */
+    private String performedBy;
 
     /** Display name snapshot at the time of the action. */
     private String performedByName;
+
+    /**
+     * Role the acting user held <em>at the time of the action</em>.
+     * Stored as a string (e.g. "PLATFORM_ADMIN", "ORG_ADMIN", "ADMIN", "USER")
+     * so that visibility filtering is evaluated against the historical role, not
+     * the user's current role after a potential role change.
+     */
+    @Indexed
+    private String performedByRole;
 
     /** Changed fields: fieldName → { from, to }.  Populated on UPDATED only. */
     private Map<String, Object> changes;

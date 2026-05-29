@@ -25,4 +25,16 @@ public class BulkCreateDocumentRequest {
      * documents only — the caller can send them individually later.
      */
     private boolean sendImmediately = true;
+
+    /**
+     * When {@code true}, clients are shown an optional file-upload section after signing.
+     * Applied to the whole batch — all documents inherit this setting.
+     */
+    private boolean allowClientUpload = false;
+
+    /**
+     * Restricts which file-extension types the client may upload (case-insensitive, without dot,
+     * e.g. {@code ["pdf","jpg","png"]}). An empty / null list means all file types are accepted.
+     */
+    private List<String> allowedClientUploadFileTypes;
 }

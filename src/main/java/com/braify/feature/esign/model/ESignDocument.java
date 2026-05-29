@@ -87,6 +87,14 @@ public class ESignDocument {
     @Builder.Default
     private boolean allowClientUpload = false;
 
+    /**
+     * Restricts which file-extension types the client may upload (case-insensitive, without dot,
+     * e.g. {@code ["pdf","jpg","png"]}). An empty list means all file types are accepted.
+     * Inherited from the parent {@link ESignBulkBatch} at document-creation time.
+     */
+    @Builder.Default
+    private List<String> allowedClientUploadFileTypes = new ArrayList<>();
+
     /* ── Client-uploaded attachments (optional, post-signing) ─────────── */
     /**
      * Files the client voluntarily uploads after signing — e.g. ID proof, supporting docs.

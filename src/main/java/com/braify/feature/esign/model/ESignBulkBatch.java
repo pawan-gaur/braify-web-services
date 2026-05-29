@@ -6,6 +6,8 @@ import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Tracks a single bulk-send operation submitted via {@code POST /api/esign/documents/bulk}.
@@ -38,6 +40,14 @@ public class ESignBulkBatch {
      */
     @Builder.Default
     private boolean allowClientUpload = false;
+
+    /**
+     * Restricts which file-extension types the client may upload (case-insensitive, without dot,
+     * e.g. {@code ["pdf","jpg","png"]}). An empty list means all file types are accepted.
+     * Propagated to every document in the batch.
+     */
+    @Builder.Default
+    private List<String> allowedClientUploadFileTypes = new ArrayList<>();
 
     /* ── Batch status ─────────────────────────────────────────────────────── */
     public enum Status { PROCESSING, COMPLETED, PARTIAL, FAILED }
