@@ -91,6 +91,21 @@ public class BulkEmailController {
         return ResponseEntity.ok(job);
     }
 
+    @Operation(summary = "Retry pending rows from a cancelled job",
+               description = "Re-queues all PENDING rows from a CANCELLED campaign and restarts processing. " +
+                             "Rows that were already SENT are never touched. " +
+                             "Use this to resume a campaign that was cancelled mid-flight.")
+    @ApiResponse(responseCode = "200", description = "Retry started")
+    @ApiResponse(responseCode = "400", description = "Job is not CANCELLED or has no pending rows")
+    @PostMapping("/{id}/retry-pending")
+    public ResponseEntity<BulkEmailJobResponse> retryPending(
+            @Parameter(description = "Job ID") @PathVariable String id,
+            @AuthenticationPrincipal UserDetailsImpl principal) {
+
+        log.info("POST /api/bulk-email/jobs/{}/retry-pending by '{}'", id, principal.getUsername());
+        return ResponseEntity.ok(bulkEmailService.retryPending(id, principal));
+    }
+
     @Operation(summary = "Cancel a running job",
                description = "Requests cancellation of a PENDING or PROCESSING job. " +
                              "Emails already dispatched are NOT recalled — cancellation prevents future rows from sending.")
@@ -114,9 +129,8 @@ public class BulkEmailController {
             @Parameter(description = "Job ID") @PathVariable String id,
             @AuthenticationPrincipal UserDetailsImpl principal) {
 
-        BulkEmailJobResponse job = bulkEmailService.getJob(id, principal);
-        List<AuditEventResponse> events = job.getAuditEvents() != null ? job.getAuditEvents() : List.of();
-        return ResponseEntity.ok(events);
+        // Uses a targeted projection — loads only auditEvents, not the 5 000-row array.
+        return ResponseEntity.ok(bulkEmailService.getJobAudit(id, principal));
     }
 
     @Operation(summary = "Get job summary counters",
@@ -128,14 +142,6 @@ public class BulkEmailController {
             @Parameter(description = "Job ID") @PathVariable String id,
             @AuthenticationPrincipal UserDetailsImpl principal) {
 
-        BulkEmailJobResponse job = bulkEmailService.getJob(id, principal);
-        return ResponseEntity.ok(Map.of(
-                "id",           job.getId(),
-                "status",       job.getStatus(),
-                "totalCount",   job.getTotalCount(),
-                "sentCount",    job.getSentCount(),
-                "failedCount",  job.getFailedCount(),
-                "pendingCount", job.getPendingCount()
-        ));
+        return ResponseEntity.ok(bulkEmailService.getJobStatus(id, principal));
     }
 }
