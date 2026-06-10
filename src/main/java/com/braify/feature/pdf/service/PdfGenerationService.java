@@ -7,10 +7,15 @@ import com.braify.feature.quota.service.QuotaService;
 import com.braify.feature.pdf.model.Template;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
 import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 @Slf4j
 @Service
@@ -35,7 +40,8 @@ public class PdfGenerationService {
         quotaService.checkAndIncrementDocs(template.getOrganizationId());
 
         String html     = placeholderService.replacePlaceholders(template.getHtmlContent(), data);
-        String fullHtml = buildHtmlDocument(html, template, branding);
+        String cleaned  = sanitizeHtml(html);
+        String fullHtml = buildHtmlDocument(cleaned, template, branding);
 
         log.debug("Generating PDF for template: {}", template.getId());
 
@@ -135,6 +141,76 @@ public class PdfGenerationService {
                 headerHtml,
                 bodyHtml,
                 footerHtml);
+    }
+
+    // ── HTML sanitiser ────────────────────────────────────────────────────────
+
+    /**
+     * Strips Microsoft Office / Word-specific markup that breaks openhtmltopdf's
+     * XML parser.  Typical culprits are content pasted from Word into the builder:
+     *
+     *  • Namespace-prefixed elements: &lt;o:p&gt;, &lt;w:*&gt;, &lt;m:*&gt;, &lt;v:*&gt;, &lt;st1:*&gt;
+     *  • xmlns:* attributes that declare Office namespaces on HTML elements
+     *  • mso-* CSS properties inside style attributes
+     *  • XML processing instructions (&lt;?xml …?&gt;)
+     *  • IE conditional comments (&lt;!--[if …]&gt; … &lt;![endif]--&gt;)
+     */
+    private static final Pattern MSO_STYLE_PROP =
+            Pattern.compile("(?i)\\s*mso-[^;\"']*(?:;|(?=[\"']))", Pattern.DOTALL);
+    private static final Pattern PANOSE_PROP =
+            Pattern.compile("(?i)\\s*panose-[^;\"']*(?:;|(?=[\"']))", Pattern.DOTALL);
+
+    private static String sanitizeHtml(String html) {
+        if (html == null || html.isBlank()) return html;
+
+        // 1. Strip XML processing instructions and IE conditional comments first
+        //    (Jsoup won't parse these well, so handle with regex before parsing)
+        String s = html
+                .replaceAll("(?s)<\\?xml[^>]*\\?>", "")
+                .replaceAll("(?s)<!--\\[if[^]]*]>.*?<!\\[endif]-->", "")
+                .replaceAll("(?s)<!--\\[if[^]]*]>.*?<![\\s\\S]*?-->", "");
+
+        // 2. Parse as HTML fragment with Jsoup (lenient parser handles malformed markup)
+        Document doc = Jsoup.parseBodyFragment(s);
+        doc.outputSettings()
+           .syntax(Document.OutputSettings.Syntax.xml)   // emit XHTML for openhtmltopdf
+           .charset(java.nio.charset.StandardCharsets.UTF_8)
+           .prettyPrint(false);
+
+        // 3. Remove all elements whose tag name contains a colon (namespace-prefixed)
+        //    e.g. <o:p>, <w:sdtPr>, <m:oMath>, <v:shape>, <st1:city>
+        Elements namespacedEls = doc.select("*");
+        for (Element el : namespacedEls) {
+            if (el.tagName().contains(":")) {
+                // Preserve text content — unwrap rather than remove completely
+                el.unwrap();
+            }
+        }
+
+        // 4. Strip Office XML namespace declarations from every element's attributes
+        //    (xmlns:o, xmlns:w, xmlns:m, xmlns:v, xmlns:st1, etc.)
+        for (Element el : doc.getAllElements()) {
+            el.attributes().asList().stream()
+              .filter(a -> a.getKey().startsWith("xmlns:") ||
+                           a.getKey().equalsIgnoreCase("xmlns"))
+              .map(org.jsoup.nodes.Attribute::getKey)
+              .toList()
+              .forEach(el::removeAttr);
+        }
+
+        // 5. Scrub mso-* and panose-* properties from inline style attributes
+        for (Element el : doc.getAllElements()) {
+            String style = el.attr("style");
+            if (!style.isBlank()) {
+                style = MSO_STYLE_PROP.matcher(style).replaceAll("");
+                style = PANOSE_PROP.matcher(style).replaceAll("");
+                if (style.isBlank()) el.removeAttr("style");
+                else el.attr("style", style.trim());
+            }
+        }
+
+        // 6. Return just the cleaned body inner HTML
+        return doc.body().html();
     }
 
     private static String escapeHtml(String text) {

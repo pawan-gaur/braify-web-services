@@ -3,6 +3,8 @@ package com.braify.feature.bulkemail.model;
 import lombok.*;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.Id;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
 
@@ -13,16 +15,33 @@ import java.util.Map;
 
 /**
  * Tracks a bulk-email send job — config, progress counters, and per-row results.
- * Rows are embedded for atomic access; max 500 rows per job.
+ * Rows are embedded for atomic access; max 5 000 rows per job.
+ *
+ * <h3>Index strategy</h3>
+ * <ul>
+ *   <li>Compound indexes on the three list-query patterns (user / org / all) each
+ *       include {@code createdAt DESC} so MongoDB can satisfy the sort from the index
+ *       without a separate in-memory sort pass.</li>
+ *   <li>Heavy fields ({@code rows}, {@code emailTemplateHtml}, {@code uploadedPdfData},
+ *       {@code detailSheetRows}) are excluded from list projections in the service layer.</li>
+ * </ul>
  */
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
 @Document(collection = "bulk_email_jobs")
+@CompoundIndexes({
+    // USER-scoped list (ADMIN/USER role) — most common query
+    @CompoundIndex(name = "idx_createdBy_createdAt", def = "{'createdBy': 1, 'createdAt': -1}"),
+    // ORG-scoped list (ORG_ADMIN role)
+    @CompoundIndex(name = "idx_orgId_createdAt",     def = "{'orgId': 1,     'createdAt': -1}"),
+    // PLATFORM_ADMIN full-scan, still benefits from a createdAt index for the sort
+    @CompoundIndex(name = "idx_createdAt_desc",      def = "{'createdAt': -1}"),
+})
 public class BulkEmailJob {
 
     @Id private String id;
 
     @Indexed private String createdBy;   // userId
-    private String orgId;
+    @Indexed private String orgId;
     private String orgName;              // display name used as email "From:" sender
     private String label;
 
@@ -104,7 +123,7 @@ public class BulkEmailJob {
         public enum EventType {
             JOB_CREATED, PROCESSING_STARTED,
             JOB_COMPLETED, JOB_PARTIAL, JOB_FAILED, JOB_CANCELLED,
-            RESEND_CREATED
+            RESEND_CREATED, RETRY_PENDING
         }
         private EventType     type;
         private String        description;
