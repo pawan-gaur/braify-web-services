@@ -179,15 +179,16 @@ public class BulkEmailProcessor {
             // 2. Resolve subject
             String subject = substituteVars(job.getEmailTemplateSubject(), row.getData());
 
-            // 3. Build attachment
-            byte[] attachmentData     = null;
-            String attachmentFileName = null;
+            // 3. Build attachments — primary type + optional secondary Excel sheet
+            //    Stored as an ordered map so filename → bytes pairs are sent in order.
+            Map<String, byte[]> attachments = new java.util.LinkedHashMap<>();
 
             switch (job.getAttachmentType()) {
                 case UPLOAD -> {
-                    attachmentData     = job.getUploadedPdfData();
-                    attachmentFileName = job.getUploadedPdfName() != null
+                    String name = job.getUploadedPdfName() != null
                             ? job.getUploadedPdfName() : "attachment.pdf";
+                    if (job.getUploadedPdfData() != null)
+                        attachments.put(name, job.getUploadedPdfData());
                 }
                 case PDF_TEMPLATE -> {
                     Map<String, Object> pdfData = new HashMap<>();
@@ -197,38 +198,60 @@ public class BulkEmailProcessor {
                     } else {
                         pdfData.putAll(row.getData());
                     }
-                    attachmentData     = pdfGenerationService.generate(pdfTemplate, pdfData);
-                    attachmentFileName = sanitize(job.getPdfTemplateName() != null
+                    String pdfName = sanitize(job.getPdfTemplateName() != null
                             ? job.getPdfTemplateName() : "document") + ".pdf";
+                    attachments.put(pdfName, pdfGenerationService.generate(pdfTemplate, pdfData));
                 }
                 case EXTERNAL_API -> {
-                    attachmentData     = fetchExternalPdf(job, row);
-                    attachmentFileName = "attachment.pdf";
+                    attachments.put("attachment.pdf", fetchExternalPdf(job, row));
                 }
                 case EXCEL_SHEET -> {
-                    String idValue     = row.getData().getOrDefault(job.getMainSheetIdColumn(), "");
-                    attachmentData     = generateDetailExcel(job, idValue);
-                    String tpl         = (job.getDetailSheetFileName() != null
+                    String idValue = row.getData().getOrDefault(job.getMainSheetIdColumn(), "");
+                    String tpl     = (job.getDetailSheetFileName() != null
                             && !job.getDetailSheetFileName().isBlank())
                             ? job.getDetailSheetFileName()
                             : "details_{{" + job.getMainSheetIdColumn() + "}}.xlsx";
-                    attachmentFileName = substituteVars(tpl, row.getData());
+                    attachments.put(substituteVars(tpl, row.getData()), generateDetailExcel(job, idValue));
                 }
-                default -> { /* NONE */ }
+                default -> { /* NONE — no primary attachment */ }
             }
 
-            // 4. Send
+            // Secondary: also attach Excel from Sheet 2 when requested and Sheet 2 data is present.
+            // Skipped when the primary type is already EXCEL_SHEET (avoid duplicate attachment).
+            if (job.isIncludeExcelSheet()
+                    && job.getAttachmentType() != BulkEmailJob.AttachmentType.EXCEL_SHEET
+                    && job.getDetailSheetIdColumn() != null && job.getMainSheetIdColumn() != null) {
+                String idValue  = row.getData().getOrDefault(job.getMainSheetIdColumn(), "");
+                String tpl      = (job.getDetailSheetFileName() != null
+                        && !job.getDetailSheetFileName().isBlank())
+                        ? job.getDetailSheetFileName()
+                        : "details_{{" + job.getMainSheetIdColumn() + "}}.xlsx";
+                attachments.put(substituteVars(tpl, row.getData()), generateDetailExcel(job, idValue));
+            }
+
+            // 4. Resolve CC recipients from configured columns
+            List<String> ccEmails = null;
+            if (job.getCcColumns() != null && !job.getCcColumns().isEmpty()) {
+                ccEmails = job.getCcColumns().stream()
+                        .map(col -> row.getData().getOrDefault(col, "").trim())
+                        .filter(addr -> !addr.isBlank() && addr.contains("@"))
+                        .distinct()
+                        .toList();
+                if (ccEmails.isEmpty()) ccEmails = null;
+            }
+
+            // 5. Send
             String senderName = (job.getOrgName() != null && !job.getOrgName().isBlank())
                     ? job.getOrgName() : job.getEmailTemplateName();
 
-            var response = (attachmentData != null)
-                    ? emailDispatcher.sendHtmlEmailWithAttachment(
-                            row.getRecipientEmail(), subject,
+            var response = attachments.isEmpty()
+                    ? emailDispatcher.sendHtmlEmail(
+                            row.getRecipientEmail(), ccEmails, subject,
+                            job.getEmailTemplateHtml(), emailPlaceholders, senderName)
+                    : emailDispatcher.sendHtmlEmailWithAttachments(
+                            row.getRecipientEmail(), ccEmails, subject,
                             job.getEmailTemplateHtml(), emailPlaceholders,
-                            attachmentData, attachmentFileName, senderName)
-                    : emailDispatcher.sendHtmlEmail(
-                            row.getRecipientEmail(), subject,
-                            job.getEmailTemplateHtml(), emailPlaceholders, senderName);
+                            attachments, senderName);
 
             row.setStatus(BulkEmailJob.BulkEmailRow.RowStatus.SENT);
             row.setSentAt(LocalDateTime.now());

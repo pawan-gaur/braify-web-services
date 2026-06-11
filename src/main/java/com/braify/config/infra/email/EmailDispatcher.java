@@ -147,6 +147,44 @@ public class EmailDispatcher {
         return send(email, renderedSubject, renderedHtml, attachments, senderDisplayName);
     }
 
+    /**
+     * Sends an HTML email with multiple binary attachments and optional CC recipients.
+     *
+     * @param ccEmails        optional CC list; null or empty = no CC
+     * @param attachmentsMap  filename → file bytes; null/empty-byte entries are silently skipped
+     * @param senderDisplayName  display name for the "From:" field; null = configured default
+     */
+    public CreateEmailResponse sendHtmlEmailWithAttachments(String email,
+                                                            List<String> ccEmails,
+                                                            String subject,
+                                                            String html,
+                                                            Map<String, Object> placeholders,
+                                                            Map<String, byte[]> attachmentsMap,
+                                                            String senderDisplayName) {
+        String renderedSubject = replacePlaceholders(
+                isBlank(subject) ? DEFAULT_SUBJECT : subject,
+                safePlaceholders(placeholders));
+        String renderedHtml = replacePlaceholders(html, safePlaceholders(placeholders));
+
+        List<Attachment> attachments = new ArrayList<>();
+        if (attachmentsMap != null) {
+            attachmentsMap.forEach((fileName, fileBytes) ->
+                    buildAttachment(fileName, fileBytes).ifPresent(attachments::add));
+        }
+        return send(email, ccEmails, renderedSubject, renderedHtml, attachments, senderDisplayName);
+    }
+
+    /** Convenience overload with no CC recipients. */
+    public CreateEmailResponse sendHtmlEmailWithAttachments(String email,
+                                                            String subject,
+                                                            String html,
+                                                            Map<String, Object> placeholders,
+                                                            Map<String, byte[]> attachmentsMap,
+                                                            String senderDisplayName) {
+        return sendHtmlEmailWithAttachments(
+                email, null, subject, html, placeholders, attachmentsMap, senderDisplayName);
+    }
+
     private CreateEmailResponse sendTemplatedEmail(String email,
                                                    String templateName,
                                                    String subject,

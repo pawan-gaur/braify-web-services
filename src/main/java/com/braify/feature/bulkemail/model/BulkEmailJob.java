@@ -55,6 +55,9 @@ public class BulkEmailJob {
     private String emailColumn;          // XLSX column name that holds recipient email
     private String nameColumn;           // optional — recipient display name
     private Map<String, String> columnMapping;   // emailTemplatePlaceholder → xlsxColumn
+    /** XLSX column names whose per-row values are added as CC recipients. */
+    @Builder.Default
+    private List<String> ccColumns = new ArrayList<>();
 
     /* ── Attachment config ───────────────────────────────────────────────── */
     public enum AttachmentType { NONE, UPLOAD, PDF_TEMPLATE, EXTERNAL_API, EXCEL_SHEET }
@@ -84,6 +87,14 @@ public class BulkEmailJob {
     private String detailSheetIdColumn;     // Sheet 2 column to match against
     private String mainSheetIdColumn;       // Sheet 1 column that holds the matching key
     private String detailSheetFileName;     // e.g. "Statement_{{name}}.xlsx"
+
+    /**
+     * When {@code true}, a per-recipient Excel attachment (from Sheet-2 data) is generated
+     * in addition to whatever {@code attachmentType} specifies.  Allows combining, e.g.,
+     * a PDF Template attachment with an Excel Sheet-2 attachment in the same email.
+     * Ignored when {@code attachmentType} is already {@code EXCEL_SHEET}.
+     */
+    @Builder.Default private boolean includeExcelSheet = false;
 
     /* ── Progress ────────────────────────────────────────────────────────── */
     public enum JobStatus { PENDING, PROCESSING, COMPLETED, PARTIAL, FAILED, CANCELLED }

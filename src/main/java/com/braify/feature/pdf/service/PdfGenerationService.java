@@ -119,11 +119,12 @@ public class PdfGenerationService {
                   font-size: 12px;
                   margin: 0;
                   padding: 0;
+                  position: relative;
                 }
                 table { border-collapse: collapse; width: 100%%; }
                 th, td { border: 1px solid #ddd; padding: 6px 10px; }
                 th { background-color: #f2f2f2; font-weight: bold; }
-                img { max-width: 100%%; }
+                img { display: inline-block; }
                 .dynamic-field { color: inherit; }
                 %s
                 </style>
