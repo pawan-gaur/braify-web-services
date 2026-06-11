@@ -23,6 +23,9 @@ public class BulkEmailJobRequest {
 
     private Map<String, String> columnMapping;  // emailTemplatePlaceholder → xlsxColumn
 
+    /** XLSX column names whose values should be added as CC recipients on each email. */
+    private List<String> ccColumns;
+
     @NotEmpty
     private List<Map<String, String>> rows; // parsed XLSX rows (max 500)
 
@@ -48,4 +51,12 @@ public class BulkEmailJobRequest {
     private String detailSheetIdColumn;                   // Sheet 2 column to match against
     private String mainSheetIdColumn;                     // Sheet 1 column that holds the matching key
     private String detailSheetFileName;                   // filename template e.g. "Statement_{{name}}.xlsx"
+
+    /**
+     * When {@code true}, a per-recipient Excel attachment is generated from Sheet 2 data
+     * in addition to whatever {@code attachmentType} specifies.
+     * Allows combining e.g. a PDF Template attachment with an Excel Sheet 2 attachment.
+     * Ignored when {@code attachmentType} is already {@code EXCEL_SHEET}.
+     */
+    private boolean includeExcelSheet = false;
 }
