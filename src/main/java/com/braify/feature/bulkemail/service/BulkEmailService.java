@@ -37,7 +37,7 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class BulkEmailService {
 
-    private static final int MAX_ROWS = 5000;
+    private static final int MAX_ROWS = 10000;
 
     private final BulkEmailJobRepository   jobRepo;
     private final EmailTemplateRepository  emailTemplateRepo;
