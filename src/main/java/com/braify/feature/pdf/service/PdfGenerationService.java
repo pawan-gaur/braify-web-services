@@ -2,6 +2,8 @@ package com.braify.feature.pdf.service;
 
 import com.openhtmltopdf.pdfboxout.PdfRendererBuilder;
 import com.openhtmltopdf.svgsupport.BatikSVGDrawer;
+import com.openhtmltopdf.extend.FSStream;
+import com.openhtmltopdf.extend.FSStreamFactory;
 import com.braify.feature.branding.model.OrgBranding;
 import com.braify.feature.quota.service.QuotaService;
 import com.braify.feature.pdf.model.Template;
@@ -14,6 +16,12 @@ import org.jsoup.select.Elements;
 import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.Reader;
+import java.net.URL;
+import java.net.URLConnection;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.regex.Pattern;
 
@@ -24,6 +32,40 @@ public class PdfGenerationService {
 
     private final PlaceholderService placeholderService;
     private final QuotaService       quotaService;
+
+    // Timeouts for fetching remote resources (images / CSS) during rendering.
+    private static final int RESOURCE_CONNECT_TIMEOUT_MS = 4000;
+    private static final int RESOURCE_READ_TIMEOUT_MS    = 6000;
+
+    /**
+     * Timeout-bounded, fail-soft stream factory for http(s) resources.
+     *
+     * <p>openhtmltopdf's default resolves every remote {@code <img src="http…">}
+     * (or remote CSS) by opening a {@link java.net.URL} stream on the render
+     * thread with the JVM-global timeout, which is effectively infinite. A single
+     * slow or unreachable image host therefore blocks the entire PDF render (and
+     * the HTTP worker thread) indefinitely — the main cause of "PDF generation
+     * hangs / is slow". This caps each fetch and returns {@code null} on failure
+     * so openhtmltopdf simply skips the missing resource instead of blocking.
+     */
+    private static final FSStreamFactory TIMEOUT_STREAM_FACTORY = (String uri) -> new FSStream() {
+        private InputStream open() {
+            try {
+                URLConnection conn = new URL(uri).openConnection();
+                conn.setConnectTimeout(RESOURCE_CONNECT_TIMEOUT_MS);
+                conn.setReadTimeout(RESOURCE_READ_TIMEOUT_MS);
+                return conn.getInputStream();
+            } catch (Exception e) {
+                log.warn("PDF resource fetch failed/timed out, skipping {}: {}", uri, e.getMessage());
+                return null;
+            }
+        }
+        @Override public InputStream getStream() { return open(); }
+        @Override public Reader getReader() {
+            InputStream is = open();
+            return is == null ? null : new InputStreamReader(is, StandardCharsets.UTF_8);
+        }
+    };
 
     // ── Public API ────────────────────────────────────────────────────────────
 
@@ -48,6 +90,8 @@ public class PdfGenerationService {
         try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
             PdfRendererBuilder builder = new PdfRendererBuilder();
             builder.useFastMode();
+            // Bound remote image/CSS fetches so a slow host can't hang the render.
+            builder.useHttpStreamImplementation(TIMEOUT_STREAM_FACTORY);
             builder.useSVGDrawer(new BatikSVGDrawer());
             builder.withHtmlContent(fullHtml, null);
             builder.toStream(baos);

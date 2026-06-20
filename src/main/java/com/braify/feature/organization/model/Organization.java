@@ -48,6 +48,20 @@ public class Organization {
     @Builder.Default
     private List<String> features = new ArrayList<>();
 
+    // ── MFA policy ────────────────────────────────────────────────────────────
+
+    /** Organisation-wide MFA enforcement, set by PLATFORM_ADMIN. */
+    public enum MfaPolicy { DISABLED, OPTIONAL, REQUIRED }
+
+    /**
+     * DISABLED — no MFA challenge for anyone (existing user enrollments are preserved
+     *            but inactive, and reactivate if this is later set back to OPTIONAL/REQUIRED).
+     * OPTIONAL — users may self-enroll; challenged only if enrolled.
+     * REQUIRED — all org users must enroll; enrolled users are challenged at login.
+     */
+    @Builder.Default
+    private MfaPolicy mfaPolicy = MfaPolicy.DISABLED;
+
     // ── Subscription ──────────────────────────────────────────────────────────
 
     /** Current subscription tier; defaults to FREE for all new organisations. */

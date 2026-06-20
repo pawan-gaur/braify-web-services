@@ -4,6 +4,7 @@ import com.braify.feature.audit.model.AuditLog;
 import com.braify.feature.audit.service.AuditLogService;
 import com.braify.feature.auth.dto.LoginRequest;
 import com.braify.feature.auth.dto.LoginResponse;
+import com.braify.feature.auth.dto.MfaVerifyRequest;
 import com.braify.feature.user.model.AppUser;
 import com.braify.shared.Feature;
 import com.braify.feature.organization.model.Organization;
@@ -32,6 +33,7 @@ public class AuthService {
     private final PasswordEncoder       passwordEncoder;
     private final JwtUtil               jwtUtil;
     private final AuditLogService       auditLogService;
+    private final MfaService            mfaService;
 
     private static final int MAX_SESSIONS = 3;
 
@@ -53,6 +55,49 @@ public class AuthService {
             throw new RuntimeException("Invalid email or password");
         }
 
+        // Password is valid — now apply the MFA policy (org policy × user enrollment).
+        MfaService.MfaRequirement mfaReq = mfaService.requirementAtLogin(user);
+        if (mfaReq == MfaService.MfaRequirement.CHALLENGE) {
+            log.info("MFA challenge required for '{}'", user.getEmail());
+            // No session/token issued yet — only a short-lived challenge token.
+            return LoginResponse.builder()
+                    .mfaRequired(true)
+                    .mfaToken(jwtUtil.generateMfaChallengeToken(user))
+                    .build();
+        }
+        boolean mustSetupMfa = (mfaReq == MfaService.MfaRequirement.MUST_SETUP);
+        return issueSession(user, req.getDeviceInfo(), ipAddress, false, mustSetupMfa);
+    }
+
+    /**
+     * Completes a login that required MFA. Validates the short-lived challenge token,
+     * verifies the TOTP/recovery code, then issues the real session — the same path a
+     * non-MFA login takes.
+     */
+    public LoginResponse verifyMfaAndLogin(MfaVerifyRequest req, String ipAddress) {
+        if (req.getMfaToken() == null || !jwtUtil.isValidMfaChallengeToken(req.getMfaToken())) {
+            throw new RuntimeException("Your verification session expired. Please sign in again.");
+        }
+        String userId = jwtUtil.extractUserId(req.getMfaToken());
+        AppUser user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+        if (!user.isActive()) throw new RuntimeException("Account is disabled");
+
+        if (!mfaService.verifyCode(user, req.getCode())) {
+            log.warn("MFA verification failed for '{}'", user.getEmail());
+            auditLogService.logFailureByUser(user.getId(), user.getEmail(),
+                    AuditLog.Action.LOGIN, AuditLog.ResourceType.SESSION, user, "Invalid MFA code");
+            throw new RuntimeException("Invalid verification code");
+        }
+        return issueSession(user, req.getDeviceInfo(), ipAddress, true, false);
+    }
+
+    /**
+     * Shared session-issuing path: enforce session limit, mint the JWT, persist the
+     * {@link UserSession}, audit the LOGIN, and build the full {@link LoginResponse}.
+     */
+    private LoginResponse issueSession(AppUser user, String deviceInfo, String ipAddress,
+                                       boolean mfaUsed, boolean mustSetupMfa) {
         // Enforce session limit: if >= MAX_SESSIONS active, revoke oldest
         List<UserSession> activeSessions =
                 sessionRepository.findByUserIdAndActiveTrueOrderByCreatedAtAsc(user.getId());
@@ -74,7 +119,7 @@ public class AuthService {
                 .jti(jti)
                 .organizationId(user.getOrganizationId())
                 .userRole(user.getRole().name())
-                .deviceInfo(req.getDeviceInfo())
+                .deviceInfo(deviceInfo)
                 .ipAddress(ipAddress)
                 .active(true)
                 .expiresAt(jwtUtil.expiresAt(token))
@@ -87,7 +132,8 @@ public class AuthService {
                 session.getId(), null,
                 AuditLog.Action.LOGIN, AuditLog.ResourceType.SESSION,
                 0, Map.of("ip",         ipAddress  != null ? ipAddress : "unknown",
-                           "deviceInfo", req.getDeviceInfo() != null ? req.getDeviceInfo() : ""),
+                           "deviceInfo", deviceInfo != null ? deviceInfo : "",
+                           "mfa",        String.valueOf(mfaUsed)),
                 user);
 
         // Fetch org (name + features) if applicable
@@ -103,7 +149,7 @@ public class AuthService {
                 ? Feature.allKeys()
                 : (org != null && org.getFeatures() != null ? org.getFeatures() : List.of());
 
-        log.info("Login successful for user '{}' (role={})", user.getEmail(), user.getRole());
+        log.info("Login successful for user '{}' (role={}, mfa={})", user.getEmail(), user.getRole(), mfaUsed);
         return LoginResponse.builder()
                 .token(token)
                 .userId(user.getId())
@@ -116,6 +162,7 @@ public class AuthService {
                 .profilePicture(user.getProfilePicture())
                 .mustChangePassword(user.isMustChangePassword())
                 .features(features)
+                .mustSetupMfa(mustSetupMfa)
                 .build();
     }
 

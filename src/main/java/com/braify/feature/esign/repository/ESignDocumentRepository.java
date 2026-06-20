@@ -4,6 +4,7 @@ import com.braify.feature.esign.model.ESignDocument;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.mongodb.repository.MongoRepository;
+import org.springframework.data.mongodb.repository.Query;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
@@ -100,4 +101,18 @@ public interface ESignDocumentRepository extends MongoRepository<ESignDocument, 
     List<ESignDocument> findByOrgIdAndStatus(String orgId, ESignDocument.Status status);
 
     List<ESignDocument> findByStatus(ESignDocument.Status status);
+
+    // ── Overdue counts — count expired pending docs WITHOUT loading them ───────
+    // (the dashboard previously loaded every pending doc, incl. embedded PDF bytes,
+    //  just to filter+count by tokenExpiresAt < now)
+
+    long countByStatusInAndTokenExpiresAtBefore(
+            List<ESignDocument.Status> statuses, LocalDateTime cutoff);
+
+    long countByOrgIdAndStatusInAndTokenExpiresAtBefore(
+            String orgId, List<ESignDocument.Status> statuses, LocalDateTime cutoff);
+
+    // ── ID-only projection — for the viewed-count, avoids loading PDF byte[]s ──
+    @Query(value = "{ 'orgId': ?0 }", fields = "{ '_id': 1 }")
+    List<ESignDocument> findIdsByOrgId(String orgId);
 }

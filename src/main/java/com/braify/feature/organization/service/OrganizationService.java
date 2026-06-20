@@ -46,6 +46,24 @@ public class OrganizationService {
     }
 
     /**
+     * Sets the org-wide MFA policy (PLATFORM_ADMIN only). Never touches individual
+     * users' MFA enrollment — disabling only suspends the login challenge; existing
+     * secrets are preserved and reactivate when the policy is set back to OPTIONAL/REQUIRED.
+     */
+    public Organization updateMfaPolicy(String id, Organization.MfaPolicy policy, String performedBy) {
+        Organization org = findById(id);
+        Organization.MfaPolicy old = org.getMfaPolicy();
+        org.setMfaPolicy(policy);
+        Organization saved = orgRepository.save(org);
+        auditLogService.log(id, org.getName(), AuditLog.Action.MFA_POLICY_CHANGED,
+                AuditLog.ResourceType.ORGANIZATION, 0,
+                Map.of("from", old != null ? old.name() : "null", "to", policy.name()),
+                performedBy, id);
+        log.info("MFA policy for org '{}' changed {} -> {}", id, old, policy);
+        return saved;
+    }
+
+    /**
      * Creates a new organisation and logs the action.
      *
      * @param req          request payload

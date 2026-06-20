@@ -81,10 +81,18 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                     // cleared by Spring Security before the outermost filter's finally block)
                     request.setAttribute(RequestLoggingFilter.CALLER_ATTR, email);
 
-                    // Update lastUsedAt using the session we already fetched
+                    // Update lastUsedAt — but throttle the write to at most once per
+                    // minute. lastUsedAt only feeds the session-listing display, so a
+                    // DB write on EVERY authenticated request is pure overhead on the
+                    // critical path. Skipping it for sub-minute activity removes the
+                    // vast majority of session-collection writes.
                     UserSession session = sessionOpt.get();
-                    session.setLastUsedAt(LocalDateTime.now());
-                    sessionRepository.save(session);
+                    LocalDateTime now = LocalDateTime.now();
+                    if (session.getLastUsedAt() == null
+                            || session.getLastUsedAt().isBefore(now.minusSeconds(60))) {
+                        session.setLastUsedAt(now);
+                        sessionRepository.save(session);
+                    }
                 }
             }
         } catch (Exception ex) {

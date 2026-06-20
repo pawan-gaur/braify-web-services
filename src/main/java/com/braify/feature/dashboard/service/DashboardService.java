@@ -15,8 +15,15 @@ import com.braify.feature.esign.repository.ESignAuditEventRepository;
 import com.braify.feature.esign.repository.ESignDocumentRepository;
 import com.braify.feature.onboarding.model.OnboardingRequest;
 import com.braify.feature.onboarding.repository.OnboardingRequestRepository;
+import com.braify.feature.fileupload.model.OrgFile;
+import com.braify.feature.fileupload.repository.OrgFileRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.aggregation.Aggregation;
+import org.springframework.data.mongodb.core.aggregation.AggregationResults;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.stereotype.Service;
 
 import java.time.Duration;
@@ -39,6 +46,8 @@ public class DashboardService {
     private final ESignDocumentRepository     esignRepo;
     private final ESignAuditEventRepository   auditEventRepo;
     private final OnboardingRequestRepository onboardingRepo;
+    private final OrgFileRepository           fileRepo;
+    private final MongoTemplate               mongoTemplate;
 
     private static final int MONTHS = 6;
     private static final List<ESignDocument.Status> PENDING_STATUSES =
@@ -70,6 +79,13 @@ public class DashboardService {
                 .totalPdfTemplates  (kpiPdf(isPlatformAdmin, orgId))
                 .totalEmailTemplates(kpiEmail(isPlatformAdmin, orgId))
                 .pendingInvites     (kpiPendingInvites(isPlatformAdmin, orgId))
+
+                // ── Service usage ──────────────────────────────────────────────
+                .totalEmailsSent    (sumLong("bulk_email_jobs", "sentCount",     "orgId",          isPlatformAdmin ? null : orgId))
+                .totalBulkEmailJobs (countDocs("bulk_email_jobs",                "orgId",          isPlatformAdmin ? null : orgId))
+                .totalPdfsGenerated (sumLong("org_usage",        "docsGenerated", "organizationId", isPlatformAdmin ? null : orgId))
+                .totalFiles         (filesCount(isPlatformAdmin, orgId))
+                .totalStorageMb     (storageMb(isPlatformAdmin, orgId))
 
                 // ── E-Sign analytics ───────────────────────────────────────────
                 .esignTotal         (esignTotal(isPlatformAdmin, orgId))
@@ -127,6 +143,42 @@ public class DashboardService {
                      : userRepo.countByOrganizationIdAndActiveTrueAndMustChangePasswordTrue(orgId);
     }
 
+    // ── Service-usage helpers ───────────────────────────────────────────────────
+
+    private long filesCount(boolean admin, String orgId) {
+        return admin ? fileRepo.countByStatus(OrgFile.FileStatus.ACTIVE)
+                     : fileRepo.countByOrganizationIdAndStatus(orgId, OrgFile.FileStatus.ACTIVE);
+    }
+
+    private double storageMb(boolean admin, String orgId) {
+        List<OrgFile> files = admin ? fileRepo.findAllActiveFileSizes()
+                                    : fileRepo.findActiveFileSizes(orgId);
+        double sum = files.stream().mapToDouble(OrgFile::getFileSizeMb).sum();
+        return Math.round(sum * 10.0) / 10.0;   // 1 d.p.
+    }
+
+    /**
+     * Sums a numeric field across a collection via a MongoDB aggregation (no documents
+     * loaded into the JVM). {@code orgId == null} sums across all orgs (PLATFORM_ADMIN).
+     */
+    private long sumLong(String collection, String sumField, String matchField, String orgId) {
+        var group = Aggregation.group().sum(sumField).as("total");
+        Aggregation agg = (orgId == null)
+                ? Aggregation.newAggregation(group)
+                : Aggregation.newAggregation(Aggregation.match(Criteria.where(matchField).is(orgId)), group);
+        AggregationResults<org.bson.Document> res =
+                mongoTemplate.aggregate(agg, collection, org.bson.Document.class);
+        org.bson.Document d = res.getUniqueMappedResult();
+        Object total = (d != null) ? d.get("total") : null;
+        return (total instanceof Number n) ? n.longValue() : 0L;
+    }
+
+    /** Counts documents in a collection, optionally scoped to one org. */
+    private long countDocs(String collection, String matchField, String orgId) {
+        Query q = (orgId == null) ? new Query() : new Query(Criteria.where(matchField).is(orgId));
+        return mongoTemplate.count(q, collection);
+    }
+
     // ── E-Sign helpers ────────────────────────────────────────────────────────
 
     private long esignTotal(boolean admin, String orgId) {
@@ -144,36 +196,39 @@ public class DashboardService {
     }
 
     private long esignOverdue(boolean admin, String orgId) {
+        // Count expired pending docs in the DB — don't load them (they carry PDF bytes).
         LocalDateTime now = LocalDateTime.now();
-        List<ESignDocument> pending = admin
-                ? esignRepo.findByStatusIn(PENDING_STATUSES)
-                : esignRepo.findByOrgIdAndStatusIn(orgId, PENDING_STATUSES);
-        return pending.stream()
-                .filter(d -> d.getTokenExpiresAt() != null && d.getTokenExpiresAt().isBefore(now))
-                .count();
+        return admin
+                ? esignRepo.countByStatusInAndTokenExpiresAtBefore(PENDING_STATUSES, now)
+                : esignRepo.countByOrgIdAndStatusInAndTokenExpiresAtBefore(orgId, PENDING_STATUSES, now);
     }
 
     private Double esignAvgHours(boolean admin, String orgId) {
-        List<ESignDocument> completed = admin
-                ? esignRepo.findByStatus(ESignDocument.Status.COMPLETED)
-                : esignRepo.findByOrgIdAndStatus(orgId, ESignDocument.Status.COMPLETED);
+        // Compute the average (completedAt - sentAt) in the DB via aggregation —
+        // avoids loading every COMPLETED document (the heaviest: both PDF byte[]s).
+        List<Criteria> crit = new ArrayList<>();
+        crit.add(Criteria.where("status").is(ESignDocument.Status.COMPLETED.name()));
+        crit.add(Criteria.where("sentAt").ne(null));
+        crit.add(Criteria.where("completedAt").ne(null));
+        if (!admin) crit.add(Criteria.where("orgId").is(orgId));
 
-        return completed.stream()
-                .filter(d -> d.getSentAt() != null && d.getCompletedAt() != null)
-                .mapToLong(d -> Duration.between(d.getSentAt(), d.getCompletedAt()).toMinutes())
-                .average()
-                .stream()
-                .map(mins -> Math.round(mins / 6.0) / 10.0)   // hours to 1 d.p.
-                .boxed()
-                .findFirst()
-                .orElse(null);
+        Aggregation agg = Aggregation.newAggregation(
+                Aggregation.match(new Criteria().andOperator(crit.toArray(Criteria[]::new))),
+                Aggregation.project().andExpression("completedAt - sentAt").as("durMs"),
+                Aggregation.group().avg("durMs").as("avgMs"));
+        AggregationResults<org.bson.Document> res =
+                mongoTemplate.aggregate(agg, "esign_documents", org.bson.Document.class);
+        org.bson.Document d = res.getUniqueMappedResult();
+        if (d == null || !(d.get("avgMs") instanceof Number n)) return null;
+        return Math.round(n.doubleValue() / 3_600_000.0 * 10.0) / 10.0;   // ms → hours, 1 d.p.
     }
 
     private long esignViewed(boolean admin, String orgId) {
         if (admin) {
             return auditEventRepo.countByEvent(ESignAuditEvent.EventType.LINK_OPENED);
         }
-        List<String> docIds = esignRepo.findByOrgIdOrderByCreatedAtDesc(orgId).stream()
+        // ID-only projection — don't load the documents' embedded PDF bytes.
+        List<String> docIds = esignRepo.findIdsByOrgId(orgId).stream()
                 .map(ESignDocument::getId)
                 .collect(Collectors.toList());
         if (docIds.isEmpty()) return 0L;
@@ -329,6 +384,17 @@ public class DashboardService {
     // ── Platform Admin: org breakdown ─────────────────────────────────────────
 
     private List<DashboardStats.OrgSummary> orgBreakdown(List<Organization> allOrgs) {
+        // Precompute usage grouped by org in one pass each (avoids per-org aggregations).
+        Map<String, Long> emailsByOrg = sumByOrg("bulk_email_jobs", "sentCount",     "orgId");
+        Map<String, Long> pdfsByOrg   = sumByOrg("org_usage",        "docsGenerated", "organizationId");
+        Map<String, Long>   filesByOrg   = new HashMap<>();
+        Map<String, Double> storageByOrg = new HashMap<>();
+        for (OrgFile f : fileRepo.findAllActiveFileSizes()) {
+            if (f.getOrganizationId() == null) continue;
+            filesByOrg.merge(f.getOrganizationId(), 1L, Long::sum);
+            storageByOrg.merge(f.getOrganizationId(), f.getFileSizeMb(), Double::sum);
+        }
+
         return allOrgs.stream()
                 .map(org -> DashboardStats.OrgSummary.builder()
                         .organizationId(org.getId())
@@ -338,8 +404,26 @@ public class DashboardService {
                         .pdfTemplates(templateRepo.countByOrganizationIdAndDeletedFalse(org.getId()))
                         .emailTemplates(emailTemplateRepo.countByOrganizationIdAndDeletedFalse(org.getId()))
                         .esignDocuments(esignRepo.countByOrgId(org.getId()))
+                        .emailsSent(emailsByOrg.getOrDefault(org.getId(), 0L))
+                        .pdfsGenerated(pdfsByOrg.getOrDefault(org.getId(), 0L))
+                        .files(filesByOrg.getOrDefault(org.getId(), 0L))
+                        .storageMb(Math.round(storageByOrg.getOrDefault(org.getId(), 0.0) * 10.0) / 10.0)
                         .build())
                 .collect(Collectors.toList());
+    }
+
+    /** Sums a numeric field grouped by org → map of orgId → total (one aggregation). */
+    private Map<String, Long> sumByOrg(String collection, String sumField, String orgField) {
+        var group = Aggregation.group(orgField).sum(sumField).as("total");
+        AggregationResults<org.bson.Document> res =
+                mongoTemplate.aggregate(Aggregation.newAggregation(group), collection, org.bson.Document.class);
+        Map<String, Long> map = new HashMap<>();
+        for (org.bson.Document d : res.getMappedResults()) {
+            Object id = d.get("_id");
+            Object total = d.get("total");
+            if (id != null && total instanceof Number n) map.put(id.toString(), n.longValue());
+        }
+        return map;
     }
 
     // ── Platform Admin: feature distribution ──────────────────────────────────
