@@ -11,6 +11,8 @@ import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 
 @Data
 @Builder
@@ -34,6 +36,7 @@ public class AppUser {
     private Role role;
 
     /** null for PLATFORM_ADMIN */
+    @Indexed
     private String organizationId;
 
     private boolean active = true;
@@ -49,6 +52,26 @@ public class AppUser {
 
     /** ID of the AppUser (admin) who created this account; null for self-registered / system-created accounts. */
     private String createdBy;
+
+    // ── MFA / 2FA (TOTP) ───────────────────────────────────────────────────────
+    // Enrollment is PRESERVED across org-level MFA policy toggles — disabling the
+    // org policy never clears these fields; only the user self-disabling does.
+
+    /** True once the user has completed TOTP enrollment. */
+    @Builder.Default
+    private boolean mfaEnabled = false;
+
+    /** AES-GCM-encrypted base32 TOTP secret (via EncryptionService); null until enrolled. */
+    private String mfaSecret;
+
+    /** AES-encrypted base32 secret held during enrollment, before the first code is verified. */
+    private String mfaPendingSecret;
+
+    /** BCrypt-hashed one-time recovery codes (consumed on use). */
+    @Builder.Default
+    private List<String> mfaRecoveryCodes = new ArrayList<>();
+
+    private LocalDateTime mfaEnrolledAt;
 
     @CreatedDate
     private LocalDateTime createdAt;

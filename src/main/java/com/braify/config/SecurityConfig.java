@@ -36,6 +36,9 @@ public class SecurityConfig {
             .cors(Customizer.withDefaults())
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
+                // MFA management requires an authenticated session (more specific rule first).
+                // Note: /api/auth/login/mfa is NOT matched here — it stays public (the login challenge).
+                .requestMatchers("/api/auth/mfa/**").authenticated()
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/api/esign/sign/**").permitAll()   // client signing (ESIGN token)
                 .requestMatchers("/api/esign/verify/**").permitAll() // public verification

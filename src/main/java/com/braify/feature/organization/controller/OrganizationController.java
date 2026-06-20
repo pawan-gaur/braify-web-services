@@ -2,6 +2,7 @@ package com.braify.feature.organization.controller;
 
 import com.braify.feature.organization.dto.OrgFeaturesRequest;
 import com.braify.feature.organization.dto.OrgFeaturesResponse;
+import com.braify.feature.organization.dto.OrgMfaPolicyRequest;
 import com.braify.feature.organization.dto.OrganizationRequest;
 import com.braify.feature.organization.dto.SubscriptionRequest;
 import com.braify.feature.organization.dto.SubscriptionResponse;
@@ -141,6 +142,23 @@ public class OrganizationController {
         ResponseEntity<OrgFeaturesResponse> result = ResponseEntity.ok(orgService.updateFeatures(id, req.getFeatures(), performedBy(auth)));
         log.info("Features updated for org '{}'", id);
         return result;
+    }
+
+    // ── MFA policy ────────────────────────────────────────────────────────────
+
+    @Operation(summary = "Set organisation MFA policy",
+               description = "Sets DISABLED / OPTIONAL / REQUIRED for the org. Disabling NEVER deletes a user's " +
+                             "MFA enrollment — it only suspends the challenge; existing secrets reactivate if the " +
+                             "policy is later set back to OPTIONAL/REQUIRED.\n\nBody: `{ \"policy\": \"REQUIRED\" }`")
+    @ApiResponse(responseCode = "200", description = "Policy updated")
+    @PutMapping("/{id}/mfa-policy")
+    @PreAuthorize("hasRole('PLATFORM_ADMIN')")
+    public ResponseEntity<Organization> updateMfaPolicy(
+            @Parameter(description = "Organisation ID") @PathVariable String id,
+            @Valid @RequestBody OrgMfaPolicyRequest req,
+            Authentication auth) {
+        log.info("PUT /api/organizations/{}/mfa-policy policy='{}' by '{}'", id, req.getPolicy(), performedBy(auth));
+        return ResponseEntity.ok(orgService.updateMfaPolicy(id, req.getPolicy(), performedBy(auth)));
     }
 
     // ── Subscription ──────────────────────────────────────────────────────────

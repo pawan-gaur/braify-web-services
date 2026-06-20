@@ -24,6 +24,9 @@ public class JwtUtil {
     @Value("${jwt.expiration-hours:24}")
     private int expirationHours;
 
+    @Value("${jwt.mfa-challenge-minutes:5}")
+    private int mfaChallengeMinutes;
+
     private SecretKey key() {
         return Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
     }
@@ -62,6 +65,37 @@ public class JwtUtil {
         try {
             parseToken(token);
             return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // ── MFA challenge-token support ─────────────────────────────────────────
+
+    /**
+     * Short-lived token issued after a correct password when MFA is required.
+     * Carries {@code type = "MFA_CHALLENGE"} and the userId as subject. It is NOT
+     * a session token — no {@link com.braify.feature.session.model.UserSession} is
+     * created for it, so {@link JwtAuthFilter} (which requires an active session)
+     * will never authenticate a request with it. It is only accepted by
+     * POST /api/auth/login/mfa.
+     */
+    public String generateMfaChallengeToken(AppUser user) {
+        return Jwts.builder()
+                .id(UUID.randomUUID().toString())
+                .subject(user.getId())
+                .claim("type", "MFA_CHALLENGE")
+                .claim("email", user.getEmail())
+                .issuedAt(new Date())
+                .expiration(new Date(System.currentTimeMillis() + mfaChallengeMinutes * 60_000L))
+                .signWith(key())
+                .compact();
+    }
+
+    /** Returns true only if the token is valid AND carries {@code type = "MFA_CHALLENGE"}. */
+    public boolean isValidMfaChallengeToken(String token) {
+        try {
+            return "MFA_CHALLENGE".equals(parseToken(token).get("type", String.class));
         } catch (Exception e) {
             return false;
         }

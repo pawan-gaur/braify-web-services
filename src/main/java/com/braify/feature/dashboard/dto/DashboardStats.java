@@ -36,6 +36,23 @@ public class DashboardStats {
     /** Users who have not yet accepted their invite (mustChangePassword = true). */
     private long pendingInvites;
 
+    // ── Service usage (created / sent / generated) ───────────────────────────
+
+    /** Emails actually sent across all bulk-email campaigns (sum of per-job sentCount). */
+    private long totalEmailsSent;
+
+    /** Number of bulk-email campaigns (jobs) created. */
+    private long totalBulkEmailJobs;
+
+    /** PDFs generated (lifetime sum of monthly OrgUsage.docsGenerated). */
+    private long totalPdfsGenerated;
+
+    /** Active uploaded files visible to the caller. */
+    private long totalFiles;
+
+    /** Total storage consumed by active files, in MB. */
+    private double totalStorageMb;
+
     // ── E-Sign analytics ────────────────────────────────────────────────────
 
     /** Total e-sign documents created (all statuses). */
@@ -131,6 +148,14 @@ public class DashboardStats {
         private long pdfTemplates;
         private long emailTemplates;
         private long esignDocuments;
+        /** Emails actually sent via bulk-email campaigns. */
+        private long emailsSent;
+        /** PDFs generated (lifetime). */
+        private long pdfsGenerated;
+        /** Active uploaded files. */
+        private long files;
+        /** Storage consumed by active files, in MB. */
+        private double storageMb;
     }
 
     @Data @Builder @NoArgsConstructor @AllArgsConstructor

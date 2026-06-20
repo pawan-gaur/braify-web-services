@@ -2,6 +2,12 @@ package com.braify.feature.auth.controller;
 
 import com.braify.feature.auth.dto.LoginRequest;
 import com.braify.feature.auth.dto.LoginResponse;
+import com.braify.feature.auth.dto.MfaCodeRequest;
+import com.braify.feature.auth.dto.MfaRecoveryCodesResponse;
+import com.braify.feature.auth.dto.MfaSetupResponse;
+import com.braify.feature.auth.dto.MfaStatusResponse;
+import com.braify.feature.auth.dto.MfaVerifyRequest;
+import com.braify.feature.auth.service.MfaService;
 import com.braify.feature.user.dto.UserResponse;
 import com.braify.feature.user.model.AppUser;
 import com.braify.feature.auth.model.InvitationToken;
@@ -37,6 +43,7 @@ public class AuthController {
     private final PasswordEncoder passwordEncoder;
     private final EmailInviteService emailInviteService;
     private final UserService userService;
+    private final MfaService mfaService;
 
     @PostMapping("/login")
     public ResponseEntity<LoginResponse> login(@Valid @RequestBody LoginRequest req,
@@ -44,6 +51,53 @@ public class AuthController {
         log.info("POST /api/auth/login email='{}'", req.getEmail());
         String ip = extractClientIp(httpReq);
         return ResponseEntity.ok(authService.login(req, ip));
+    }
+
+    // ── MFA ───────────────────────────────────────────────────────────────────
+
+    /** Step 2 of login when MFA is required. Public (no session yet) — the mfaToken authorises it. */
+    @PostMapping("/login/mfa")
+    public ResponseEntity<LoginResponse> loginMfa(@RequestBody MfaVerifyRequest req,
+                                                  HttpServletRequest httpReq) {
+        log.info("POST /api/auth/login/mfa");
+        return ResponseEntity.ok(authService.verifyMfaAndLogin(req, extractClientIp(httpReq)));
+    }
+
+    /** Begin enrollment — returns the QR + secret. Requires an authenticated session. */
+    @PostMapping("/mfa/setup")
+    public ResponseEntity<MfaSetupResponse> mfaSetup(Authentication auth) {
+        return ResponseEntity.ok(mfaService.setup(currentUser(auth)));
+    }
+
+    /** Verify the first code and turn MFA on — returns one-time recovery codes. */
+    @PostMapping("/mfa/enable")
+    public ResponseEntity<MfaRecoveryCodesResponse> mfaEnable(@RequestBody MfaCodeRequest req,
+                                                              Authentication auth) {
+        return ResponseEntity.ok(new MfaRecoveryCodesResponse(
+                mfaService.enable(currentUser(auth), req.getCode())));
+    }
+
+    /** Turn MFA off (rejected if the org policy is REQUIRED). */
+    @PostMapping("/mfa/disable")
+    public ResponseEntity<Void> mfaDisable(@RequestBody MfaCodeRequest req, Authentication auth) {
+        mfaService.disable(currentUser(auth), req.getCode());
+        return ResponseEntity.noContent().build();
+    }
+
+    @GetMapping("/mfa/status")
+    public ResponseEntity<MfaStatusResponse> mfaStatus(Authentication auth) {
+        return ResponseEntity.ok(mfaService.status(currentUser(auth)));
+    }
+
+    @PostMapping("/mfa/recovery-codes/regenerate")
+    public ResponseEntity<MfaRecoveryCodesResponse> mfaRegenerate(@RequestBody MfaCodeRequest req,
+                                                                  Authentication auth) {
+        return ResponseEntity.ok(new MfaRecoveryCodesResponse(
+                mfaService.regenerateRecoveryCodes(currentUser(auth), req.getCode())));
+    }
+
+    private AppUser currentUser(Authentication auth) {
+        return ((UserDetailsImpl) auth.getPrincipal()).getAppUser();
     }
 
     /**

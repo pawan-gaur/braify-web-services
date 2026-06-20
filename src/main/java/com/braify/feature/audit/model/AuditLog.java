@@ -6,6 +6,8 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.Id;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
 
@@ -36,6 +38,10 @@ import java.util.Map;
 @NoArgsConstructor
 @AllArgsConstructor
 @Document(collection = "audit_logs")
+@CompoundIndexes({
+    // Dominant read: org-scoped feed sorted newest-first (dashboard + audit page)
+    @CompoundIndex(name = "idx_org_timestamp", def = "{'organizationId':1,'timestamp':-1}")
+})
 public class AuditLog {
 
     // ── Enumerations ──────────────────────────────────────────────────────────
@@ -48,6 +54,7 @@ public class AuditLog {
         // User profile
         PASSWORD_CHANGED, AVATAR_UPDATED,
         DEACTIVATED, ACTIVATED,
+        MFA_ENABLED, MFA_DISABLED, MFA_RECOVERY_USED,   // multi-factor auth
 
         // Session
         LOGIN,                  // user authenticated
@@ -65,6 +72,7 @@ public class AuditLog {
 
         // Org-level
         FEATURES_UPDATED,       // org feature assignment changed
+        MFA_POLICY_CHANGED,     // org MFA policy changed by PLATFORM_ADMIN
         SUBSCRIPTION_CHANGED,   // org subscription plan changed
         BRANDING_UPDATED,       // org branding settings changed
         QUOTA_EXCEEDED,         // a quota limit was hit (recorded as FAILURE)

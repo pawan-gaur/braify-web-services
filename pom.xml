@@ -126,6 +126,13 @@
             <version>LATEST</version>
         </dependency>
 
+        <!-- TOTP (RFC 6238) for MFA / 2FA — secret generation, code verification, QR -->
+        <dependency>
+            <groupId>dev.samstevens.totp</groupId>
+            <artifactId>totp</artifactId>
+            <version>1.7.1</version>
+        </dependency>
+
         <!-- OpenAPI / Swagger — auto-generates /v3/api-docs from live controllers -->
         <dependency>
             <groupId>org.springdoc</groupId>

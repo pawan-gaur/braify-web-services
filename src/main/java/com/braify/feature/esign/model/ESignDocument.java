@@ -2,6 +2,8 @@ package com.braify.feature.esign.model;
 
 import lombok.*;
 import org.springframework.data.annotation.*;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
 
@@ -11,6 +13,14 @@ import java.util.List;
 
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
 @Document(collection = "esign_documents")
+@CompoundIndexes({
+    // ORG_ADMIN list + dashboard counters (orgId + status), createdAt suffix serves the sort
+    @CompoundIndex(name = "idx_org_status_batch_created",
+                   def = "{'orgId':1,'status':1,'bulkBatchId':1,'createdAt':-1}"),
+    // Creator-scoped list (USER/ADMIN)
+    @CompoundIndex(name = "idx_createdBy_status_batch_created",
+                   def = "{'createdBy':1,'status':1,'bulkBatchId':1,'createdAt':-1}"),
+})
 public class ESignDocument {
 
     @Id private String id;

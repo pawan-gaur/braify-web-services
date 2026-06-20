@@ -7,6 +7,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.Id;
+import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.LocalDateTime;
@@ -31,8 +32,10 @@ public class OrgApiKey {
     /** First 12 chars of the plain key for display, e.g. "brfy_a1b2c3d" */
     private String keyPrefix;
 
-    /** SHA-256 of the full plain key — NEVER returned in responses */
+    /** SHA-256 of the full plain key — NEVER returned in responses. Looked up on every
+     *  external API request, so it must be indexed (unique). */
     @JsonIgnore
+    @Indexed(unique = true)
     private String keyHash;
 
     /** Subset of the org's enabled features this key may access */
