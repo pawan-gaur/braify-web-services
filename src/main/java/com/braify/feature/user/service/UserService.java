@@ -34,6 +34,8 @@ public class UserService {
     private final AuditLogService      auditLogService;
     private final SessionService       sessionService;
     private final QuotaService         quotaService;
+    private final com.braify.feature.auth.service.PasswordPolicyService passwordPolicyService;
+    private final com.braify.feature.platform.service.PlatformSettingsService platformSettingsService;
 
     /**
      * Returns users visible to currentUser.
@@ -82,7 +84,11 @@ public class UserService {
             throw new RuntimeException("Email already registered: " + req.getEmail());
         }
 
-        AppUser.Role role = AppUser.Role.valueOf(req.getRole());
+        // Role from request; falls back to the platform default when omitted.
+        String roleStr = (req.getRole() != null && !req.getRole().isBlank())
+                ? req.getRole()
+                : platformSettingsService.getSettings().getAccess().getDefaultRole();
+        AppUser.Role role = AppUser.Role.valueOf(roleStr);
 
         // Only PLATFORM_ADMIN can create PLATFORM_ADMIN users
         if (role == AppUser.Role.PLATFORM_ADMIN && currentUser.getRole() != AppUser.Role.PLATFORM_ADMIN) {
@@ -100,19 +106,28 @@ public class UserService {
 
         // Use provided password or generate a random one (invite flow)
         boolean sendInvite = req.isSendInvite();
-        String rawPassword = (req.getPassword() != null && !req.getPassword().isBlank())
-                ? req.getPassword()
-                : UUID.randomUUID().toString();
+        boolean explicitPassword = req.getPassword() != null && !req.getPassword().isBlank();
+        String rawPassword = explicitPassword ? req.getPassword() : UUID.randomUUID().toString();
+
+        // Enforce platform password policy only for admin-provided passwords;
+        // random invite placeholders are replaced by the user via the invite link.
+        if (explicitPassword) passwordPolicyService.validate(rawPassword, null);
+
+        // Force a first-login password change when the platform policy requires it
+        // and the admin set an explicit password (invite flow already forces it).
+        boolean forceChange = platformSettingsService.getSettings().getAccess().isForcePasswordChangeOnFirstLogin();
+        boolean mustChange = sendInvite || (explicitPassword && forceChange);
 
         AppUser user = AppUser.builder()
                 .email(req.getEmail())
                 .password(passwordEncoder.encode(rawPassword))
+                .passwordChangedAt(explicitPassword ? java.time.LocalDateTime.now() : null)
                 .firstName(req.getFirstName())
                 .lastName(req.getLastName())
                 .role(role)
                 .organizationId(orgId)
                 .active(true)
-                .mustChangePassword(sendInvite) // must reset via invite link
+                .mustChangePassword(mustChange)
                 .createdBy(currentUser.getId())
                 .build();
         user = userRepository.save(user);
@@ -142,7 +157,8 @@ public class UserService {
         user.setFirstName(req.getFirstName());
         user.setLastName(req.getLastName());
         if (req.getPassword() != null && !req.getPassword().isBlank()) {
-            user.setPassword(passwordEncoder.encode(req.getPassword()));
+            // Enforce platform password policy (length / complexity / re-use) + history.
+            passwordPolicyService.applyNewPassword(user, req.getPassword());
         }
         UserResponse response = toResponse(userRepository.save(user));
 

@@ -30,6 +30,8 @@ public class ProfileController {
     private final PasswordEncoder passwordEncoder;
     private final AuditLogService auditLogService;
     private final UserService userService;
+    private final com.braify.feature.auth.service.PasswordPolicyService passwordPolicyService;
+    private final com.braify.feature.platform.service.PlatformSettingsService platformSettingsService;
 
     private AppUser me(Authentication auth) {
         return ((UserDetailsImpl) auth.getPrincipal()).getAppUser();
@@ -47,6 +49,13 @@ public class ProfileController {
     public ResponseEntity<UserResponse> updateProfile(@RequestBody Map<String, String> body,
                                                       Authentication auth) {
         log.info("PUT /api/profile/me caller='{}'", me(auth).getEmail());
+
+        // Platform access policy: block self-editing when disabled (Platform Admins exempt).
+        if (!platformSettingsService.getSettings().getAccess().isAllowProfileSelfEdit()
+                && me(auth).getRole() != AppUser.Role.PLATFORM_ADMIN) {
+            throw new RuntimeException("Profile editing has been disabled by your administrator.");
+        }
+
         AppUser user = userRepository.findById(me(auth).getId())
                 .orElseThrow(() -> new RuntimeException("User not found"));
 
@@ -73,9 +82,9 @@ public class ProfileController {
         String currentPassword = body.get("currentPassword");
         String newPassword     = body.get("newPassword");
 
-        if (currentPassword == null || newPassword == null || newPassword.length() < 6) {
-            log.warn("Password change rejected for '{}': missing or too-short newPassword", me(auth).getEmail());
-            throw new RuntimeException("currentPassword and a newPassword of at least 6 characters are required");
+        if (currentPassword == null || newPassword == null) {
+            log.warn("Password change rejected for '{}': missing currentPassword or newPassword", me(auth).getEmail());
+            throw new RuntimeException("currentPassword and newPassword are required");
         }
 
         AppUser user = userRepository.findById(me(auth).getId())
@@ -86,7 +95,8 @@ public class ProfileController {
             throw new RuntimeException("Current password is incorrect");
         }
 
-        user.setPassword(passwordEncoder.encode(newPassword));
+        // Enforce platform password policy (length / complexity / re-use) + history.
+        passwordPolicyService.applyNewPassword(user, newPassword);
         user.setMustChangePassword(false);
         userRepository.save(user);
 

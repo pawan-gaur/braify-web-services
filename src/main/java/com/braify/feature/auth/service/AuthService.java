@@ -11,6 +11,7 @@ import com.braify.feature.organization.model.Organization;
 import com.braify.feature.session.model.UserSession;
 import com.braify.feature.user.repository.AppUserRepository;
 import com.braify.feature.organization.repository.OrganizationRepository;
+import com.braify.feature.platform.service.PlatformSettingsService;
 import com.braify.feature.session.repository.UserSessionRepository;
 import com.braify.security.JwtUtil;
 import lombok.RequiredArgsConstructor;
@@ -18,6 +19,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -34,6 +36,8 @@ public class AuthService {
     private final JwtUtil               jwtUtil;
     private final AuditLogService       auditLogService;
     private final MfaService            mfaService;
+    private final PlatformSettingsService platformSettingsService;
+    private final PasswordPolicyService   passwordPolicyService;
 
     private static final int MAX_SESSIONS = 3;
 
@@ -50,9 +54,27 @@ public class AuthService {
             throw new RuntimeException("Account is disabled");
         }
 
+        // Lockout: reject while the account is locked (platform security policy).
+        LocalDateTime now = LocalDateTime.now();
+        if (user.getLockedUntil() != null && user.getLockedUntil().isAfter(now)) {
+            long mins = Duration.between(now, user.getLockedUntil()).toMinutes() + 1;
+            log.warn("Login blocked — account locked for email='{}' ({} min remaining)", req.getEmail(), mins);
+            auditLogService.logFailureByUser(user.getId(), user.getEmail(),
+                    AuditLog.Action.LOGIN, AuditLog.ResourceType.SESSION, user, "Login attempt while account locked");
+            throw new RuntimeException("Account locked due to too many failed attempts. Try again in " + mins + " minute(s).");
+        }
+
         if (!passwordEncoder.matches(req.getPassword(), user.getPassword())) {
             log.warn("Login failed — invalid password for email='{}'", req.getEmail());
+            registerFailedAttempt(user);
             throw new RuntimeException("Invalid email or password");
+        }
+
+        // Successful password — clear any failed-attempt / lock state.
+        if (user.getFailedLoginAttempts() > 0 || user.getLockedUntil() != null) {
+            user.setFailedLoginAttempts(0);
+            user.setLockedUntil(null);
+            userRepository.save(user);
         }
 
         // Password is valid — now apply the MFA policy (org policy × user enrollment).
@@ -93,16 +115,52 @@ public class AuthService {
     }
 
     /**
+     * Records a failed login attempt and locks the account once the configured
+     * threshold (platform security policy) is reached.
+     */
+    private void registerFailedAttempt(AppUser user) {
+        var lockout = platformSettingsService.getSettings().getSecurity().getLockout();
+        int maxAttempts = lockout != null ? lockout.getMaxFailedAttempts() : 5;
+        int lockMinutes = lockout != null ? lockout.getLockoutMinutes()    : 30;
+
+        int attempts = user.getFailedLoginAttempts() + 1;
+        if (attempts >= maxAttempts) {
+            user.setFailedLoginAttempts(0);
+            user.setLockedUntil(LocalDateTime.now().plusMinutes(lockMinutes));
+            log.warn("Account locked for '{}' after {} failed attempts ({} min)",
+                    user.getEmail(), maxAttempts, lockMinutes);
+            auditLogService.logFailureByUser(user.getId(), user.getEmail(),
+                    AuditLog.Action.LOGIN, AuditLog.ResourceType.SESSION, user,
+                    "Account locked after " + maxAttempts + " failed login attempts");
+        } else {
+            user.setFailedLoginAttempts(attempts);
+        }
+        userRepository.save(user);
+    }
+
+    /**
      * Shared session-issuing path: enforce session limit, mint the JWT, persist the
      * {@link UserSession}, audit the LOGIN, and build the full {@link LoginResponse}.
      */
     private LoginResponse issueSession(AppUser user, String deviceInfo, String ipAddress,
                                        boolean mfaUsed, boolean mustSetupMfa) {
-        // Enforce session limit: if >= MAX_SESSIONS active, revoke oldest
+        // Password expiry (platform policy): force a change at login when overdue.
+        if (!user.isMustChangePassword() && passwordPolicyService.isExpired(user)) {
+            user.setMustChangePassword(true);
+            userRepository.save(user);
+            log.info("Password expired for '{}' — forcing change at login", user.getEmail());
+        }
+
+        // Session policy (platform settings): max concurrent + absolute timeout.
+        var sessionsCfg = platformSettingsService.getSettings().getSecurity().getSessions();
+        int maxConcurrent = sessionsCfg != null ? sessionsCfg.getMaxConcurrent()       : MAX_SESSIONS;
+        int sessionHours  = sessionsCfg != null ? sessionsCfg.getSessionTimeoutHours() : 8;
+
+        // Enforce session limit: if >= maxConcurrent active, revoke oldest
         List<UserSession> activeSessions =
                 sessionRepository.findByUserIdAndActiveTrueOrderByCreatedAtAsc(user.getId());
-        if (activeSessions.size() >= MAX_SESSIONS) {
-            int toRevoke = activeSessions.size() - MAX_SESSIONS + 1;
+        if (activeSessions.size() >= maxConcurrent) {
+            int toRevoke = activeSessions.size() - maxConcurrent + 1;
             log.info("Session limit reached for user '{}' — revoking {} oldest session(s)", user.getEmail(), toRevoke);
             activeSessions.stream().limit(toRevoke).forEach(s -> {
                 s.setActive(false);
@@ -114,6 +172,12 @@ public class AuthService {
         String token = jwtUtil.generateToken(user);
         String jti   = jwtUtil.extractJti(token);
 
+        // Absolute session length is the configured timeout, capped by the JWT's own expiry.
+        LocalDateTime policyExpiry = LocalDateTime.now().plusHours(sessionHours);
+        LocalDateTime jwtExpiry    = jwtUtil.expiresAt(token);
+        LocalDateTime sessionExpiry = (jwtExpiry != null && jwtExpiry.isBefore(policyExpiry))
+                ? jwtExpiry : policyExpiry;
+
         UserSession session = UserSession.builder()
                 .userId(user.getId())
                 .jti(jti)
@@ -122,7 +186,7 @@ public class AuthService {
                 .deviceInfo(deviceInfo)
                 .ipAddress(ipAddress)
                 .active(true)
-                .expiresAt(jwtUtil.expiresAt(token))
+                .expiresAt(sessionExpiry)
                 .lastUsedAt(LocalDateTime.now())
                 .build();
         sessionRepository.save(session);

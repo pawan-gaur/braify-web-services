@@ -44,6 +44,7 @@ public class AuthController {
     private final EmailInviteService emailInviteService;
     private final UserService userService;
     private final MfaService mfaService;
+    private final com.braify.feature.auth.service.PasswordPolicyService passwordPolicyService;
 
     @PostMapping("/login")
     public ResponseEntity<LoginResponse> login(@Valid @RequestBody LoginRequest req,
@@ -171,9 +172,9 @@ public class AuthController {
         log.info("POST /api/auth/accept-invite");
         String rawToken = body.get("token");
         String newPassword = body.get("password");
-        if (rawToken == null || newPassword == null || newPassword.length() < 6) {
-            log.warn("Accept-invite validation failed: token or password missing/invalid");
-            throw new RuntimeException("Token and a password of at least 6 characters are required");
+        if (rawToken == null || newPassword == null) {
+            log.warn("Accept-invite validation failed: token or password missing");
+            throw new RuntimeException("Token and a password are required");
         }
 
         InvitationToken it = tokenRepository.findByTokenAndUsedFalse(rawToken)
@@ -187,7 +188,8 @@ public class AuthController {
 
         AppUser user = userRepository.findById(it.getUserId())
                 .orElseThrow(() -> new RuntimeException("User not found"));
-        user.setPassword(passwordEncoder.encode(newPassword));
+        // Enforce platform password policy (length / complexity / re-use) + history.
+        passwordPolicyService.applyNewPassword(user, newPassword);
         user.setMustChangePassword(false);
         userRepository.save(user);
 
@@ -226,9 +228,9 @@ public class AuthController {
         log.info("POST /api/auth/reset-password");
         String rawToken = body.get("token");
         String newPassword = body.get("password");
-        if (rawToken == null || newPassword == null || newPassword.length() < 6) {
-            log.warn("Reset-password validation failed: token or password missing/invalid");
-            throw new RuntimeException("Token and a password of at least 6 characters are required");
+        if (rawToken == null || newPassword == null) {
+            log.warn("Reset-password validation failed: token or password missing");
+            throw new RuntimeException("Token and a password are required");
         }
 
         InvitationToken it = tokenRepository.findByTokenAndUsedFalse(rawToken)
@@ -242,7 +244,8 @@ public class AuthController {
 
         AppUser user = userRepository.findById(it.getUserId())
                 .orElseThrow(() -> new RuntimeException("User not found"));
-        user.setPassword(passwordEncoder.encode(newPassword));
+        // Enforce platform password policy (length / complexity / re-use) + history.
+        passwordPolicyService.applyNewPassword(user, newPassword);
         user.setMustChangePassword(false);
         userRepository.save(user);
 

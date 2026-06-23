@@ -44,6 +44,22 @@ public class AppUser {
     /** Set to true until the user completes the invite / password-reset flow */
     private boolean mustChangePassword = false;
 
+    // ── Password policy / lockout (enforced from platform security settings) ────
+
+    /** When the password was last set/changed — used for expiry enforcement. */
+    private LocalDateTime passwordChangedAt;
+
+    /** Most-recent previous BCrypt password hashes, for re-use restriction. Newest first. */
+    @Builder.Default
+    private List<String> previousPasswords = new ArrayList<>();
+
+    /** Consecutive failed login attempts since the last success. */
+    @Builder.Default
+    private int failedLoginAttempts = 0;
+
+    /** When set and in the future, login is blocked until this time (account lockout). */
+    private LocalDateTime lockedUntil;
+
     /** Base64 data-URL of the user's profile picture (may be null) */
     private String profilePicture;
 

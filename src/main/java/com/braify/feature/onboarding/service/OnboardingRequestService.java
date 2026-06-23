@@ -35,10 +35,15 @@ public class OnboardingRequestService {
     private final EmailDispatcher             emailDispatcher;
     private final PasswordEncoder             passwordEncoder;
     private final AuditLogService             auditLogService;
+    private final com.braify.feature.platform.service.PlatformSettingsService platformSettingsService;
 
     // ── Submit (public) ───────────────────────────────────────────────────────
 
     public OnboardingRequest submit(OnboardingSubmitRequest dto) {
+        // Platform access policy: block public sign-up requests when disabled.
+        if (!platformSettingsService.getSettings().getAccess().isAllowSelfSignup()) {
+            throw new RuntimeException("Self-signup is currently disabled. Please contact an administrator.");
+        }
         if (requestRepository.existsByApplicantEmail(dto.getApplicantEmail())) {
             throw new RuntimeException("A request with this email is already on file.");
         }

@@ -73,6 +73,7 @@ public class AuditLog {
         // Org-level
         FEATURES_UPDATED,       // org feature assignment changed
         MFA_POLICY_CHANGED,     // org MFA policy changed by PLATFORM_ADMIN
+        PLATFORM_SETTINGS_UPDATED, // platform-wide security/access policies changed by PLATFORM_ADMIN
         SUBSCRIPTION_CHANGED,   // org subscription plan changed
         BRANDING_UPDATED,       // org branding settings changed
         QUOTA_EXCEEDED,         // a quota limit was hit (recorded as FAILURE)
@@ -95,7 +96,8 @@ public class AuditLog {
         FILE,            // File storage operations
         SESSION,         // Login / logout / session management
         BULK_EMAIL,      // Bulk email job lifecycle
-        CLOUD_CONFIG     // Cloud storage configuration
+        CLOUD_CONFIG,    // Cloud storage configuration
+        PLATFORM         // Platform-wide settings (security & access policies)
     }
 
     /** Compliance risk level — auto-assigned from the action. */
