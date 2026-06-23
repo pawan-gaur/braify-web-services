@@ -1,6 +1,7 @@
 package com.braify.security;
 
 import com.braify.config.RequestLoggingFilter;
+import com.braify.feature.platform.service.PlatformSettingsService;
 import com.braify.feature.session.model.UserSession;
 import com.braify.feature.session.repository.UserSessionRepository;
 import jakarta.servlet.FilterChain;
@@ -44,6 +45,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     private final JwtUtil jwtUtil;
     private final UserDetailsServiceImpl userDetailsService;
     private final UserSessionRepository sessionRepository;
+    private final PlatformSettingsService platformSettingsService;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request,
@@ -69,6 +71,24 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                 // Single DB call — reuse the result for both auth and lastUsedAt update
                 Optional<UserSession> sessionOpt = sessionRepository.findByJtiAndActiveTrue(jti);
                 if (sessionOpt.isPresent()) {
+                    UserSession session = sessionOpt.get();
+                    LocalDateTime now = LocalDateTime.now();
+
+                    // Enforce platform session policy: absolute timeout + idle timeout.
+                    // (settings are cached in-memory, so this does not add a DB read.)
+                    var sessionsCfg = platformSettingsService.getSettings().getSecurity().getSessions();
+                    int idleMinutes = sessionsCfg != null ? sessionsCfg.getIdleTimeoutMinutes() : 30;
+                    boolean timedOut =
+                            (session.getExpiresAt()  != null && session.getExpiresAt().isBefore(now))
+                         || (session.getLastUsedAt() != null && session.getLastUsedAt().plusMinutes(idleMinutes).isBefore(now));
+                    if (timedOut) {
+                        session.setActive(false);
+                        sessionRepository.save(session);
+                        log.debug("Session jti='{}' timed out — not authenticating", jti);
+                        chain.doFilter(request, response);
+                        return;
+                    }
+
                     String email = jwtUtil.parseToken(token).get("email", String.class);
                     UserDetails ud = userDetailsService.loadUserByUsername(email);
 
@@ -82,12 +102,9 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                     request.setAttribute(RequestLoggingFilter.CALLER_ATTR, email);
 
                     // Update lastUsedAt — but throttle the write to at most once per
-                    // minute. lastUsedAt only feeds the session-listing display, so a
-                    // DB write on EVERY authenticated request is pure overhead on the
-                    // critical path. Skipping it for sub-minute activity removes the
-                    // vast majority of session-collection writes.
-                    UserSession session = sessionOpt.get();
-                    LocalDateTime now = LocalDateTime.now();
+                    // minute. lastUsedAt feeds both the session-listing display and the
+                    // idle-timeout check above; a DB write on EVERY authenticated request
+                    // would be pure overhead, so sub-minute activity is not persisted.
                     if (session.getLastUsedAt() == null
                             || session.getLastUsedAt().isBefore(now.minusSeconds(60))) {
                         session.setLastUsedAt(now);

@@ -40,7 +40,8 @@ public class AuditLogService {
             AuditLog.Action.SUBSCRIPTION_CHANGED,
             AuditLog.Action.QUOTA_EXCEEDED,
             AuditLog.Action.API_KEY_REVOKED,
-            AuditLog.Action.API_KEY_TOGGLED
+            AuditLog.Action.API_KEY_TOGGLED,
+            AuditLog.Action.PLATFORM_SETTINGS_UPDATED
     );
     private static final Set<AuditLog.Action> WARNING_ACTIONS = Set.of(
             AuditLog.Action.DELETED,

@@ -50,6 +50,7 @@ public class MfaService {
     private final EncryptionService      encryptionService;
     private final PasswordEncoder        passwordEncoder;
     private final AuditLogService        auditLogService;
+    private final com.braify.feature.platform.service.PlatformSettingsService platformSettingsService;
 
     private static final String ISSUER              = "Braify";
     private static final int    RECOVERY_CODE_COUNT = 10;
@@ -75,9 +76,20 @@ public class MfaService {
                 : Organization.MfaPolicy.DISABLED;
     }
 
-    /** What login should do for this user, given (org policy × enrollment). */
+    /**
+     * Effective MFA policy = platform-wide requirement OR the per-org policy.
+     * If the platform requires MFA, it overrides the org (REQUIRED for everyone);
+     * otherwise the org's own policy applies.
+     */
+    public Organization.MfaPolicy effectivePolicy(AppUser user) {
+        var mfa = platformSettingsService.getSettings().getSecurity().getMfa();
+        if (mfa != null && mfa.isRequired()) return Organization.MfaPolicy.REQUIRED;
+        return policyFor(user);
+    }
+
+    /** What login should do for this user, given (effective policy × enrollment). */
     public MfaRequirement requirementAtLogin(AppUser user) {
-        return switch (policyFor(user)) {
+        return switch (effectivePolicy(user)) {
             case DISABLED -> MfaRequirement.NONE;
             case OPTIONAL -> user.isMfaEnabled() ? MfaRequirement.CHALLENGE : MfaRequirement.NONE;
             case REQUIRED -> user.isMfaEnabled() ? MfaRequirement.CHALLENGE : MfaRequirement.MUST_SETUP;
@@ -136,8 +148,8 @@ public class MfaService {
 
     /** User self-disable — rejected when the org policy is REQUIRED. Clears the secret. */
     public void disable(AppUser user, String code) {
-        if (policyFor(user) == Organization.MfaPolicy.REQUIRED)
-            throw new RuntimeException("MFA is required by your organization and cannot be disabled");
+        if (effectivePolicy(user) == Organization.MfaPolicy.REQUIRED)
+            throw new RuntimeException("MFA is required by policy and cannot be disabled");
         if (!user.isMfaEnabled())
             throw new RuntimeException("MFA is not enabled");
         if (!verifyCode(user, code))
@@ -155,7 +167,7 @@ public class MfaService {
 
     public MfaStatusResponse status(AppUser user) {
         return MfaStatusResponse.builder()
-                .orgPolicy(policyFor(user).name())
+                .orgPolicy(effectivePolicy(user).name())
                 .enabled(user.isMfaEnabled())
                 .enrolledAt(user.getMfaEnrolledAt())
                 .recoveryCodesRemaining(user.getMfaRecoveryCodes() != null ? user.getMfaRecoveryCodes().size() : 0)
