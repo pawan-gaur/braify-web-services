@@ -281,6 +281,16 @@ public class ESignDocumentService {
                                        String ip, String ua) {
         ESignDocument doc = getAccessibleDoc(docId, principal);
 
+        // Editing is only allowed before the client signs. Once the document is SIGNED /
+        // COMPLETED (or no longer active: EXPIRED / CANCELLED), the fields are frozen.
+        if (doc.getStatus() == ESignDocument.Status.SIGNED ||
+            doc.getStatus() == ESignDocument.Status.COMPLETED ||
+            doc.getStatus() == ESignDocument.Status.EXPIRED ||
+            doc.getStatus() == ESignDocument.Status.CANCELLED) {
+            throw new IllegalStateException(
+                    "This document can no longer be edited (status: " + doc.getStatus() + ").");
+        }
+
         // Replace all existing fields
         fieldRepo.deleteByDocumentId(docId);
 
