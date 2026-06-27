@@ -26,6 +26,7 @@ public class QuotaConfigResponse {
     private long currentEsignThisMonth;
     private long currentStorageMb;
     private long currentApiCallsThisMonth;
+    private long currentEmailsThisMonth;
 
     // ── Percentages (0–100, -1 when unlimited) ────────────────────────────────
     private int usersPercent;

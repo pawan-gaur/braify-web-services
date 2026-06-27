@@ -100,6 +100,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                     // Expose caller identity for RequestLoggingFilter (SecurityContext is
                     // cleared by Spring Security before the outermost filter's finally block)
                     request.setAttribute(RequestLoggingFilter.CALLER_ATTR, email);
+                    // Expose the session id (jti) so audit entries can be correlated per session.
+                    request.setAttribute(RequestLoggingFilter.SESSION_ID_ATTR, jti);
 
                     // Update lastUsedAt — but throttle the write to at most once per
                     // minute. lastUsedAt feeds both the session-listing display and the

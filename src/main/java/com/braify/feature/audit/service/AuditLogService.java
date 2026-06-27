@@ -1,9 +1,12 @@
 package com.braify.feature.audit.service;
 
+import com.braify.config.RequestLoggingFilter;
 import com.braify.feature.user.model.AppUser;
 import com.braify.feature.audit.model.AuditLog;
 import com.braify.feature.user.repository.AppUserRepository;
 import com.braify.feature.audit.repository.AuditLogRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.*;
@@ -30,6 +33,16 @@ public class AuditLogService {
     private final AuditLogRepository auditLogRepository;
     private final AppUserRepository  userRepository;
     private final MongoTemplate      mongoTemplate;
+
+    /** Current hashing scheme: full-record + append-only chain. */
+    private static final int HASH_VERSION = 2;
+
+    /** Serialises the {@code changes} map deterministically (sorted keys) for hashing. */
+    private static final ObjectMapper HASH_MAPPER =
+            new ObjectMapper().configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true);
+
+    /** Serialises chain writes so the previousHash linkage stays consistent (single-JVM). */
+    private final Object chainLock = new Object();
 
     // ── Severity mapping ──────────────────────────────────────────────────────
 
@@ -62,14 +75,33 @@ public class AuditLogService {
 
     // ── SHA-256 integrity hash ────────────────────────────────────────────────
 
-    private static String computeHash(AuditLog entry) {
+    /**
+     * v2 tamper-evidence hash: SHA-256 over ALL material fields plus the
+     * {@code previousHash}. Covering every field means any single-record edit is
+     * detectable; including previousHash chains records so deletions / insertions /
+     * reordering are detectable too.
+     */
+    private static String computeHash(AuditLog e) {
         String payload = String.join("|",
-                nullSafe(entry.getTemplateId()),
-                entry.getAction()       != null ? entry.getAction().name()       : "",
-                entry.getResourceType() != null ? entry.getResourceType().name() : "",
-                nullSafe(entry.getPerformedBy()),
-                nullSafe(entry.getOrganizationId()),
-                entry.getTimestamp()    != null ? entry.getTimestamp().toString() : ""
+                nullSafe(e.getTemplateId()),
+                nullSafe(e.getTemplateName()),
+                e.getAction()       != null ? e.getAction().name()       : "",
+                e.getResourceType() != null ? e.getResourceType().name() : "",
+                String.valueOf(e.getVersionNumber()),
+                nullSafe(e.getPerformedByUserId()),
+                nullSafe(e.getPerformedBy()),
+                nullSafe(e.getPerformedByRole()),
+                nullSafe(e.getOrganizationId()),
+                e.getTimestamp()    != null ? e.getTimestamp().toString() : "",
+                changesJson(e.getChanges()),
+                e.getSeverity()     != null ? e.getSeverity().name()     : "",
+                e.getOutcome()      != null ? e.getOutcome().name()      : "",
+                nullSafe(e.getFailureReason()),
+                nullSafe(e.getIpAddress()),
+                nullSafe(e.getUserAgent()),
+                nullSafe(e.getSessionId()),
+                nullSafe(e.getReason()),
+                nullSafe(e.getPreviousHash())
         );
         try {
             MessageDigest md   = MessageDigest.getInstance("SHA-256");
@@ -77,12 +109,52 @@ public class AuditLogService {
             StringBuilder sb   = new StringBuilder(64);
             for (byte b : hash) sb.append(String.format("%02x", b));
             return sb.toString();
-        } catch (Exception e) {
+        } catch (Exception ex) {
             return null; // NoSuchAlgorithmException — should never happen for SHA-256
         }
     }
 
+    /**
+     * Deterministic JSON of the changes map. Canonicalised via {@code convertValue} so
+     * that POJO values (e.g. the platform-settings diff at write time) and the Mongo
+     * sub-document Maps (at verify time) normalise to the same tree, then sorted by key.
+     * This keeps the hash reproducible across write and verification.
+     */
+    private static String changesJson(Map<String, Object> changes) {
+        if (changes == null || changes.isEmpty()) return "";
+        try { return HASH_MAPPER.writeValueAsString(HASH_MAPPER.convertValue(changes, Object.class)); }
+        catch (Exception ex) { return String.valueOf(changes); }
+    }
+
     private static String nullSafe(String s) { return s != null ? s : ""; }
+
+    /**
+     * Links the entry into the append-only hash chain (under {@link #chainLock} so the
+     * linkage stays consistent under concurrent writes), computes the v2 integrity hash,
+     * and persists. Called by both {@code persist} and {@code persistByUser}.
+     */
+    private AuditLog finalizeAndSave(AuditLog entry) {
+        synchronized (chainLock) {
+            String prev = auditLogRepository
+                    .findTopByHashVersionOrderByTimestampDescIdDesc(HASH_VERSION)
+                    .map(AuditLog::getIntegrityHash)
+                    .orElse(""); // genesis: no prior v2 entry
+            entry.setPreviousHash(prev != null ? prev : "");
+            entry.setHashVersion(HASH_VERSION);
+            entry.setIntegrityHash(computeHash(entry));
+            return auditLogRepository.save(entry);
+        }
+    }
+
+    /** Current session id (JWT jti) for the active request, if any — for correlation. */
+    private static String extractSessionId() {
+        try {
+            var attrs = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+            if (attrs == null) return null;
+            Object jti = attrs.getRequest().getAttribute(RequestLoggingFilter.SESSION_ID_ATTR);
+            return jti != null ? jti.toString() : null;
+        } catch (Exception e) { return null; }
+    }
 
     // ── IP / UA extraction ────────────────────────────────────────────────────
 
@@ -249,11 +321,10 @@ public class AuditLogService {
                 .severity(resolveSeverity(action))
                 .outcome(outcome)
                 .failureReason(failureReason)
+                .sessionId(extractSessionId())
                 .build();
 
-        entry.setIntegrityHash(computeHash(entry));
-
-        AuditLog saved = auditLogRepository.save(entry);
+        AuditLog saved = finalizeAndSave(entry);
         log.debug("Audit logged: action={} resource={} resourceId='{}' by='{}' role='{}'",
                 action, resourceType, resourceId, performer, performedByRole);
         return saved;
@@ -295,11 +366,10 @@ public class AuditLogService {
                 .severity(resolveSeverity(action))
                 .outcome(outcome)
                 .failureReason(failureReason)
+                .sessionId(extractSessionId())
                 .build();
 
-        entry.setIntegrityHash(computeHash(entry));
-
-        AuditLog saved = auditLogRepository.save(entry);
+        AuditLog saved = finalizeAndSave(entry);
         log.debug("Audit logged: action={} resource={} resourceId='{}' userId='{}' role='{}'",
                 action, resourceType, resourceId, performer.getId(),
                 performer.getRole() != null ? performer.getRole().name() : "null");
@@ -311,6 +381,51 @@ public class AuditLogService {
     /** All logs for a specific resource (PDF template, email template, user…), newest first. */
     public List<AuditLog> getForResource(String resourceId) {
         return auditLogRepository.findByTemplateIdOrderByTimestampDesc(resourceId);
+    }
+
+    // ── Integrity verification ─────────────────────────────────────────────────
+
+    /**
+     * Re-walks the v2 hash chain in insertion order, recomputing each entry's hash and
+     * checking each link against the previous entry's hash. Any mismatch means a record
+     * was edited (hash mismatch) or deleted/inserted/reordered (chain-link mismatch).
+     *
+     * @param max safety cap on number of v2 entries to scan
+     * @return report: {checked, valid, broken, firstBrokenId, intact, legacyUnverified, truncated}
+     */
+    public Map<String, Object> verifyIntegrity(int max) {
+        int cap = Math.max(1, Math.min(max, 200_000));
+        List<AuditLog> entries = auditLogRepository
+                .findByHashVersionGreaterThanEqualOrderByTimestampAscIdAsc(HASH_VERSION, PageRequest.of(0, cap));
+
+        long checked = 0, valid = 0, broken = 0;
+        String firstBrokenId = null;
+        String expectedPrev  = null; // set after the first entry
+
+        for (int i = 0; i < entries.size(); i++) {
+            AuditLog e = entries.get(i);
+            checked++;
+            boolean ok = true;
+            // chain link — the first scanned entry anchors the chain
+            if (i > 0 && !nullSafe(expectedPrev).equals(nullSafe(e.getPreviousHash()))) ok = false;
+            // full-record hash
+            String recomputed = computeHash(e);
+            if (recomputed == null || !recomputed.equals(e.getIntegrityHash())) ok = false;
+
+            if (ok) valid++;
+            else { broken++; if (firstBrokenId == null) firstBrokenId = e.getId(); }
+            expectedPrev = e.getIntegrityHash();
+        }
+
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("checked", checked);
+        r.put("valid", valid);
+        r.put("broken", broken);
+        r.put("firstBrokenId", firstBrokenId);
+        r.put("intact", broken == 0);
+        r.put("legacyUnverified", auditLogRepository.countByHashVersionLessThan(HASH_VERSION));
+        r.put("truncated", entries.size() >= cap);
+        return r;
     }
 
     // ── Read — paginated, role-scoped, multi-filter ───────────────────────────

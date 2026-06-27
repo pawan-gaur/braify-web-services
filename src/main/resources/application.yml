@@ -2,22 +2,63 @@ server:
   port: ${SERVER_PORT:8080}
 
 spring:
+  application:
+    name: braify-web-services
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:dev}
+  config:
+    import: optional:file:./env.local[.properties]
+
+  # MongoDB
+  # uri example: mongodb://user:pass@localhost:27017/{DB_NAME}?authSource=admin
+  data:
+    mongodb:
+      uri: "${MONGO_URI}"
+      database: "${MONGO_DATABASE}"
+      auto-index-creation: true
+
+  # Max upload size (for image uploads in templates)
   servlet:
     multipart:
       max-file-size: 10MB
       max-request-size: 10MB
 
+  # Route error handling lets GlobalExceptionHandler catch 404s from Spring MVC
+  mvc:
+    throw-exception-if-no-handler-found: true
+  web:
+    resources:
+      add-mappings: false
 
-  data:
-    mongodb:
-      host: localhost
-      port: 27017
-      database: pdf_generator
-      username: admin
-      password: root
+  # Email sent via Resend (see resend.* below); SMTP/JavaMailSender is disabled
+  autoconfigure:
+    exclude: org.springframework.boot.autoconfigure.mail.MailSenderAutoConfiguration
 
+  devtools:
+    restart:
+      enabled: true
+    livereload:
+      enabled: true
+
+# JWT
+jwt:
+  secret: "{JWT_SECRET}"
+  expiration-hours: 24
+
+app:
+  # AES-256-GCM encryption for sensitive at-rest fields (cloud credentials, etc.)
+  # IMPORTANT: change this to a strong, random secret in production and keep it in a vault.
+  # The key is hashed with SHA-256 internally so any length works, but use 32+ characters.
+  encryption:
+    secret: "${ENCRYPTION_SECRET}"
+  frontend-url: http://localhost:5173
+  base-url: http://localhost:5173
+  cors:
+    allowed-origins: "http://localhost:5173,http://localhost:3000"
+
+resend:
+  api-key: "{RESEND_KEY}"
+  from-email: "{RESEND_FROM_EMAIL}"
 
 management:
   endpoints:
@@ -28,8 +69,11 @@ management:
 # Logging
 logging:
   level:
-    com:
-      pdfgenerator: DEBUG
-    io:
-      github:
-        openhtmltopdf: WARN
+    # com.braify is our application package
+    com.braify: INFO
+    # Show request-level logs from the logging filter
+    com.braify.config.RequestLoggingFilter: INFO
+    # Suppress verbose openhtmltopdf output
+    io.github.openhtmltopdf: WARN
+    # Suppress Spring Security debug noise; set to DEBUG locally when troubleshooting auth
+    org.springframework.security: WARN

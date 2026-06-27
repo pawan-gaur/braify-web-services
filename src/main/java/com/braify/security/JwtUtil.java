@@ -10,6 +10,8 @@ import org.springframework.stereotype.Component;
 
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDateTime;
 import java.util.Date;
 import java.util.UUID;
@@ -28,7 +30,17 @@ public class JwtUtil {
     private int mfaChallengeMinutes;
 
     private SecretKey key() {
-        return Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
+        // Derive a guaranteed 256-bit key by SHA-256-hashing the configured secret, so
+        // any secret length is accepted (mirrors EncryptionService). Using the raw secret
+        // bytes directly fails JWT's RFC 7518 minimum-key-size check when the secret is
+        // shorter than 32 bytes.
+        try {
+            byte[] keyBytes = MessageDigest.getInstance("SHA-256")
+                    .digest(secret.getBytes(StandardCharsets.UTF_8));
+            return Keys.hmacShaKeyFor(keyBytes);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 algorithm not available", e);
+        }
     }
 
     public String generateToken(AppUser user) {
