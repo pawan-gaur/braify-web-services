@@ -1,15 +1,22 @@
 package com.braify.shared;
 
+import com.braify.feature.audit.model.AuditLog;
+import com.braify.feature.audit.service.AuditLogService;
 import com.braify.feature.quota.exception.QuotaExceededException;
+import com.braify.security.UserDetailsImpl;
 import jakarta.validation.ConstraintViolationException;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.servlet.NoHandlerFoundException;
 
 import java.time.Instant;
@@ -38,7 +45,10 @@ import java.util.stream.Collectors;
  */
 @Slf4j
 @RestControllerAdvice
+@RequiredArgsConstructor
 public class GlobalExceptionHandler {
+
+    private final AuditLogService auditLogService;
 
     /** Bean Validation failure on @RequestBody — returns field-level errors. */
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -104,8 +114,29 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<Map<String, Object>> handleAccessDenied(AccessDeniedException ex) {
         log.warn("Access denied: {}", ex.getMessage());
+        auditAccessDenied();
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
                 .body(errorBody(HttpStatus.FORBIDDEN, "Access denied"));
+    }
+
+    /** Records an authenticated user's denied (403) attempt for the compliance trail. */
+    private void auditAccessDenied() {
+        try {
+            var authn = SecurityContextHolder.getContext().getAuthentication();
+            if (authn == null || !(authn.getPrincipal() instanceof UserDetailsImpl ud)) return; // anonymous → skip
+            String path = "request";
+            try {
+                var attrs = (ServletRequestAttributes) RequestContextHolder.getRequestAttributes();
+                if (attrs != null) {
+                    path = attrs.getRequest().getMethod() + " " + attrs.getRequest().getRequestURI();
+                }
+            } catch (Exception ignored) { /* no request context */ }
+            auditLogService.logFailureByUser(path, "Access denied",
+                    AuditLog.Action.ACCESS_DENIED, AuditLog.ResourceType.SESSION,
+                    ud.getAppUser(), "Denied: " + path);
+        } catch (Exception e) {
+            log.debug("Failed to audit access-denied event: {}", e.getMessage());
+        }
     }
 
     /**

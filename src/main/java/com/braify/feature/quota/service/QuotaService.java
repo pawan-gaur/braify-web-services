@@ -1,6 +1,7 @@
 package com.braify.feature.quota.service;
 
 import com.braify.feature.organization.model.Organization;
+import com.braify.feature.quota.dto.OrgUsageSummary;
 import com.braify.feature.quota.dto.QuotaConfigRequest;
 import com.braify.feature.quota.dto.QuotaConfigResponse;
 import com.braify.feature.quota.dto.UsageResponse;
@@ -18,16 +19,22 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.mongodb.core.FindAndModifyOptions;
 import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.aggregation.Aggregation;
+import org.springframework.data.mongodb.core.aggregation.AggregationResults;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.Month;
 import java.time.format.TextStyle;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -238,6 +245,7 @@ public class QuotaService {
                 .currentEsignThisMonth(usage.getEsignSent())
                 .currentStorageMb(usage.getStorageMb())
                 .currentApiCallsThisMonth(usage.getApiCalls())
+                .currentEmailsThisMonth(emailsThisMonth(orgId))
                 .usersPercent(pct(users, cfg.getMaxUsers()))
                 .docsPercent(pct(usage.getDocsGenerated() + usage.getEsignSent(), cfg.getMaxDocsPerMonth()))
                 .storagePercent(pct(usage.getStorageMb(), cfg.getMaxStorageMb()))
@@ -262,6 +270,78 @@ public class QuotaService {
                         .apiCalls(u.getApiCalls())
                         .build())
                 .collect(Collectors.toList());
+    }
+
+    // ── Platform-wide org usage (PLATFORM_ADMIN) ──────────────────────────────
+
+    /**
+     * Per-organisation usage snapshot across all non-deleted organisations,
+     * for the PLATFORM_ADMIN org-wide usage view.
+     */
+    public List<OrgUsageSummary> getAllOrgUsage() {
+        Map<String, Long> emailsByOrg = emailsThisMonthByOrg();
+        List<OrgUsageSummary> out = new ArrayList<>();
+        for (Organization org : orgRepo.findByDeletedFalseOrderByNameAsc()) {
+            String orgId = org.getId();
+            // Read-only: don't lazily persist a config doc just to render the table.
+            OrgQuotaConfig cfg = quotaConfigRepo.findByOrganizationId(orgId)
+                    .orElseGet(() -> OrgQuotaConfig.builder().organizationId(orgId).build());
+            OrgUsage usage = getCurrentUsage(orgId);
+            long users = userRepo.countByOrganizationIdAndActiveTrue(orgId);
+
+            out.add(OrgUsageSummary.builder()
+                    .organizationId(orgId)
+                    .organizationName(org.getName())
+                    .plan(org.getSubscriptionPlan() != null ? org.getSubscriptionPlan() : SubscriptionPlan.FREE)
+                    .active(org.isActive())
+                    .users(users)
+                    .docsThisMonth(usage.getDocsGenerated() + usage.getEsignSent())
+                    .storageMb(usage.getStorageMb())
+                    .apiCallsThisMonth(usage.getApiCalls())
+                    .emailsThisMonth(emailsByOrg.getOrDefault(orgId, 0L))
+                    .maxUsers(cfg.getMaxUsers())
+                    .maxDocsPerMonth(cfg.getMaxDocsPerMonth())
+                    .maxStorageMb(cfg.getMaxStorageMb())
+                    .maxApiCallsPerMonth(cfg.getMaxApiCallsPerMonth())
+                    .build());
+        }
+        return out;
+    }
+
+    // ── Email usage (derived from bulk_email_jobs) ────────────────────────────
+
+    private static LocalDateTime monthStart() {
+        return LocalDate.now().withDayOfMonth(1).atStartOfDay();
+    }
+
+    /** Bulk emails sent this month for one org (sum of sentCount). */
+    public long emailsThisMonth(String orgId) {
+        if (orgId == null) return 0L;
+        Aggregation agg = Aggregation.newAggregation(
+                Aggregation.match(Criteria.where("orgId").is(orgId).and("createdAt").gte(monthStart())),
+                Aggregation.group().sum("sentCount").as("total"));
+        AggregationResults<org.bson.Document> res =
+                mongoTemplate.aggregate(agg, "bulk_email_jobs", org.bson.Document.class);
+        org.bson.Document d = res.getUniqueMappedResult();
+        return d != null && d.get("total") instanceof Number n ? n.longValue() : 0L;
+    }
+
+    /** Bulk emails sent this month grouped by org → {orgId: total}. */
+    private Map<String, Long> emailsThisMonthByOrg() {
+        Aggregation agg = Aggregation.newAggregation(
+                Aggregation.match(Criteria.where("createdAt").gte(monthStart())),
+                Aggregation.group("orgId").sum("sentCount").as("total"));
+        AggregationResults<org.bson.Document> res =
+                mongoTemplate.aggregate(agg, "bulk_email_jobs", org.bson.Document.class);
+        Map<String, Long> map = new HashMap<>();
+        for (org.bson.Document d : res.getMappedResults()) {
+            Object id = d.get("_id");
+            if (id != null) {
+                Object total = d.get("total");
+                map.put(id.toString(), total instanceof Number n ? n.longValue() : 0L);
+            }
+        }
+        return map;
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

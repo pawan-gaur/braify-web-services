@@ -56,6 +56,10 @@ public class RequestLoggingFilter extends OncePerRequestFilter {
      */
     public static final String CALLER_ATTR = "braify.caller";
 
+    /** Request attribute holding the authenticated session's JWT id (jti), set by JwtAuthFilter.
+     *  Read by AuditLogService to stamp the sessionId on every audit entry for correlation. */
+    public static final String SESSION_ID_ATTR = "braify.sessionJti";
+
     /** Paths that are too high-frequency or uninteresting to log. */
     private static final String[] SKIP_PREFIXES = {
             "/v3/api-docs",

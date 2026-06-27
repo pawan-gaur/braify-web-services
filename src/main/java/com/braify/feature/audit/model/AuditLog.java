@@ -50,6 +50,8 @@ public class AuditLog {
         // Generic CRUD
         CREATED, UPDATED, DELETED, RESTORED,
         READ,                   // read / download access
+        EXPORTED,               // data exported (e.g. audit-log CSV)
+        ACCESS_DENIED,          // an authenticated user was denied a protected action (403)
 
         // User profile
         PASSWORD_CHANGED, AVATAR_UPDATED,
@@ -199,9 +201,24 @@ public class AuditLog {
     private String failureReason;
 
     /**
-     * SHA-256 tamper-evidence hash.
-     * Input: {@code resourceId|action|resourceType|performedBy|organizationId|timestamp}.
-     * Computed before persisting; re-verify at any time to detect tampering.
+     * SHA-256 tamper-evidence hash over ALL material fields of this entry plus the
+     * {@link #previousHash}. Computed before persisting; re-verify at any time to
+     * detect record edits (full-record) and, via the chain, deletions/insertions.
      */
     private String integrityHash;
+
+    /**
+     * Integrity hash of the immediately-preceding audit entry, forming an append-only
+     * hash chain. {@code ""} for the genesis entry. A broken link proves a record was
+     * deleted, inserted, or reordered.
+     */
+    private String previousHash;
+
+    /**
+     * Hashing scheme version. v2 = full-record + chained hash (current). Entries with
+     * a null/0 version are legacy (old partial hash, no chain) and are reported as
+     * "unverified" rather than "tampered" during verification.
+     */
+    @Builder.Default
+    private int hashVersion = 0;
 }

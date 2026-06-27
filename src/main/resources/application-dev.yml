@@ -1,0 +1,7 @@
+spring:
+  # DevTools only restarts after changed files are compiled/copied to the classpath.
+  devtools:
+    restart:
+      enabled: true
+    livereload:
+      enabled: true

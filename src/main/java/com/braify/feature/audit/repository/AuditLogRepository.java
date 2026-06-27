@@ -10,9 +10,21 @@ import org.springframework.stereotype.Repository;
 import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 
 @Repository
 public interface AuditLogRepository extends MongoRepository<AuditLog, String> {
+
+    // ── Integrity chain ─────────────────────────────────────────────────────────
+
+    /** Current head of the hash chain (most-recent v2-hashed entry). */
+    Optional<AuditLog> findTopByHashVersionOrderByTimestampDescIdDesc(int hashVersion);
+
+    /** v2-hashed entries in chain (insertion) order — for integrity verification. */
+    List<AuditLog> findByHashVersionGreaterThanEqualOrderByTimestampAscIdAsc(int hashVersion, Pageable pageable);
+
+    /** Count of legacy (pre-v2) entries that can't be chain-verified. */
+    long countByHashVersionLessThan(int hashVersion);
 
     // ── Single resource ────────────────────────────────────────────────────────
 

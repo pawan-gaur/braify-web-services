@@ -11,6 +11,7 @@ import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
@@ -95,6 +96,20 @@ public class AuditLogController {
         return auditLogService.getStats(currentUser(auth), orgId);
     }
 
+    // ── Integrity verification ──────────────────────────────────────────────────
+
+    /**
+     * Verifies the tamper-evidence hash chain. PLATFORM_ADMIN only.
+     * Returns {checked, valid, broken, firstBrokenId, intact, legacyUnverified, truncated}.
+     * GET /api/audit-logs/verify
+     */
+    @GetMapping("/verify")
+    @PreAuthorize("hasRole('PLATFORM_ADMIN')")
+    public Map<String, Object> verifyIntegrity(@RequestParam(defaultValue = "100000") int max) {
+        log.info("GET /api/audit-logs/verify max={}", max);
+        return auditLogService.verifyIntegrity(max);
+    }
+
     // ── CSV export ────────────────────────────────────────────────────────────
 
     /**
@@ -116,9 +131,19 @@ public class AuditLogController {
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime to,
             Authentication auth) {
 
-        log.info("GET /api/audit-logs/export resourceType={} orgId={}", resourceType, orgId);
+        AppUser caller = currentUser(auth);
+        log.info("GET /api/audit-logs/export resourceType={} orgId={} by='{}'", resourceType, orgId, caller.getEmail());
         byte[] csv = auditLogService.exportCsv(
-                resourceType, orgId, action, performedBy, from, to, currentUser(auth));
+                resourceType, orgId, action, performedBy, from, to, caller);
+
+        // Exporting the audit log is itself a sensitive, compliance-relevant action — record it.
+        auditLogService.logByUser(
+                "audit-log", "Audit log CSV export",
+                AuditLog.Action.EXPORTED, AuditLog.ResourceType.ORGANIZATION, 0,
+                Map.of("resourceType", String.valueOf(resourceType),
+                       "action",       String.valueOf(action),
+                       "orgId",        String.valueOf(orgId)),
+                caller);
 
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"audit-log.csv\"")
