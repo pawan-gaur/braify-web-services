@@ -4,6 +4,7 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.springframework.data.annotation.CreatedBy;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.index.Indexed;
@@ -40,6 +41,7 @@ public class InvitationToken {
     private TokenType type;
 
     /** ID of the AppUser who triggered the creation of this token (admin for INVITE, the user themselves for PASSWORD_RESET). */
+    @CreatedBy
     private String createdBy;
 
     /** Invite = 7 days; Password reset = 1 hour. */

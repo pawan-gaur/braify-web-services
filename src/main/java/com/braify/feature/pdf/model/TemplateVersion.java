@@ -4,6 +4,7 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.springframework.data.annotation.CreatedBy;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.index.Indexed;
@@ -57,6 +58,7 @@ public class TemplateVersion {
     private String changeNote;
 
     /** ID of the AppUser who triggered this snapshot (template creator / updater). */
+    @CreatedBy
     private String createdBy;
 
     @CreatedDate

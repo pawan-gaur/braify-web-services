@@ -107,6 +107,12 @@ public class ESignDocumentService {
                     "Configure it under Settings → Cloud Storage before creating e-sign documents.");
         }
 
+        // Build the signatory list (always ≥1). Single-signer/bulk requests derive one
+        // signatory from the client fields; multi-party requests use req.signatories.
+        List<ESignDocument.Signatory> signatories = buildSignatories(req);
+        ESignDocument.Signatory primary = signatories.get(0);   // mirrored into clientEmail/clientName
+        ESignDocument.SigningMode signingMode = parseSigningMode(req.getSigningMode());
+
         ESignDocument doc = ESignDocument.builder()
                 .createdBy(principal.getId())
                 .orgId(principal.getOrgId())
@@ -114,9 +120,12 @@ public class ESignDocumentService {
                 .sourceType(ESignDocument.SourceType.valueOf(req.getSourceType().toUpperCase()))
                 .templateId(req.getTemplateId())
                 .sourcePdfHash(sha256Hex(pdfBytes))
-                .clientEmail(req.getClientEmail())
-                .clientName(req.getClientName())
+                .clientEmail(primary.getEmail())
+                .clientName(primary.getName())
+                .signatories(signatories)
+                .signingMode(signingMode)
                 .ccEmails(req.getCcEmails())
+                .completionCcEmails(req.getCompletionCcEmails())
                 .bulkBatchId(bulkBatchId)
                 .emailTemplateId(req.getEmailTemplateId())
                 .allowClientUpload(allowClientUpload)
@@ -295,15 +304,21 @@ public class ESignDocumentService {
                                        String ip, String ua) {
         ESignDocument doc = getAccessibleDoc(docId, principal);
 
-        // Editing is only allowed before the client signs. Once the document is SIGNED /
-        // COMPLETED (or no longer active: EXPIRED / CANCELLED), the fields are frozen.
-        if (doc.getStatus() == ESignDocument.Status.SIGNED ||
+        // Editing is only allowed before anyone signs. Once a signatory has submitted
+        // (PARTIALLY_SIGNED / SIGNED / COMPLETED) or the doc is no longer active
+        // (EXPIRED / CANCELLED), the fields are frozen.
+        if (doc.getStatus() == ESignDocument.Status.PARTIALLY_SIGNED ||
+            doc.getStatus() == ESignDocument.Status.SIGNED ||
             doc.getStatus() == ESignDocument.Status.COMPLETED ||
             doc.getStatus() == ESignDocument.Status.EXPIRED ||
             doc.getStatus() == ESignDocument.Status.CANCELLED) {
             throw new IllegalStateException(
                     "This document can no longer be edited (status: " + doc.getStatus() + ").");
         }
+
+        // Default unassigned fields to the first/only signatory.
+        List<ESignDocument.Signatory> sigs = doc.getSignatories();
+        String defaultSignatoryId = (sigs != null && !sigs.isEmpty()) ? sigs.get(0).getId() : null;
 
         // Replace all existing fields
         fieldRepo.deleteByDocumentId(docId);
@@ -312,6 +327,8 @@ public class ESignDocumentService {
                 .map(r -> ESignSignatureField.builder()
                         .documentId(docId)
                         .createdBy(principal.getId())
+                        .signatoryId(r.getSignatoryId() != null && !r.getSignatoryId().isBlank()
+                                ? r.getSignatoryId() : defaultSignatoryId)
                         .page(r.getPage())
                         .x(r.getX()).y(r.getY())
                         .width(r.getWidth()).height(r.getHeight())
@@ -344,22 +361,37 @@ public class ESignDocumentService {
             throw new IllegalStateException("Document is already " + doc.getStatus());
         }
 
-        // Enforce monthly e-sign quota before sending
+        // Enforce monthly e-sign quota before sending (one document = one quota unit,
+        // regardless of how many signatories it has).
         quotaService.checkAndIncrementEsign(principal.getOrgId());
-
-        String signingToken = tokenService.issueSigningToken(doc, tokenValidDays);
 
         doc.setStatus(ESignDocument.Status.PENDING);
         doc.setSentAt(java.time.LocalDateTime.now());
         doc.setTokenExpiresAt(java.time.LocalDateTime.now().plusDays(tokenValidDays));
-        doc = docRepo.save(doc);
 
-        emailService.sendSigningInvitation(doc, signingToken);
+        // Issue tokens + send invitations. PARALLEL = everyone now; SEQUENTIAL = first only
+        // (the next signatory is invited automatically as each one submits).
+        List<ESignDocument.Signatory> sigs = effectiveSignatories(doc);
+        if (doc.getSigningMode() == ESignDocument.SigningMode.SEQUENTIAL) {
+            ESignDocument.Signatory first = sigs.get(0);
+            String token = tokenService.issueSigningToken(doc, first, tokenValidDays);
+            emailService.sendSigningInvitation(doc, first.getName(), first.getEmail(), true, token);
+        } else {
+            for (int i = 0; i < sigs.size(); i++) {
+                ESignDocument.Signatory s = sigs.get(i);
+                String token = tokenService.issueSigningToken(doc, s, tokenValidDays);
+                emailService.sendSigningInvitation(doc, s.getName(), s.getEmail(), i == 0, token);
+            }
+        }
+        doc = docRepo.save(doc);   // persists tokenJti set on each signatory
 
         auditService.log(docId, principal.getUsername(),
                 ESignAuditEvent.ActorType.CREATOR,
                 ESignAuditEvent.EventType.DOCUMENT_SENT, ip, ua,
-                Map.of("clientEmail", doc.getClientEmail(), "tokenValidDays", tokenValidDays));
+                Map.of("clientEmail", doc.getClientEmail(),
+                       "signatories", sigs.size(),
+                       "signingMode", doc.getSigningMode().name(),
+                       "tokenValidDays", tokenValidDays));
 
         // Unified audit log entry
         auditLogService.log(
@@ -386,13 +418,23 @@ public class ESignDocumentService {
             throw new IllegalStateException("Cannot resend a " + doc.getStatus() + " document");
         }
 
-        // Issue a fresh token (revokes the previous one)
-        String signingToken = tokenService.issueSigningToken(doc, tokenValidDays);
+        // Re-invite whoever still needs to sign. SEQUENTIAL → only the current (first
+        // not-yet-signed) signatory; PARALLEL → all who haven't signed. Each gets a fresh
+        // token (revoking their previous one).
         doc.setSentAt(java.time.LocalDateTime.now());
         doc.setTokenExpiresAt(java.time.LocalDateTime.now().plusDays(tokenValidDays));
-        doc = docRepo.save(doc);
 
-        emailService.sendSigningInvitation(doc, signingToken);
+        List<ESignDocument.Signatory> pending = effectiveSignatories(doc).stream()
+                .filter(s -> s.getStatus() != ESignDocument.SignatoryStatus.SIGNED)
+                .toList();
+        boolean first = true;
+        for (ESignDocument.Signatory s : pending) {
+            String token = tokenService.issueSigningToken(doc, s, tokenValidDays);
+            emailService.sendSigningInvitation(doc, s.getName(), s.getEmail(), first, token);
+            first = false;
+            if (doc.getSigningMode() == ESignDocument.SigningMode.SEQUENTIAL) break; // only the active one
+        }
+        doc = docRepo.save(doc);
 
         auditService.log(docId, principal.getUsername(),
                 ESignAuditEvent.ActorType.CREATOR,
@@ -706,6 +748,73 @@ public class ESignDocumentService {
         if (!doc.getCreatedBy().equals(userId))
             throw new AccessDeniedException("Access denied to document: " + docId);
         return doc;
+    }
+
+    private ESignDocument.SigningMode parseSigningMode(String raw) {
+        if (raw == null || raw.isBlank()) return ESignDocument.SigningMode.PARALLEL;
+        try { return ESignDocument.SigningMode.valueOf(raw.trim().toUpperCase()); }
+        catch (IllegalArgumentException e) { return ESignDocument.SigningMode.PARALLEL; }
+    }
+
+    /**
+     * Builds the ordered signatory list for a new document. Multi-party requests use
+     * {@code req.signatories}; otherwise a single signatory is derived from the client fields
+     * (covers the legacy single-sign flow and bulk send). Always returns at least one entry.
+     */
+    private List<ESignDocument.Signatory> buildSignatories(CreateDocumentRequest req) {
+        List<ESignDocument.Signatory> result = new ArrayList<>();
+        if (req.getSignatories() != null && !req.getSignatories().isEmpty()) {
+            int i = 0;
+            for (CreateDocumentRequest.SignatoryRequest s : req.getSignatories()) {
+                i++;
+                if (s.getEmail() == null || s.getEmail().isBlank()
+                        || s.getName() == null || s.getName().isBlank())
+                    throw new IllegalArgumentException("Each signatory needs a name and an email");
+                result.add(ESignDocument.Signatory.builder()
+                        .id(java.util.UUID.randomUUID().toString())
+                        .name(s.getName().trim())
+                        .email(s.getEmail().trim())
+                        .signingOrder(s.getSigningOrder() != null ? s.getSigningOrder() : i)
+                        .status(ESignDocument.SignatoryStatus.PENDING)
+                        .build());
+            }
+            // Normalise to a contiguous 1..n order
+            result.sort(java.util.Comparator.comparingInt(ESignDocument.Signatory::getSigningOrder));
+            for (int k = 0; k < result.size(); k++) result.get(k).setSigningOrder(k + 1);
+        } else {
+            if (req.getClientEmail() == null || req.getClientEmail().isBlank()
+                    || req.getClientName() == null || req.getClientName().isBlank())
+                throw new IllegalArgumentException(
+                        "clientName and clientEmail are required when no signatories are provided");
+            result.add(ESignDocument.Signatory.builder()
+                    .id(java.util.UUID.randomUUID().toString())
+                    .name(req.getClientName().trim())
+                    .email(req.getClientEmail().trim())
+                    .signingOrder(1)
+                    .status(ESignDocument.SignatoryStatus.PENDING)
+                    .build());
+        }
+        return result;
+    }
+
+    /**
+     * Returns the document's signatories, ordered. For legacy documents created before the
+     * multi-signatory feature (empty list) a single synthetic signatory is derived from the
+     * client fields so the send/sign flow can treat every document uniformly.
+     */
+    private List<ESignDocument.Signatory> effectiveSignatories(ESignDocument doc) {
+        if (doc.getSignatories() != null && !doc.getSignatories().isEmpty()) {
+            return doc.getSignatories().stream()
+                    .sorted(java.util.Comparator.comparingInt(ESignDocument.Signatory::getSigningOrder))
+                    .toList();
+        }
+        return List.of(ESignDocument.Signatory.builder()
+                .id(null)   // legacy: tokens carry a null signatoryId
+                .name(doc.getClientName())
+                .email(doc.getClientEmail())
+                .signingOrder(1)
+                .status(ESignDocument.SignatoryStatus.PENDING)
+                .build());
     }
 
     private byte[] decodeBase64Pdf(String base64) {

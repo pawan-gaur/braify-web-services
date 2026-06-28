@@ -4,6 +4,7 @@ import com.braify.feature.apikey.dto.ApiKeyCreateRequest;
 import com.braify.feature.apikey.model.ApiKeyUsageLog;
 import com.braify.feature.apikey.model.OrgApiKey;
 import com.braify.feature.user.model.AppUser;
+import com.braify.feature.user.repository.AppUserRepository;
 import com.braify.security.UserDetailsImpl;
 import com.braify.feature.audit.model.AuditLog;
 import com.braify.feature.audit.service.AuditLogService;
@@ -35,6 +36,7 @@ public class OrgApiKeyController {
 
     private final OrgApiKeyService orgApiKeyService;
     private final AuditLogService  auditLogService;
+    private final AppUserRepository appUserRepo;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -44,6 +46,18 @@ public class OrgApiKeyController {
 
     private String performedBy(Authentication auth) {
         return principal(auth).getUsername();
+    }
+
+    /**
+     * Resolves a {@code createdBy} value (the platform-standard actor userId) to a
+     * human-readable email for display. Gracefully passes through legacy values that
+     * are not user ids (e.g. an email stored before standardisation, or "system").
+     */
+    private String resolveCreator(String createdBy) {
+        if (createdBy == null || createdBy.isBlank()) return createdBy;
+        return appUserRepo.findById(createdBy)
+                .map(AppUser::getEmail)
+                .orElse(createdBy);
     }
 
     /**
@@ -70,7 +84,7 @@ public class OrgApiKeyController {
         m.put("allowedFeatures", k.getAllowedFeatures());
         m.put("active",          k.isActive());
         m.put("createdAt",       k.getCreatedAt());
-        m.put("createdBy",       k.getCreatedBy());
+        m.put("createdBy",       resolveCreator(k.getCreatedBy()));
         m.put("lastUsedAt",      k.getLastUsedAt());
         m.put("expiresAt",       k.getExpiresAt());
         m.put("totalCalls",      k.getTotalCalls());
@@ -111,15 +125,16 @@ public class OrgApiKeyController {
             Authentication auth) {
 
         assertOrgAccess(auth, orgId);
-        String createdBy = performedBy(auth);
-        log.info("POST /api/organizations/{}/api-keys name='{}' by '{}'", orgId, request.getName(), createdBy);
+        String performer = performedBy(auth);          // email — for the audit trail & logs
+        String creatorId = principal(auth).getId();    // userId — stored as the key's createdBy (also enforced by @CreatedBy auditing)
+        log.info("POST /api/organizations/{}/api-keys name='{}' by '{}'", orgId, request.getName(), performer);
 
         OrgApiKeyService.KeyCreatedResponse result = orgApiKeyService.createKey(
                 orgId,
                 request.getName(),
                 request.getAllowedFeatures(),
                 request.getExpiresAt(),
-                createdBy
+                creatorId
         );
 
         // Audit the creation event
@@ -130,7 +145,7 @@ public class OrgApiKeyController {
                 AuditLog.ResourceType.API_KEY,
                 0,
                 Map.of("allowedFeatures", result.keyMeta().getAllowedFeatures()),
-                createdBy,
+                performer,
                 orgId
         );
 

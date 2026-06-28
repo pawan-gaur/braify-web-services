@@ -15,6 +15,10 @@ public interface ESignSigningTokenRepository extends MongoRepository<ESignSignin
 
     Optional<ESignSigningToken> findByDocumentIdAndUsedFalseAndRevokedAtIsNull(String documentId);
 
+    /** Active (unused, unrevoked) token for a specific signatory of a document. */
+    Optional<ESignSigningToken> findByDocumentIdAndSignatoryIdAndUsedFalseAndRevokedAtIsNull(
+            String documentId, String signatoryId);
+
     /**
      * Targeted query used by {@link com.braify.feature.esign.service.ESignTokenService#expireStaleTokens()}
      * to fetch only the expired tokens — avoids loading all tokens including used/revoked ones.

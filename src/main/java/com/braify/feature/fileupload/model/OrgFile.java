@@ -4,6 +4,7 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.springframework.data.annotation.CreatedBy;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.annotation.LastModifiedDate;
@@ -53,6 +54,7 @@ public class OrgFile {
     private String uploadedBy;
 
     /** ID of the AppUser who uploaded the file; null for API-key uploads. */
+    @CreatedBy
     private String createdBy;
 
     /** The original filename as provided by the client. */

@@ -17,6 +17,14 @@ public class DocumentResponse {
     private String clientName;
     private String sourceType;
     private String bulkBatchId;
+    private List<String> ccEmails;            // CC on the signing invitation
+    private List<String> completionCcEmails;  // recipients of the final signed PDF
+
+    /* ── Signatories ───────────────────────────────────────────────────── */
+    private String signingMode;               // PARALLEL | SEQUENTIAL
+    private List<SignatoryResponse> signatories;
+    /** Set only in the signing context — the signatory the current token belongs to. */
+    private String currentSignatoryId;
     private String sourcePdfBase64;       // LEGACY: embedded-byte docs only; null for cloud-stored docs
     private String signedPdfBase64;       // LEGACY: embedded-byte docs only; null for cloud-stored docs
     private String sourcePdfUrl;          // pre-signed cloud URL for the source PDF (cloud-stored docs)
@@ -35,6 +43,7 @@ public class DocumentResponse {
     @Data @Builder
     public static class FieldResponse {
         private String  id;
+        private String  signatoryId;   // which signatory fills this field (null = legacy single-signer)
         private int     page;
         private double  x, y, width, height;
         private String  fieldType;
@@ -46,6 +55,7 @@ public class DocumentResponse {
         public static FieldResponse from(ESignSignatureField f) {
             return FieldResponse.builder()
                     .id(f.getId())
+                    .signatoryId(f.getSignatoryId())
                     .page(f.getPage())
                     .x(f.getX()).y(f.getY())
                     .width(f.getWidth()).height(f.getHeight())
@@ -54,6 +64,30 @@ public class DocumentResponse {
                     .required(f.isRequired())
                     .signed(f.getValue() != null && !f.getValue().isBlank())
                     .signingMethod(f.getSigningMethod() != null ? f.getSigningMethod().name() : null)
+                    .build();
+        }
+    }
+
+    /** Public view of a signatory — never exposes the token jti. */
+    @Data @Builder
+    public static class SignatoryResponse {
+        private String  id;
+        private String  name;
+        private String  email;
+        private int     signingOrder;
+        private String  status;
+        private LocalDateTime viewedAt;
+        private LocalDateTime signedAt;
+
+        public static SignatoryResponse from(ESignDocument.Signatory s) {
+            return SignatoryResponse.builder()
+                    .id(s.getId())
+                    .name(s.getName())
+                    .email(s.getEmail())
+                    .signingOrder(s.getSigningOrder())
+                    .status(s.getStatus() != null ? s.getStatus().name() : null)
+                    .viewedAt(s.getViewedAt())
+                    .signedAt(s.getSignedAt())
                     .build();
         }
     }
@@ -67,6 +101,11 @@ public class DocumentResponse {
                 .clientName(doc.getClientName())
                 .sourceType(doc.getSourceType() != null ? doc.getSourceType().name() : null)
                 .bulkBatchId(doc.getBulkBatchId())
+                .ccEmails(doc.getCcEmails())
+                .completionCcEmails(doc.getCompletionCcEmails())
+                .signingMode(doc.getSigningMode() != null ? doc.getSigningMode().name() : null)
+                .signatories(doc.getSignatories() == null ? List.of()
+                        : doc.getSignatories().stream().map(SignatoryResponse::from).toList())
                 .sourcePdfBase64(includePdf && doc.getSourcePdfData() != null
                         ? java.util.Base64.getEncoder().encodeToString(doc.getSourcePdfData()) : null)
                 .signedPdfBase64(includePdf && doc.getSignedPdfData() != null

@@ -12,4 +12,6 @@ public class FieldPlacementRequest {
     private String fieldType;   // SIGNATURE | INITIALS | DATE | TEXT
     private String label;
     private boolean required = true;
+    /** Which signatory fills this field (ESignDocument.Signatory.id). Null → first/only signatory. */
+    private String signatoryId;
 }

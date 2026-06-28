@@ -163,3 +163,4 @@ Desktop.ini
 /coverage/
 /.nyc_output/
 /target/
+graphify-out/

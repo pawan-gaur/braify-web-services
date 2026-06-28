@@ -41,7 +41,11 @@ public class ESignEmailService {
      * When no template is found the hardcoded default HTML is used as a safe fallback.
      * The "From" display name is always the organisation's name.
      */
-    public void sendSigningInvitation(ESignDocument doc, String signingToken) {
+    public void sendSigningInvitation(ESignDocument doc,
+                                      String recipientName,
+                                      String recipientEmail,
+                                      boolean includeCc,
+                                      String signingToken) {
         String signingLink = baseUrl + "/sign/" + signingToken;
         String orgName     = resolveOrgName(doc.getOrgId());
 
@@ -58,21 +62,22 @@ public class ESignEmailService {
                 subject = tpl.getSubject() != null && !tpl.getSubject().isBlank()
                         ? tpl.getSubject()
                         : "You have a document to sign — " + doc.getTitle();
-                html = applyESignPlaceholders(tpl.getHtmlContent(), doc, signingLink, orgName);
+                html = applyESignPlaceholders(tpl.getHtmlContent(), recipientName, doc, signingLink, orgName);
                 log.debug("Using email template '{}' for doc {}", tpl.getName(), doc.getId());
             } else {
                 log.warn("Email template '{}' not found for doc {} — using default",
                         doc.getEmailTemplateId(), doc.getId());
                 subject = "You have a document to sign — " + doc.getTitle();
-                html    = buildInvitationHtml(doc, signingLink, orgName);
+                html    = buildInvitationHtml(recipientName, doc, signingLink, orgName);
             }
         } else {
             subject = "You have a document to sign — " + doc.getTitle();
-            html    = buildInvitationHtml(doc, signingLink, orgName);
+            html    = buildInvitationHtml(recipientName, doc, signingLink, orgName);
         }
 
-        // Collect non-blank CC addresses stored on the document
-        List<String> ccList = (doc.getCcEmails() != null)
+        // CC addresses only ride along on the primary invitation, to avoid copying the
+        // "keep in the loop" recipients once per signatory.
+        List<String> ccList = (includeCc && doc.getCcEmails() != null)
                 ? doc.getCcEmails().stream()
                       .filter(cc -> cc != null && !cc.isBlank())
                       .toList()
@@ -80,23 +85,24 @@ public class ESignEmailService {
 
         try {
             emailDispatcher.sendHtmlEmail(
-                    doc.getClientEmail(),
+                    recipientEmail,
                     ccList.isEmpty() ? null : ccList,
                     subject,
                     html,
                     Map.of(
-                            "clientName",    doc.getClientName(),
+                            "clientName",    recipientName != null ? recipientName : "",
                             "documentTitle", doc.getTitle(),
                             "signingLink",   signingLink
                     ),
                     orgName
             );
             log.info("Signing invitation sent to {} (cc: {}) for doc {}",
-                    doc.getClientEmail(),
+                    recipientEmail,
                     ccList.isEmpty() ? "none" : String.join(", ", ccList),
                     doc.getId());
         } catch (Exception e) {
-            log.error("Failed to send signing invitation for doc {}: {}", doc.getId(), e.getMessage());
+            log.error("Failed to send signing invitation to {} for doc {}: {}",
+                    recipientEmail, doc.getId(), e.getMessage());
         }
     }
 
@@ -104,16 +110,16 @@ public class ESignEmailService {
      * Substitutes e-sign–specific placeholders inside an email template's HTML content.
      * Handles both {@code {{placeholder}}} and {@code {{ placeholder }}} (with spaces).
      */
-    private String applyESignPlaceholders(String html, ESignDocument doc,
+    private String applyESignPlaceholders(String html, String recipientName, ESignDocument doc,
                                           String signingLink, String orgName) {
         if (html == null) return "";
         return html
-                .replaceAll("\\{\\{\\s*clientName\\s*\\}\\}",    escapeReplacement(doc.getClientName()))
+                .replaceAll("\\{\\{\\s*clientName\\s*\\}\\}",    escapeReplacement(recipientName))
                 .replaceAll("\\{\\{\\s*documentTitle\\s*\\}\\}",  escapeReplacement(doc.getTitle()))
                 .replaceAll("\\{\\{\\s*signingLink\\s*\\}\\}",    escapeReplacement(signingLink))
                 .replaceAll("\\{\\{\\s*orgName\\s*\\}\\}",        escapeReplacement(orgName))
                 // common aliases users may have typed in the template editor
-                .replaceAll("\\{\\{\\s*client_name\\s*\\}\\}",    escapeReplacement(doc.getClientName()))
+                .replaceAll("\\{\\{\\s*client_name\\s*\\}\\}",    escapeReplacement(recipientName))
                 .replaceAll("\\{\\{\\s*document_title\\s*\\}\\}", escapeReplacement(doc.getTitle()))
                 .replaceAll("\\{\\{\\s*signing_link\\s*\\}\\}",   escapeReplacement(signingLink))
                 .replaceAll("\\{\\{\\s*org_name\\s*\\}\\}",       escapeReplacement(orgName));
@@ -139,24 +145,52 @@ public class ESignEmailService {
         String subject    = "Signed document ready: " + doc.getTitle();
         String orgName    = resolveOrgName(doc.getOrgId());
 
-        // ── Email to client ──────────────────────────────────────────────────
-        try {
-            String clientHtml = buildCompletionHtml(doc, verifyLink, true, orgName);
-            sendHtmlWithAttachment(doc.getClientEmail(), subject, clientHtml, signedPdfBytes, filename, orgName);
-            log.info("Completion email sent to client {} for doc {}", doc.getClientEmail(), doc.getId());
-        } catch (Exception e) {
-            log.error("Failed to send completion email to client for doc {}: {}", doc.getId(), e.getMessage());
+        // Send to each recipient at most once (case-insensitive de-dupe across all groups).
+        java.util.Set<String> sent = new java.util.HashSet<>();
+
+        // ── Every signatory ──────────────────────────────────────────────────
+        List<ESignDocument.Signatory> sigs = doc.getSignatories();
+        if (sigs != null && !sigs.isEmpty()) {
+            for (ESignDocument.Signatory s : sigs) {
+                if (s.getEmail() == null || s.getEmail().isBlank()) continue;
+                if (!sent.add(s.getEmail().trim().toLowerCase())) continue;
+                sendCompletionTo(s.getEmail().trim(), s.getName(), subject, doc, verifyLink, orgName,
+                        signedPdfBytes, filename);
+            }
+        } else if (doc.getClientEmail() != null && !doc.getClientEmail().isBlank()) {
+            // legacy single-signer document
+            if (sent.add(doc.getClientEmail().trim().toLowerCase()))
+                sendCompletionTo(doc.getClientEmail().trim(), doc.getClientName(), subject, doc, verifyLink,
+                        orgName, signedPdfBytes, filename);
         }
 
-        // ── Email to creator ─────────────────────────────────────────────────
-        if (creatorEmail != null && !creatorEmail.isBlank()) {
-            try {
-                String creatorHtml = buildCompletionHtml(doc, verifyLink, false, orgName);
-                sendHtmlWithAttachment(creatorEmail, subject, creatorHtml, signedPdfBytes, filename, orgName);
-                log.info("Completion email sent to creator {} for doc {}", creatorEmail, doc.getId());
-            } catch (Exception e) {
-                log.error("Failed to send completion email to creator for doc {}: {}", doc.getId(), e.getMessage());
+        // ── Creator ──────────────────────────────────────────────────────────
+        if (creatorEmail != null && !creatorEmail.isBlank()
+                && sent.add(creatorEmail.trim().toLowerCase())) {
+            sendCompletionTo(creatorEmail.trim(), creatorName, subject, doc, verifyLink, orgName,
+                    signedPdfBytes, filename);
+        }
+
+        // ── Copies to additional recipients ("send a copy of the signed document to") ──
+        if (doc.getCompletionCcEmails() != null) {
+            for (String raw : doc.getCompletionCcEmails()) {
+                if (raw == null || raw.isBlank()) continue;
+                String to = raw.trim();
+                if (!sent.add(to.toLowerCase())) continue;
+                sendCompletionTo(to, null, subject, doc, verifyLink, orgName, signedPdfBytes, filename);
             }
+        }
+    }
+
+    /** Sends one completion email (signed PDF attached); logs and swallows failures. */
+    private void sendCompletionTo(String to, String greetingName, String subject, ESignDocument doc,
+                                  String verifyLink, String orgName, byte[] signedPdfBytes, String filename) {
+        try {
+            String html = buildCompletionHtml(greetingName, doc, verifyLink, orgName);
+            sendHtmlWithAttachment(to, subject, html, signedPdfBytes, filename, orgName);
+            log.info("Completion email sent to {} for doc {}", to, doc.getId());
+        } catch (Exception e) {
+            log.error("Failed to send completion email to {} for doc {}: {}", to, doc.getId(), e.getMessage());
         }
     }
 
@@ -172,7 +206,7 @@ public class ESignEmailService {
 
     // ── HTML builders ───────────────────────────────────────────────────────
 
-    private String buildInvitationHtml(ESignDocument doc, String signingLink, String orgName) {
+    private String buildInvitationHtml(String recipientName, ESignDocument doc, String signingLink, String orgName) {
         return """
                 <!DOCTYPE html>
                 <html>
@@ -200,11 +234,11 @@ public class ESignEmailService {
                   </div>
                 </body>
                 </html>
-                """.formatted(orgName, doc.getClientName(), doc.getTitle(), signingLink);
+                """.formatted(orgName, recipientName, doc.getTitle(), signingLink);
     }
 
-    private String buildCompletionHtml(ESignDocument doc, String verifyLink, boolean isClient, String orgName) {
-        String greeting = isClient ? doc.getClientName() : "there";
+    private String buildCompletionHtml(String greetingName, ESignDocument doc, String verifyLink, String orgName) {
+        String greeting = (greetingName != null && !greetingName.isBlank()) ? greetingName : "there";
         return """
                 <!DOCTYPE html>
                 <html>
