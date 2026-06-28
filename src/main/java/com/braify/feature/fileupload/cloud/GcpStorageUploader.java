@@ -84,6 +84,22 @@ public class GcpStorageUploader implements CloudUploader {
         }
     }
 
+    // ── Download (server-side bytes) ────────────────────────────────────────────
+
+    @Override
+    public byte[] download(CloudDownloadRequest req) {
+        try {
+            Storage storage = buildStorage(req.getGcpServiceAccountJson());
+            byte[] bytes = storage.readAllBytes(BlobId.of(req.getBucket(), req.getStorageKey()));
+            log.info("GCS download OK: bucket={} object={} size={}B",
+                    req.getBucket(), req.getStorageKey(), bytes.length);
+            return bytes;
+        } catch (Exception e) {
+            log.error("GCS download failed: bucket={} object={}", req.getBucket(), req.getStorageKey(), e);
+            throw new RuntimeException("GCS download failed: " + e.getMessage(), e);
+        }
+    }
+
     // ── Delete ────────────────────────────────────────────────────────────────
 
     @Override

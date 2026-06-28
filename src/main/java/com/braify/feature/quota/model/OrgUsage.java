@@ -52,4 +52,11 @@ public class OrgUsage {
     /** Number of public API calls this month. */
     @Builder.Default
     private long apiCalls = 0;
+
+    /**
+     * Id of the actor whose action first created this month's usage record.
+     * Set via {@code $setOnInsert} during the atomic upsert (this doc is never
+     * persisted as a full entity, so {@code @CreatedBy} auditing can't apply).
+     */
+    private String createdBy;
 }

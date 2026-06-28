@@ -37,6 +37,17 @@ public interface CloudUploader {
     String generatePresignedUrl(CloudDownloadRequest request);
 
     /**
+     * Downloads an object's raw bytes (server-side). Used when the application itself
+     * needs the content — e.g. stamping signature fields onto a source PDF or attaching
+     * a generated PDF to an email — rather than handing a pre-signed URL to a client.
+     *
+     * @param request identifies the object (bucket + key) and supplies credentials
+     * @return the object's bytes
+     * @throws RuntimeException if the download fails
+     */
+    byte[] download(CloudDownloadRequest request);
+
+    /**
      * Permanently deletes an object from cloud storage.
      *
      * @param request identifies the object to delete

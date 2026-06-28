@@ -34,6 +34,7 @@ public class ESignClientService {
     private final ESignPdfService              pdfService;
     private final ESignEmailService            emailService;
     private final ESignAuditService            auditService;
+    private final ESignStorageService          esignStorage;
 
     // ── Open document (validate token, return doc + fields) ─────────────────
 
@@ -52,7 +53,10 @@ public class ESignClientService {
         }
 
         List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(doc.getId());
-        return DocumentResponse.from(doc, fields, true);  // include sourcePdf for signing UI
+        DocumentResponse resp = DocumentResponse.from(doc, fields, true);  // include sourcePdf for signing UI
+        // Cloud-stored docs: give the signing client a pre-signed URL for the source PDF.
+        resp.setSourcePdfUrl(esignStorage.sourcePresignedUrl(doc));
+        return resp;
     }
 
     // ── Sign a single field ──────────────────────────────────────────────────
@@ -126,12 +130,17 @@ public class ESignClientService {
                                        List<ESignSignatureField> fields,
                                        String ip, String ua) {
         try {
-            // 1. Stamp signatures onto PDF
-            byte[] signedBytes = pdfService.stampSignatures(doc, fields);
+            // 1. Stamp signatures onto the source PDF (fetched from cloud or legacy bytes)
+            byte[] sourceBytes = esignStorage.resolveSourceBytes(doc);
+            byte[] signedBytes = pdfService.stampSignatures(doc, sourceBytes, fields);
             String hash = pdfService.sha256Hex(signedBytes);
 
-            doc.setSignedPdfData(signedBytes);
+            // 2. Upload the signed PDF to cloud storage; keep only the reference.
+            ESignStorageService.StoredPdf ref = esignStorage.uploadSignedPdf(doc.getOrgId(), doc.getId(), signedBytes);
+            doc.setSignedPdfKey(ref.storageKey());
             doc.setSignedPdfHash(hash);
+            if (doc.getPdfBucket() == null)        doc.setPdfBucket(ref.bucket());
+            if (doc.getPdfCloudProvider() == null) doc.setPdfCloudProvider(ref.provider());
             doc.setStatus(ESignDocument.Status.COMPLETED);
             doc.setCompletedAt(LocalDateTime.now());
             docRepo.save(doc);

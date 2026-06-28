@@ -204,10 +204,10 @@ public class ESignCreatorController {
         log.info("GET /api/esign/documents/{}/signed-pdf by '{}'", id, principal.getUsername());
 
         DocumentResponse doc = documentService.getDocument(id, principal);
-        if (doc.getSignedPdfBase64() == null)
+        byte[] pdfBytes = documentService.getSignedPdfBytes(id, principal);  // cloud or legacy
+        if (pdfBytes == null || pdfBytes.length == 0)
             return ResponseEntity.noContent().build();
 
-        byte[] pdfBytes = java.util.Base64.getDecoder().decode(doc.getSignedPdfBase64());
         return ResponseEntity.ok()
                 .header("Content-Type", "application/pdf")
                 .header("Content-Disposition",

@@ -52,6 +52,7 @@ public class ESignDocumentService {
     private final ESignAuditService             auditService;
     private final AuditLogService               auditLogService;
     private final QuotaService                  quotaService;
+    private final ESignStorageService           esignStorage;
 
     // ── Create ──────────────────────────────────────────────────────────────
 
@@ -99,13 +100,19 @@ public class ESignDocumentService {
             }
         }
 
+        // E-sign PDFs are stored in the org's cloud bucket (not embedded in Mongo).
+        // Fail fast if the org hasn't configured cloud storage.
+        if (!esignStorage.isCloudConfigured(principal.getOrgId())) {
+            throw new RuntimeException("Cloud storage is not configured for this organisation. " +
+                    "Configure it under Settings → Cloud Storage before creating e-sign documents.");
+        }
+
         ESignDocument doc = ESignDocument.builder()
                 .createdBy(principal.getId())
                 .orgId(principal.getOrgId())
                 .title(req.getTitle())
                 .sourceType(ESignDocument.SourceType.valueOf(req.getSourceType().toUpperCase()))
                 .templateId(req.getTemplateId())
-                .sourcePdfData(pdfBytes)
                 .sourcePdfHash(sha256Hex(pdfBytes))
                 .clientEmail(req.getClientEmail())
                 .clientName(req.getClientName())
@@ -117,6 +124,13 @@ public class ESignDocumentService {
                 .status(ESignDocument.Status.DRAFT)
                 .build();
 
+        doc = docRepo.save(doc);
+
+        // Upload the source PDF to cloud storage; keep only the reference on the document.
+        ESignStorageService.StoredPdf ref = esignStorage.uploadSourcePdf(principal.getOrgId(), doc.getId(), pdfBytes);
+        doc.setSourcePdfKey(ref.storageKey());
+        doc.setPdfBucket(ref.bucket());
+        doc.setPdfCloudProvider(ref.provider());
         doc = docRepo.save(doc);
 
         auditService.log(doc.getId(), principal.getUsername(),
@@ -577,7 +591,17 @@ public class ESignDocumentService {
     public DocumentResponse getDocument(String docId, UserDetailsImpl principal) {
         ESignDocument doc = getAccessibleDoc(docId, principal);
         List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(docId);
-        return DocumentResponse.from(doc, fields, true);  // include PDF for detail view
+        DocumentResponse resp = DocumentResponse.from(doc, fields, true);  // include PDF for detail view
+        // Cloud-stored docs: hand the client pre-signed URLs instead of embedded bytes.
+        resp.setSourcePdfUrl(esignStorage.sourcePresignedUrl(doc));
+        resp.setSignedPdfUrl(esignStorage.signedPresignedUrl(doc));
+        return resp;
+    }
+
+    /** Signed PDF bytes for download (cloud or legacy); null if not yet generated. */
+    public byte[] getSignedPdfBytes(String docId, UserDetailsImpl principal) {
+        ESignDocument doc = getAccessibleDoc(docId, principal);
+        return esignStorage.resolveSignedBytes(doc);
     }
 
     // ── Cancel ──────────────────────────────────────────────────────────────

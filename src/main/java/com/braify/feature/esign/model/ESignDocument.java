@@ -38,8 +38,13 @@ public class ESignDocument {
     public enum SourceType { TEMPLATE, UPLOAD }
     private SourceType sourceType;
     private String     templateId;       // set when sourceType == TEMPLATE
-    private byte[]     sourcePdfData;    // raw uploaded / rendered PDF bytes
-    private String     sourcePdfHash;    // SHA-256 of sourcePdfData
+    private byte[]     sourcePdfData;    // LEGACY embedded bytes (older docs); null for cloud-stored docs
+    private String     sourcePdfKey;     // cloud storage key for the source PDF (preferred)
+    private String     sourcePdfHash;    // SHA-256 of the source PDF
+
+    /* ── Cloud storage reference (shared by source + signed PDFs) ───────── */
+    private String     pdfBucket;         // cloud bucket holding this doc's PDFs (null = legacy embedded)
+    private String     pdfCloudProvider;  // AWS | AZURE | GCP
 
     /* ── State machine ─────────────────────────────────────────────────── */
     public enum Status {
@@ -65,7 +70,8 @@ public class ESignDocument {
     private List<String> ccEmails;
 
     /* ── Signed output ─────────────────────────────────────────────────── */
-    private byte[] signedPdfData;
+    private byte[] signedPdfData;        // LEGACY embedded bytes (older docs); null for cloud-stored docs
+    private String signedPdfKey;         // cloud storage key for the signed PDF (preferred)
     private String signedPdfHash;        // SHA-256 — tamper-proof verification
 
     /* ── Email template ────────────────────────────────────────────────── */

@@ -35,8 +35,9 @@ public class ESignPdfService {
      * Returns the stamped PDF bytes.
      */
     public byte[] stampSignatures(ESignDocument doc,
+                                  byte[] sourcePdf,
                                   List<ESignSignatureField> fields) throws IOException {
-        try (PDDocument pdf = PDDocument.load(new ByteArrayInputStream(doc.getSourcePdfData()))) {
+        try (PDDocument pdf = PDDocument.load(new ByteArrayInputStream(sourcePdf))) {
             int totalPages = pdf.getNumberOfPages();
 
             for (ESignSignatureField field : fields) {

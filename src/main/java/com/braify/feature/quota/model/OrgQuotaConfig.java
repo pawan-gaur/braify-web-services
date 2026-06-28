@@ -5,6 +5,7 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.springframework.data.annotation.CreatedBy;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.annotation.LastModifiedDate;
 import org.springframework.data.mongodb.core.index.Indexed;
@@ -47,6 +48,10 @@ public class OrgQuotaConfig {
     /** Max API calls per calendar month (-1 = unlimited). */
     @Builder.Default
     private int maxApiCallsPerMonth = SubscriptionPlan.FREE.defaultMaxApiCallsPerMonth;
+
+    /** Id of the user who created this config (audited automatically on insert). */
+    @CreatedBy
+    private String createdBy;
 
     /** Email of the Platform Admin who last modified this config. */
     private String updatedBy;

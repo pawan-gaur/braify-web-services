@@ -86,6 +86,24 @@ public class AwsS3Uploader implements CloudUploader {
         }
     }
 
+    // ── Download (server-side bytes) ────────────────────────────────────────────
+
+    @Override
+    public byte[] download(CloudDownloadRequest req) {
+        try (S3Client s3 = buildClient(req.getAwsRegion(), req.getAwsAccessKeyId(), req.getAwsSecretAccessKey())) {
+            GetObjectRequest getReq = GetObjectRequest.builder()
+                    .bucket(req.getBucket())
+                    .key(req.getStorageKey())
+                    .build();
+            byte[] bytes = s3.getObjectAsBytes(getReq).asByteArray();
+            log.info("S3 download OK: bucket={} key={} size={}B", req.getBucket(), req.getStorageKey(), bytes.length);
+            return bytes;
+        } catch (Exception e) {
+            log.error("S3 download failed: bucket={} key={}", req.getBucket(), req.getStorageKey(), e);
+            throw new RuntimeException("S3 download failed: " + e.getMessage(), e);
+        }
+    }
+
     // ── Delete ────────────────────────────────────────────────────────────────
 
     @Override
