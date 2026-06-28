@@ -6,6 +6,8 @@ import com.braify.feature.organization.model.Organization;
 import com.braify.feature.apikey.repository.ApiKeyUsageLogRepository;
 import com.braify.feature.apikey.repository.OrgApiKeyRepository;
 import com.braify.feature.organization.repository.OrganizationRepository;
+import com.braify.feature.user.model.AppUser;
+import com.braify.feature.user.repository.AppUserRepository;
 import com.braify.feature.quota.service.QuotaService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,6 +34,7 @@ public class OrgApiKeyService {
     private final OrgApiKeyRepository       orgApiKeyRepo;
     private final ApiKeyUsageLogRepository  usageLogRepo;
     private final OrganizationRepository    orgRepo;
+    private final AppUserRepository         appUserRepo;
     private final QuotaService              quotaService;
 
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
@@ -84,7 +87,8 @@ public class OrgApiKeyService {
      * @param name            Human-readable label
      * @param allowedFeatures Subset of the org's enabled features
      * @param expiresAt       Optional expiry; null means never expires
-     * @param createdBy       Email of the creating user
+     * @param createdBy       userId of the creating user (the platform-standard actor id;
+     *                        also enforced on insert by @CreatedBy auditing)
      * @return KeyCreatedResponse containing the plain key (shown ONCE) and saved metadata
      * @throws ResponseStatusException 404 if org not found or not active
      * @throws IllegalArgumentException if allowedFeatures contains features not enabled for the org
@@ -155,13 +159,17 @@ public class OrgApiKeyService {
     public List<Map<String, Object>> listAllKeysWithOrgName() {
         List<OrgApiKey> allKeys = orgApiKeyRepo.findAllByOrderByCreatedAtDesc();
 
-        // Build a cache of orgId → orgName to avoid N queries
-        Map<String, String> orgNameCache = new HashMap<>();
+        // Build caches of orgId → orgName and userId → email to avoid N queries
+        Map<String, String> orgNameCache   = new HashMap<>();
+        Map<String, String> creatorCache   = new HashMap<>();
 
         return allKeys.stream().map(k -> {
             String orgName = orgNameCache.computeIfAbsent(k.getOrgId(), id ->
                 orgRepo.findById(id).map(Organization::getName).orElse("Unknown")
             );
+            String creator = k.getCreatedBy() == null ? null
+                : creatorCache.computeIfAbsent(k.getCreatedBy(), id ->
+                    appUserRepo.findById(id).map(AppUser::getEmail).orElse(id));
             Map<String, Object> m = new java.util.LinkedHashMap<>();
             m.put("id",              k.getId());
             m.put("orgId",           k.getOrgId());
@@ -171,7 +179,7 @@ public class OrgApiKeyService {
             m.put("allowedFeatures", k.getAllowedFeatures());
             m.put("active",          k.isActive());
             m.put("createdAt",       k.getCreatedAt());
-            m.put("createdBy",       k.getCreatedBy());
+            m.put("createdBy",       creator);
             m.put("lastUsedAt",      k.getLastUsedAt());
             m.put("expiresAt",       k.getExpiresAt());
             m.put("totalCalls",      k.getTotalCalls());

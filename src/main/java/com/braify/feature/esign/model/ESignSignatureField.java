@@ -1,6 +1,7 @@
 package com.braify.feature.esign.model;
 
 import lombok.*;
+import org.springframework.data.annotation.CreatedBy;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
@@ -16,6 +17,7 @@ public class ESignSignatureField {
     @Indexed private String documentId;
 
     /** ID of the AppUser who placed these signature fields. */
+    @CreatedBy
     private String createdBy;
 
     /* ── Placement — all values as % of page dimensions ───────────────── */

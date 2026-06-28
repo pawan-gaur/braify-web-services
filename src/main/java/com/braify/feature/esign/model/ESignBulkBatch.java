@@ -20,6 +20,7 @@ public class ESignBulkBatch {
     @Id private String id;
 
     /** User who submitted the bulk send */
+    @CreatedBy
     @Indexed private String createdBy;
     private String orgId;
 

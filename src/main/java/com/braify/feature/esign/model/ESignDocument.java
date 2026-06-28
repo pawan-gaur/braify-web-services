@@ -26,6 +26,7 @@ public class ESignDocument {
     @Id private String id;
 
     /* ── Ownership ─────────────────────────────────────────────────────── */
+    @CreatedBy
     @Indexed private String createdBy;   // userId of the creator
     private String orgId;
     private String title;

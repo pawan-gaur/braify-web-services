@@ -1,6 +1,7 @@
 package com.braify.feature.bulkemail.model;
 
 import lombok.*;
+import org.springframework.data.annotation.CreatedBy;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.index.CompoundIndex;
@@ -40,6 +41,7 @@ public class BulkEmailJob {
 
     @Id private String id;
 
+    @CreatedBy
     @Indexed private String createdBy;   // userId
     @Indexed private String orgId;
     private String orgName;              // display name used as email "From:" sender

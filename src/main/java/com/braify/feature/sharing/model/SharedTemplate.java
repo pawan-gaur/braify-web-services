@@ -4,6 +4,7 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.springframework.data.annotation.CreatedBy;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.index.CompoundIndex;
@@ -70,6 +71,7 @@ public class SharedTemplate {
     private String sharedByUserId;
 
     /** ID of the AppUser who created this share (alias for sharedByUserId for consistency). */
+    @CreatedBy
     private String createdBy;
 
     /** Optional message from the sharer. Max 300 chars. */

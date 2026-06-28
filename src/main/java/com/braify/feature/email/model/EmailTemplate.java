@@ -1,6 +1,7 @@
 package com.braify.feature.email.model;
 
 import lombok.Data;
+import org.springframework.data.annotation.CreatedBy;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.annotation.LastModifiedDate;
@@ -67,6 +68,7 @@ public class EmailTemplate {
     // ── Auditing ──────────────────────────────────────────────────────────────
 
     /** ID of the AppUser who originally created this email template. */
+    @CreatedBy
     private String createdBy;
 
     @CreatedDate

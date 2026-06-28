@@ -4,6 +4,7 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.springframework.data.annotation.CreatedBy;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.annotation.LastModifiedDate;
@@ -67,6 +68,7 @@ public class AppUser {
     private String bio;
 
     /** ID of the AppUser (admin) who created this account; null for self-registered / system-created accounts. */
+    @CreatedBy
     private String createdBy;
 
     // ── MFA / 2FA (TOTP) ───────────────────────────────────────────────────────

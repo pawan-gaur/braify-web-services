@@ -20,6 +20,7 @@ public class ESignSigningToken {
     private String clientEmail;
 
     /** ID of the AppUser (document creator) who triggered this token issuance by sending the document. */
+    @CreatedBy
     private String createdBy;
 
     private LocalDateTime issuedAt;
