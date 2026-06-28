@@ -41,19 +41,34 @@ public class ESignClientService {
     public DocumentResponse openDocument(String rawJwt, String ip, String ua) {
         ESignSigningToken token = validateToken(rawJwt);
         ESignDocument doc = fetchDoc(token.getDocumentId());
+        ESignDocument.Signatory signatory = resolveSignatory(doc, token);
 
-        // Record view / IN_REVIEW transition
+        boolean dirty = false;
+
+        // Mark this signatory as having viewed the document
+        if (signatory != null && signatory.getStatus() == ESignDocument.SignatoryStatus.PENDING) {
+            signatory.setStatus(ESignDocument.SignatoryStatus.VIEWED);
+            signatory.setViewedAt(LocalDateTime.now());
+            dirty = true;
+        }
+
+        // Doc-level: first open transitions PENDING → IN_REVIEW
         if (doc.getStatus() == ESignDocument.Status.PENDING) {
             doc.setStatus(ESignDocument.Status.IN_REVIEW);
             doc.setViewedAt(LocalDateTime.now());
+            dirty = true;
+        }
+
+        if (dirty) {
             docRepo.save(doc);
-            auditService.log(doc.getId(), doc.getClientEmail(),
+            auditService.log(doc.getId(), token.getClientEmail(),
                     ESignAuditEvent.ActorType.CLIENT,
                     ESignAuditEvent.EventType.DOCUMENT_VIEWED, ip, ua, null);
         }
 
         List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(doc.getId());
         DocumentResponse resp = DocumentResponse.from(doc, fields, true);  // include sourcePdf for signing UI
+        resp.setCurrentSignatoryId(signatory != null ? signatory.getId() : null);
         // Cloud-stored docs: give the signing client a pre-signed URL for the source PDF.
         resp.setSourcePdfUrl(esignStorage.sourcePresignedUrl(doc));
         return resp;
@@ -72,6 +87,11 @@ public class ESignClientService {
 
         if (!field.getDocumentId().equals(token.getDocumentId()))
             throw new SecurityException("Field does not belong to the document in this token");
+
+        // A signatory may only sign fields assigned to them (legacy tokens / unassigned fields are unrestricted).
+        if (token.getSignatoryId() != null && field.getSignatoryId() != null
+                && !token.getSignatoryId().equals(field.getSignatoryId()))
+            throw new SecurityException("This field belongs to a different signatory");
 
         field.setValue(req.getValue());
         field.setSigningMethod(ESignSignatureField.SigningMethod.valueOf(
@@ -92,12 +112,14 @@ public class ESignClientService {
     public DocumentResponse submitDocument(String rawJwt, String ip, String ua) {
         ESignSigningToken token = validateToken(rawJwt);
         ESignDocument doc = fetchDoc(token.getDocumentId());
+        ESignDocument.Signatory signatory = resolveSignatory(doc, token);
 
-        List<ESignSignatureField> fields =
+        List<ESignSignatureField> allFields =
                 fieldRepo.findByDocumentIdOrderByPageAscYAsc(doc.getId());
 
-        // Validate all required fields are signed
-        List<String> unsigned = fields.stream()
+        // Validate THIS signatory's required fields are signed (others may still be pending)
+        List<ESignSignatureField> myFields = fieldsForSignatory(doc, allFields, signatory);
+        List<String> unsigned = myFields.stream()
                 .filter(f -> f.isRequired() && (f.getValue() == null || f.getValue().isBlank()))
                 .map(f -> f.getLabel() != null ? f.getLabel() : f.getId())
                 .toList();
@@ -105,22 +127,38 @@ public class ESignClientService {
         if (!unsigned.isEmpty())
             throw new IllegalStateException("Required fields not signed: " + unsigned);
 
-        // Mark token used
+        // Consume this signatory's token + mark them signed
         tokenService.markUsed(token.getJti());
+        if (signatory != null) {
+            signatory.setStatus(ESignDocument.SignatoryStatus.SIGNED);
+            signatory.setSignedAt(LocalDateTime.now());
+        }
 
-        doc.setStatus(ESignDocument.Status.SIGNED);
-        doc.setSubmittedAt(LocalDateTime.now());
-        docRepo.save(doc);
-
-        auditService.log(doc.getId(), doc.getClientEmail(),
+        auditService.log(doc.getId(), token.getClientEmail(),
                 ESignAuditEvent.ActorType.CLIENT,
                 ESignAuditEvent.EventType.DOCUMENT_SUBMITTED, ip, ua,
-                Map.of("fieldsSigned", fields.stream().filter(f -> f.getValue() != null).count()));
+                Map.of("fieldsSigned", myFields.stream().filter(f -> f.getValue() != null).count()));
 
-        // Kick off async PDF stamping + emails
-        finalizeDocumentAsync(doc, fields, ip, ua);
+        boolean allSigned = doc.getSignatories() == null || doc.getSignatories().isEmpty()
+                || doc.getSignatories().stream()
+                       .allMatch(s -> s.getStatus() == ESignDocument.SignatoryStatus.SIGNED);
 
-        return DocumentResponse.from(doc, fields, false);
+        if (allSigned) {
+            doc.setStatus(ESignDocument.Status.SIGNED);
+            doc.setSubmittedAt(LocalDateTime.now());
+            docRepo.save(doc);
+            // Stamp ALL signatories' fields into the final PDF + send completion emails
+            finalizeDocumentAsync(doc, allFields, ip, ua);
+        } else {
+            doc.setStatus(ESignDocument.Status.PARTIALLY_SIGNED);
+            docRepo.save(doc);
+            // Sequential mode: hand the document to the next signatory in order
+            if (doc.getSigningMode() == ESignDocument.SigningMode.SEQUENTIAL) {
+                inviteNextSignatory(doc, ip, ua);
+            }
+        }
+
+        return DocumentResponse.from(doc, allFields, false);
     }
 
     // ── Async finalization ───────────────────────────────────────────────────
@@ -303,6 +341,59 @@ public class ESignClientService {
     private ESignSigningToken validateToken(String rawJwt) {
         return tokenService.validateSigningToken(rawJwt)
                 .orElseThrow(() -> new SecurityException("Invalid or expired signing token"));
+    }
+
+    /** Resolves the signatory a token belongs to. Returns null for legacy single-signer tokens. */
+    private ESignDocument.Signatory resolveSignatory(ESignDocument doc, ESignSigningToken token) {
+        if (token.getSignatoryId() == null || doc.getSignatories() == null) return null;
+        return doc.getSignatories().stream()
+                .filter(s -> token.getSignatoryId().equals(s.getId()))
+                .findFirst()
+                .orElse(null);
+    }
+
+    /**
+     * Returns the fields a given signatory is responsible for. Legacy documents (or a null
+     * signatory) get all fields; otherwise fields are matched by signatoryId, with any
+     * unassigned (null) field defaulting to the first signatory.
+     */
+    private List<ESignSignatureField> fieldsForSignatory(ESignDocument doc,
+                                                         List<ESignSignatureField> allFields,
+                                                         ESignDocument.Signatory signatory) {
+        if (signatory == null || signatory.getId() == null
+                || doc.getSignatories() == null || doc.getSignatories().isEmpty()) {
+            return allFields;
+        }
+        String firstId = doc.getSignatories().get(0).getId();
+        return allFields.stream()
+                .filter(f -> {
+                    String owner = f.getSignatoryId() != null ? f.getSignatoryId() : firstId;
+                    return signatory.getId().equals(owner);
+                })
+                .toList();
+    }
+
+    /** SEQUENTIAL mode: issue a token for the next not-yet-signed signatory and email them. */
+    private void inviteNextSignatory(ESignDocument doc, String ip, String ua) {
+        ESignDocument.Signatory next = doc.getSignatories().stream()
+                .sorted(java.util.Comparator.comparingInt(ESignDocument.Signatory::getSigningOrder))
+                .filter(s -> s.getStatus() != ESignDocument.SignatoryStatus.SIGNED)
+                .findFirst()
+                .orElse(null);
+        if (next == null) return;
+
+        int validDays = doc.getTokenExpiresAt() != null
+                ? (int) Math.max(1, java.time.Duration.between(LocalDateTime.now(), doc.getTokenExpiresAt()).toDays())
+                : 7;
+
+        String tokenJwt = tokenService.issueSigningToken(doc, next, validDays);
+        docRepo.save(doc);   // persist the new tokenJti on the signatory
+        emailService.sendSigningInvitation(doc, next.getName(), next.getEmail(), false, tokenJwt);
+
+        auditService.logAsync(doc.getId(), next.getEmail(),
+                ESignAuditEvent.ActorType.SYSTEM,
+                ESignAuditEvent.EventType.DOCUMENT_SENT, ip, ua,
+                Map.of("sequentialNext", next.getEmail()));
     }
 
     private ESignDocument fetchDoc(String docId) {

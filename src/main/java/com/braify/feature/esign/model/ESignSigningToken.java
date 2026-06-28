@@ -17,6 +17,10 @@ public class ESignSigningToken {
     private String jti;              // JWT ID — one token per send
 
     @Indexed private String documentId;
+
+    /** Which signatory this token authorises (ESignDocument.Signatory.id). Null = legacy single-signer token. */
+    private String signatoryId;
+
     private String clientEmail;
 
     /** ID of the AppUser (document creator) who triggered this token issuance by sending the document. */

@@ -49,13 +49,14 @@ public class ESignDocument {
 
     /* ── State machine ─────────────────────────────────────────────────── */
     public enum Status {
-        DRAFT,      // fields not yet placed / not yet sent
-        PENDING,    // sent to client, awaiting open
-        IN_REVIEW,  // client opened the signing link
-        SIGNED,     // client submitted all signatures
-        COMPLETED,  // signed PDF generated & emailed
-        EXPIRED,    // signing token expired before submission
-        CANCELLED   // manually cancelled by creator
+        DRAFT,            // fields not yet placed / not yet sent
+        PENDING,          // sent to signatories, awaiting open
+        IN_REVIEW,        // a signatory opened the signing link
+        PARTIALLY_SIGNED, // some (but not all) signatories have submitted
+        SIGNED,           // all signatories submitted
+        COMPLETED,        // signed PDF generated & emailed
+        EXPIRED,          // signing token expired before submission
+        CANCELLED         // manually cancelled by creator
     }
     @Builder.Default
     private Status status = Status.DRAFT;
@@ -69,6 +70,29 @@ public class ESignDocument {
      * also settable on single-sign documents.
      */
     private List<String> ccEmails;
+
+    /**
+     * Additional recipients who receive a copy of the FINAL signed PDF by email once
+     * signing is complete (distinct from {@link #ccEmails}, which CCs the invitation).
+     * Set on the New Document form; null/empty means only the client and creator are notified.
+     */
+    private List<String> completionCcEmails;
+
+    /* ── Signatories (multi-party signing) ─────────────────────────────── */
+    /** Whether signatories may sign in any order (PARALLEL) or one after another (SEQUENTIAL). */
+    public enum SigningMode { PARALLEL, SEQUENTIAL }
+
+    @Builder.Default
+    private SigningMode signingMode = SigningMode.PARALLEL;
+
+    /**
+     * Ordered list of people who must sign this document. Always populated on documents
+     * created after the multi-signatory feature (single-signer docs carry exactly one entry,
+     * mirrored into {@link #clientEmail}/{@link #clientName}). Legacy documents created before
+     * this feature have a null/empty list and fall back to the single client fields.
+     */
+    @Builder.Default
+    private List<Signatory> signatories = new ArrayList<>();
 
     /* ── Signed output ─────────────────────────────────────────────────── */
     private byte[] signedPdfData;        // LEGACY embedded bytes (older docs); null for cloud-stored docs
@@ -119,6 +143,22 @@ public class ESignDocument {
      */
     @Builder.Default
     private List<ClientAttachment> clientAttachments = new ArrayList<>();
+
+    /* ── Signatory sub-document ─────────────────────────────────────────── */
+    public enum SignatoryStatus { PENDING, VIEWED, SIGNED }
+
+    @Data @Builder @NoArgsConstructor @AllArgsConstructor
+    public static class Signatory {
+        private String id;              // stable UUID; referenced by ESignSignatureField.signatoryId
+        private String name;
+        private String email;
+        private int    signingOrder;    // 1-based; drives SEQUENTIAL invitations
+        @Builder.Default
+        private SignatoryStatus status = SignatoryStatus.PENDING;
+        private String        tokenJti;  // current signing token for this signatory
+        private LocalDateTime viewedAt;
+        private LocalDateTime signedAt;
+    }
 
     @Data @Builder @NoArgsConstructor @AllArgsConstructor
     public static class ClientAttachment {

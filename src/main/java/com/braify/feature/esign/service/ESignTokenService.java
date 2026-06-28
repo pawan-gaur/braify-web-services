@@ -23,15 +23,21 @@ public class ESignTokenService {
     private final ESignSigningTokenRepository tokenRepo;
 
     /**
-     * Generates a signing JWT and persists the token record.
-     * Revokes any previously active token for the same document.
+     * Generates a signing JWT for a specific signatory and persists the token record.
+     * Revokes any previously active token for that same signatory, and stores the new
+     * {@code jti} on the signatory so the document can track it.
+     *
+     * @return the raw JWT to embed in the signatory's emailed link
      */
-    public String issueSigningToken(ESignDocument doc, int validDays) {
-        log.info("Issuing signing token for document='{}' validDays={}", doc.getId(), validDays);
-        // Revoke previous active token if any
-        tokenRepo.findByDocumentIdAndUsedFalseAndRevokedAtIsNull(doc.getId())
+    public String issueSigningToken(ESignDocument doc, ESignDocument.Signatory signatory, int validDays) {
+        log.info("Issuing signing token for document='{}' signatory='{}' validDays={}",
+                doc.getId(), signatory.getEmail(), validDays);
+
+        // Revoke this signatory's previous active token, if any
+        tokenRepo.findByDocumentIdAndSignatoryIdAndUsedFalseAndRevokedAtIsNull(doc.getId(), signatory.getId())
                  .ifPresent(t -> {
-                     log.debug("Revoking previous active token jti='{}' for document='{}'", t.getJti(), doc.getId());
+                     log.debug("Revoking previous active token jti='{}' for document='{}' signatory='{}'",
+                             t.getJti(), doc.getId(), signatory.getId());
                      t.setRevokedAt(LocalDateTime.now());
                      tokenRepo.save(t);
                  });
@@ -40,19 +46,23 @@ public class ESignTokenService {
         Date expiryDate = Date.from(expiresAt.atZone(ZoneId.systemDefault()).toInstant());
 
         String jti = java.util.UUID.randomUUID().toString();
-        String jwt = jwtUtil.generateSigningToken(jti, doc.getClientEmail(), doc.getId(), expiryDate);
+        String jwt = jwtUtil.generateSigningToken(jti, signatory.getEmail(), doc.getId(), expiryDate);
 
         ESignSigningToken record = ESignSigningToken.builder()
                 .jti(jti)
                 .documentId(doc.getId())
-                .clientEmail(doc.getClientEmail())
+                .signatoryId(signatory.getId())
+                .clientEmail(signatory.getEmail())
                 .createdBy(doc.getCreatedBy())   // userId of the document owner who sent the document
                 .issuedAt(LocalDateTime.now())
                 .expiresAt(expiresAt)
                 .build();
         tokenRepo.save(record);
 
-        log.debug("Signing token issued jti='{}' for document='{}' expires={}", jti, doc.getId(), expiresAt);
+        signatory.setTokenJti(jti);   // track the active token on the signatory
+
+        log.debug("Signing token issued jti='{}' for document='{}' signatory='{}' expires={}",
+                jti, doc.getId(), signatory.getId(), expiresAt);
         return jwt;
     }
 

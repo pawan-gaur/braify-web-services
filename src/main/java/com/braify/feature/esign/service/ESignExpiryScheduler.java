@@ -37,7 +37,9 @@ public class ESignExpiryScheduler {
         // Use a targeted query instead of findAll() — the previous findAll() loaded
         // every document including embedded PDF byte arrays into JVM heap on every tick.
         List<ESignDocument> toExpire = docRepo.findByStatusInAndTokenExpiresAtBefore(
-                List.of(ESignDocument.Status.PENDING, ESignDocument.Status.IN_REVIEW),
+                List.of(ESignDocument.Status.PENDING,
+                        ESignDocument.Status.IN_REVIEW,
+                        ESignDocument.Status.PARTIALLY_SIGNED),
                 LocalDateTime.now());
 
         toExpire.forEach(doc -> {

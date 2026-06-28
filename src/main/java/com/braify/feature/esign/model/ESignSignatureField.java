@@ -16,6 +16,9 @@ public class ESignSignatureField {
 
     @Indexed private String documentId;
 
+    /** Which signatory fills this field (ESignDocument.Signatory.id). Null = legacy single-signer field. */
+    private String signatoryId;
+
     /** ID of the AppUser who placed these signature fields. */
     @CreatedBy
     private String createdBy;
