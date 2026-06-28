@@ -89,6 +89,23 @@ public class AzureBlobUploader implements CloudUploader {
         }
     }
 
+    // ── Download (server-side bytes) ────────────────────────────────────────────
+
+    @Override
+    public byte[] download(CloudDownloadRequest req) {
+        try {
+            BlobClient blobClient = buildBlobClient(
+                    req.getAzureConnectionString(), req.getBucket(), req.getStorageKey());
+            byte[] bytes = blobClient.downloadContent().toBytes();
+            log.info("Azure Blob download OK: container={} blob={} size={}B",
+                    req.getBucket(), req.getStorageKey(), bytes.length);
+            return bytes;
+        } catch (Exception e) {
+            log.error("Azure Blob download failed: container={} blob={}", req.getBucket(), req.getStorageKey(), e);
+            throw new RuntimeException("Azure Blob download failed: " + e.getMessage(), e);
+        }
+    }
+
     // ── Delete ────────────────────────────────────────────────────────────────
 
     @Override

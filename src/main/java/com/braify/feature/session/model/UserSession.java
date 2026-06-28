@@ -4,6 +4,7 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.springframework.data.annotation.CreatedBy;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.index.Indexed;
@@ -44,6 +45,10 @@ public class UserSession {
 
     @Builder.Default
     private boolean active = true;
+
+    /** Id of the user this session was created for (audited automatically on insert). */
+    @CreatedBy
+    private String createdBy;
 
     @CreatedDate
     private LocalDateTime createdAt;

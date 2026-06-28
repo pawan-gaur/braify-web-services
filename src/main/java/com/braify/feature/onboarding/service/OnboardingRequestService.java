@@ -59,6 +59,7 @@ public class OnboardingRequestService {
                 .country(dto.getCountry())
                 .requestedFeatures(dto.getRequestedFeatures() != null ? dto.getRequestedFeatures() : List.of())
                 .status(OnboardingRequest.Status.PENDING)
+                .createdBy(dto.getApplicantEmail())   // public self-signup — record the applicant as creator
                 .build();
 
         OnboardingRequest saved = requestRepository.save(req);

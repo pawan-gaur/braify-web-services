@@ -4,6 +4,7 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import org.springframework.data.annotation.CreatedBy;
 import org.springframework.data.annotation.Id;
 import org.springframework.data.annotation.LastModifiedDate;
 import org.springframework.data.mongodb.core.mapping.Document;
@@ -39,6 +40,10 @@ public class PlatformSettings {
 
     @Builder.Default
     private Access access = Access.builder().build();
+
+    /** Id of the user who created the settings document (audited automatically on insert). */
+    @CreatedBy
+    private String createdBy;
 
     @LastModifiedDate
     private LocalDateTime updatedAt;

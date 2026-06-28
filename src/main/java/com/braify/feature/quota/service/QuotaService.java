@@ -16,6 +16,7 @@ import com.braify.feature.quota.repository.OrgUsageRepository;
 import com.braify.feature.organization.repository.OrganizationRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.AuditorAware;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.mongodb.core.FindAndModifyOptions;
 import org.springframework.data.mongodb.core.MongoTemplate;
@@ -47,6 +48,12 @@ public class QuotaService {
     private final AppUserRepository        userRepo;
     private final OrganizationRepository   orgRepo;
     private final MongoTemplate            mongoTemplate;
+    private final AuditorAware<String>     auditorAware;
+
+    /** Current actor for audit fields on upserted usage docs (userId, "api-key:…", or "system"). */
+    private String currentActor() {
+        return auditorAware.getCurrentAuditor().orElse("system");
+    }
 
     // ── Plan defaults ─────────────────────────────────────────────────────────
 
@@ -198,6 +205,7 @@ public class QuotaService {
                 .setOnInsert("organizationId", orgId)
                 .setOnInsert("year",  now.getYear())
                 .setOnInsert("month", now.getMonthValue())
+                .setOnInsert("createdBy", currentActor())
                 .inc("storageMb", wholeMb);
         mongoTemplate.findAndModify(q, u,
                 FindAndModifyOptions.options().upsert(true).returnNew(true),
@@ -356,6 +364,7 @@ public class QuotaService {
                 .setOnInsert("organizationId", orgId)
                 .setOnInsert("year",  now.getYear())
                 .setOnInsert("month", now.getMonthValue())
+                .setOnInsert("createdBy", currentActor())
                 .inc(field, 1);
         mongoTemplate.findAndModify(q, u,
                 FindAndModifyOptions.options().upsert(true).returnNew(true),

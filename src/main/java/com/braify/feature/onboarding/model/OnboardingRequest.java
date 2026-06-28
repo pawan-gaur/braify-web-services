@@ -72,6 +72,9 @@ public class OnboardingRequest {
     /** ID of the Organisation created when this request was approved. */
     private String createdOrganizationId;
 
+    /** Who created this record — the applicant's email (public self-signup form). */
+    private String createdBy;
+
     @CreatedDate
     private LocalDateTime submittedAt;
 }

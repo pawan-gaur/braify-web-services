@@ -17,8 +17,10 @@ public class DocumentResponse {
     private String clientName;
     private String sourceType;
     private String bulkBatchId;
-    private String sourcePdfBase64;       // null for list view; populated on detail
-    private String signedPdfBase64;       // null until COMPLETED
+    private String sourcePdfBase64;       // LEGACY: embedded-byte docs only; null for cloud-stored docs
+    private String signedPdfBase64;       // LEGACY: embedded-byte docs only; null for cloud-stored docs
+    private String sourcePdfUrl;          // pre-signed cloud URL for the source PDF (cloud-stored docs)
+    private String signedPdfUrl;          // pre-signed cloud URL for the signed PDF (cloud-stored docs)
     private String signedPdfHash;
     private boolean allowClientUpload;              // whether client may upload supporting docs after signing
     private List<String> allowedClientUploadFileTypes; // empty = all types accepted
