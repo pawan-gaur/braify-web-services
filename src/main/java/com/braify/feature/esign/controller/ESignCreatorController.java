@@ -193,6 +193,27 @@ public class ESignCreatorController {
         return ResponseEntity.ok(documentService.getAuditTrail(id, principal));
     }
 
+    @Operation(summary = "Get source PDF",
+               description = "Returns the original (unsigned) PDF as `application/pdf`, served same-origin so the " +
+                             "field-placement editor can render cloud-stored PDFs without bucket CORS.")
+    @ApiResponse(responseCode = "200", description = "Source PDF bytes")
+    @ApiResponse(responseCode = "204", description = "No source PDF available")
+    @GetMapping("/{id}/source-pdf")
+    public ResponseEntity<byte[]> getSourcePdf(
+            @Parameter(description = "Document ID") @PathVariable String id,
+            @AuthenticationPrincipal UserDetailsImpl principal) {
+        log.debug("GET /api/esign/documents/{}/source-pdf by '{}'", id, principal.getUsername());
+
+        byte[] pdfBytes = documentService.getSourcePdfBytes(id, principal);
+        if (pdfBytes == null || pdfBytes.length == 0)
+            return ResponseEntity.noContent().build();
+
+        return ResponseEntity.ok()
+                .header("Content-Type", "application/pdf")
+                .header("Content-Disposition", "inline")
+                .body(pdfBytes);
+    }
+
     @Operation(summary = "Download signed PDF",
                description = "Returns the completed, signature-stamped PDF as a binary download (`application/pdf`). Only available when the document status is COMPLETED.")
     @ApiResponse(responseCode = "200", description = "Signed PDF bytes")
