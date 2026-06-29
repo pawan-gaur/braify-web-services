@@ -646,6 +646,16 @@ public class ESignDocumentService {
         return esignStorage.resolveSignedBytes(doc);
     }
 
+    /**
+     * Source (unsigned) PDF bytes for the creator's editor — served same-origin so the
+     * field-placement editor can render cloud-stored PDFs without needing bucket CORS.
+     * Cloud or legacy embedded; null if not available.
+     */
+    public byte[] getSourcePdfBytes(String docId, UserDetailsImpl principal) {
+        ESignDocument doc = getAccessibleDoc(docId, principal);
+        return esignStorage.resolveSourceBytes(doc);
+    }
+
     // ── Cancel ──────────────────────────────────────────────────────────────
 
     public DocumentResponse cancelDocument(String docId, UserDetailsImpl principal,
