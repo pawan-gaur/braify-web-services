@@ -41,6 +41,7 @@ public class SecurityConfig {
                 .requestMatchers("/api/auth/mfa/**").authenticated()
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/api/esign/sign/**").permitAll()   // client signing (ESIGN token)
+                .requestMatchers("/api/esign/view/**").permitAll()   // read-only CC viewer (ESIGN_VIEW token)
                 .requestMatchers("/api/esign/verify/**").permitAll() // public verification
                 .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/onboarding").permitAll() // public get-started form
                 // OpenAPI / Swagger UI — allow unauthenticated access so the frontend doc page can load the spec

@@ -59,8 +59,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
         String token = header.substring(7);
         try {
-            // Skip ESIGN signing tokens — handled directly by ESignClientController
-            if (jwtUtil.isValidSigningToken(token)) {
+            // Skip ESIGN signing / view tokens — handled directly by the e-sign controllers
+            if (jwtUtil.isValidSigningToken(token) || jwtUtil.isValidViewToken(token)) {
                 chain.doFilter(request, response);
                 return;
             }

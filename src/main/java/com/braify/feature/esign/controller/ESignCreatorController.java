@@ -166,6 +166,24 @@ public class ESignCreatorController {
         return ResponseEntity.ok(doc);
     }
 
+    @Operation(summary = "Resend invitation to one signatory",
+               description = "Re-issues a fresh signing link and re-sends the invitation to a single signatory. " +
+                             "In sequential mode only the current (first not-yet-signed) signatory can be re-invited.")
+    @ApiResponse(responseCode = "200", description = "Invitation resent to the signatory")
+    @PostMapping("/{id}/signatories/{signatoryId}/resend")
+    public ResponseEntity<DocumentResponse> resendSignatory(
+            @Parameter(description = "Document ID") @PathVariable String id,
+            @Parameter(description = "Signatory ID") @PathVariable String signatoryId,
+            @Parameter(description = "Token validity in days (default 7)") @RequestParam(defaultValue = "7") int tokenValidDays,
+            @AuthenticationPrincipal UserDetailsImpl principal,
+            HttpServletRequest http) {
+
+        log.info("POST /api/esign/documents/{}/signatories/{}/resend by '{}'", id, signatoryId, principal.getUsername());
+        DocumentResponse doc = documentService.resendToSignatory(
+                id, signatoryId, tokenValidDays, principal, extractIp(http), http.getHeader("User-Agent"));
+        return ResponseEntity.ok(doc);
+    }
+
     @Operation(summary = "Cancel document",
                description = "Transitions the document to CANCELLED status. The signing link is invalidated. Cannot cancel a COMPLETED document.")
     @ApiResponse(responseCode = "200", description = "Document cancelled")
