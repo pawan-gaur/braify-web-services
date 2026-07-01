@@ -48,6 +48,22 @@ public class ESignClientController {
         return ResponseEntity.ok(doc);
     }
 
+    @Operation(summary = "Get source PDF for signing",
+               description = "Returns the original PDF as `application/pdf`, served same-origin (authorized by the " +
+                             "signing token) so the signing UI can render multi-page cloud PDFs without bucket CORS.")
+    @ApiResponse(responseCode = "200", description = "Source PDF bytes")
+    @ApiResponse(responseCode = "401", description = "Invalid or expired signing token")
+    @GetMapping("/{token}/source-pdf")
+    public ResponseEntity<byte[]> sourcePdf(
+            @Parameter(description = "ESIGN signing token") @PathVariable String token) {
+        byte[] bytes = clientService.getSourcePdfBytes(token);
+        if (bytes == null || bytes.length == 0) return ResponseEntity.noContent().build();
+        return ResponseEntity.ok()
+                .header("Content-Type", "application/pdf")
+                .header("Content-Disposition", "inline")
+                .body(bytes);
+    }
+
     @Operation(summary = "Sign a single field",
                description = "Submits the client's signature for one field. Supported types:\n\n" +
                              "- `SIGNATURE` / `INITIALS` — body: `{ signatureData: \"data:image/png;base64,...\" }`\n" +

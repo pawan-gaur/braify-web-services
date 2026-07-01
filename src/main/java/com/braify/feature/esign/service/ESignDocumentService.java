@@ -372,15 +372,18 @@ public class ESignDocumentService {
         // Issue tokens + send invitations. PARALLEL = everyone now; SEQUENTIAL = first only
         // (the next signatory is invited automatically as each one submits).
         List<ESignDocument.Signatory> sigs = effectiveSignatories(doc);
+        List<String> emailFailures = new ArrayList<>();
         if (doc.getSigningMode() == ESignDocument.SigningMode.SEQUENTIAL) {
             ESignDocument.Signatory first = sigs.get(0);
             String token = tokenService.issueSigningToken(doc, first, tokenValidDays);
-            emailService.sendSigningInvitation(doc, first.getName(), first.getEmail(), true, token);
+            if (!emailService.sendSigningInvitation(doc, first.getName(), first.getEmail(), true, token))
+                emailFailures.add(first.getEmail());
         } else {
             for (int i = 0; i < sigs.size(); i++) {
                 ESignDocument.Signatory s = sigs.get(i);
                 String token = tokenService.issueSigningToken(doc, s, tokenValidDays);
-                emailService.sendSigningInvitation(doc, s.getName(), s.getEmail(), i == 0, token);
+                if (!emailService.sendSigningInvitation(doc, s.getName(), s.getEmail(), i == 0, token))
+                    emailFailures.add(s.getEmail());
             }
         }
         doc = docRepo.save(doc);   // persists tokenJti set on each signatory
@@ -399,6 +402,15 @@ public class ESignDocumentService {
                 AuditLog.Action.SENT, AuditLog.ResourceType.E_SIGN,
                 0, Map.of("clientEmail", doc.getClientEmail()),
                 principal.getUsername(), principal.getOrgId());
+
+        // Surface any invitations the email provider rejected — otherwise a signatory silently
+        // never receives their link (commonly an unverified sending domain on the mail provider).
+        if (!emailFailures.isEmpty()) {
+            throw new IllegalStateException(
+                    "The document was sent, but the signing invitation could not be emailed to: "
+                    + String.join(", ", emailFailures)
+                    + ". Verify your email sending domain/provider, then use Resend on the document.");
+        }
 
         List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(docId);
         return DocumentResponse.from(doc, fields, false);
@@ -448,6 +460,76 @@ public class ESignDocumentService {
                 AuditLog.Action.SENT, AuditLog.ResourceType.E_SIGN,
                 0, Map.of("clientEmail", doc.getClientEmail(), "action", "RESEND"),
                 principal.getUsername(), principal.getOrgId());
+
+        List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(docId);
+        return DocumentResponse.from(doc, fields, false);
+    }
+
+    /**
+     * Resends the signing invitation to a single signatory (fresh token, revoking their previous one).
+     * In SEQUENTIAL mode only the current (first not-yet-signed) signatory can be re-invited.
+     */
+    public DocumentResponse resendToSignatory(String docId,
+                                              String signatoryId,
+                                              int tokenValidDays,
+                                              UserDetailsImpl principal,
+                                              String ip, String ua) {
+        ESignDocument doc = getAccessibleDoc(docId, principal);
+
+        if (doc.getStatus() == ESignDocument.Status.COMPLETED ||
+            doc.getStatus() == ESignDocument.Status.CANCELLED ||
+            doc.getStatus() == ESignDocument.Status.EXPIRED) {
+            throw new IllegalStateException("Cannot resend a " + doc.getStatus() + " document");
+        }
+
+        List<ESignDocument.Signatory> sigs = doc.getSignatories();
+        if (sigs == null || sigs.isEmpty())
+            throw new IllegalArgumentException("This document has no signatories to resend to");
+
+        ESignDocument.Signatory target = sigs.stream()
+                .filter(s -> signatoryId.equals(s.getId()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("Signatory not found: " + signatoryId));
+
+        if (target.getStatus() == ESignDocument.SignatoryStatus.SIGNED)
+            throw new IllegalStateException("This signatory has already signed the document");
+
+        // In sequential order, only the current signatory holds an active turn.
+        if (doc.getSigningMode() == ESignDocument.SigningMode.SEQUENTIAL) {
+            ESignDocument.Signatory current = sigs.stream()
+                    .sorted(java.util.Comparator.comparingInt(ESignDocument.Signatory::getSigningOrder))
+                    .filter(s -> s.getStatus() != ESignDocument.SignatoryStatus.SIGNED)
+                    .findFirst().orElse(null);
+            if (current == null || !current.getId().equals(target.getId()))
+                throw new IllegalStateException(
+                        "This document signs in order — you can only resend to the current signatory"
+                        + (current != null ? " (" + current.getEmail() + ")" : "") + ".");
+        }
+
+        doc.setSentAt(java.time.LocalDateTime.now());
+        doc.setTokenExpiresAt(java.time.LocalDateTime.now().plusDays(tokenValidDays));
+
+        String token = tokenService.issueSigningToken(doc, target, tokenValidDays);
+        boolean ok = emailService.sendSigningInvitation(doc, target.getName(), target.getEmail(), false, token);
+        doc = docRepo.save(doc);
+
+        auditService.log(docId, principal.getUsername(),
+                ESignAuditEvent.ActorType.CREATOR,
+                ESignAuditEvent.EventType.DOCUMENT_SENT, ip, ua,
+                Map.of("signatory", target.getEmail(), "action", "RESEND_SIGNATORY",
+                       "tokenValidDays", tokenValidDays));
+
+        auditLogService.log(
+                doc.getId(), doc.getTitle(),
+                AuditLog.Action.SENT, AuditLog.ResourceType.E_SIGN,
+                0, Map.of("signatory", target.getEmail(), "action", "RESEND_SIGNATORY"),
+                principal.getUsername(), principal.getOrgId());
+
+        if (!ok) {
+            throw new IllegalStateException(
+                    "Could not email the invitation to " + target.getEmail()
+                    + ". Verify your email sending domain/provider and try again.");
+        }
 
         List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(docId);
         return DocumentResponse.from(doc, fields, false);

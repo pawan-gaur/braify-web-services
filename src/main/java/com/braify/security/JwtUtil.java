@@ -141,11 +141,39 @@ public class JwtUtil {
         }
     }
 
-    /** Returns true if the token is a USER auth token (no ESIGN claim). */
+    /** Returns true if the token is a USER auth token (not an e-sign signing or view token). */
     public boolean isUserToken(String token) {
         try {
-            Claims claims = parseToken(token);
-            return !"ESIGN".equals(claims.get("type", String.class));
+            String type = parseToken(token).get("type", String.class);
+            return !"ESIGN".equals(type) && !"ESIGN_VIEW".equals(type);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // ── E-Sign view-only token support (read-only access for CC recipients) ──
+
+    /**
+     * Generates a read-only view token for a document. Carries {@code type = "ESIGN_VIEW"} so it
+     * can NEVER be used to sign (signing requires {@code type = "ESIGN"}). Used for the view-only
+     * links sent to CC recipients.
+     */
+    public String generateViewToken(String documentId, java.util.Date expiresAt) {
+        return Jwts.builder()
+                .id(UUID.randomUUID().toString())
+                .subject(documentId)
+                .claim("type", "ESIGN_VIEW")
+                .claim("documentId", documentId)
+                .issuedAt(new Date())
+                .expiration(expiresAt)
+                .signWith(key())
+                .compact();
+    }
+
+    /** Returns true only if the token is valid AND carries {@code type = "ESIGN_VIEW"}. */
+    public boolean isValidViewToken(String token) {
+        try {
+            return "ESIGN_VIEW".equals(parseToken(token).get("type", String.class));
         } catch (Exception e) {
             return false;
         }

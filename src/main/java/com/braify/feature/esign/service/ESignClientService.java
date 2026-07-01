@@ -74,6 +74,46 @@ public class ESignClientService {
         return resp;
     }
 
+    // ── Source PDF bytes (same-origin, token-authorized) ─────────────────────
+
+    /**
+     * Returns the source (unsigned) PDF bytes for the signing UI, authorized by the signing token.
+     * Served same-origin so the signer's browser can render cloud-stored PDFs page-by-page without
+     * needing bucket CORS (a cross-origin pre-signed URL fails to load in pdf.js otherwise).
+     */
+    public byte[] getSourcePdfBytes(String rawJwt) {
+        ESignSigningToken token = validateToken(rawJwt);
+        ESignDocument doc = fetchDoc(token.getDocumentId());
+        return esignStorage.resolveSourceBytes(doc);
+    }
+
+    // ── Read-only view (CC recipients) ───────────────────────────────────────
+
+    /**
+     * Returns document metadata + fields for a read-only viewer, authorized by a view token.
+     * No signing is possible with a view token. Used by CC recipients' "view document" links.
+     */
+    public DocumentResponse openForView(String rawViewJwt) {
+        String docId = tokenService.validateViewToken(rawViewJwt)
+                .orElseThrow(() -> new SecurityException("Invalid or expired view link"));
+        ESignDocument doc = fetchDoc(docId);
+        List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(docId);
+        return DocumentResponse.from(doc, fields, false);
+    }
+
+    /**
+     * Returns the PDF bytes for the read-only viewer: the signed PDF once COMPLETED, otherwise the
+     * source PDF. Served same-origin so cloud-stored PDFs render without bucket CORS.
+     */
+    public byte[] getViewPdfBytes(String rawViewJwt) {
+        String docId = tokenService.validateViewToken(rawViewJwt)
+                .orElseThrow(() -> new SecurityException("Invalid or expired view link"));
+        ESignDocument doc = fetchDoc(docId);
+        return doc.getStatus() == ESignDocument.Status.COMPLETED
+                ? esignStorage.resolveSignedBytes(doc)
+                : esignStorage.resolveSourceBytes(doc);
+    }
+
     // ── Sign a single field ──────────────────────────────────────────────────
 
     public DocumentResponse.FieldResponse signField(String rawJwt,

@@ -88,6 +88,30 @@ public class ESignTokenService {
         }
     }
 
+    /**
+     * Mints a read-only view token for a document (no DB record — stateless, validated by signature).
+     * Used for the view-only links emailed to CC recipients.
+     */
+    public String issueViewToken(String documentId, int validDays) {
+        Date expiry = Date.from(LocalDateTime.now().plusDays(validDays)
+                .atZone(ZoneId.systemDefault()).toInstant());
+        return jwtUtil.generateViewToken(documentId, expiry);
+    }
+
+    /** Validates a view JWT and returns its documentId claim, or empty if invalid/expired. */
+    public Optional<String> validateViewToken(String jwt) {
+        try {
+            if (!jwtUtil.isValidViewToken(jwt)) return Optional.empty();
+            String documentId = jwtUtil.extractDocumentId(jwt);
+            return documentId != null && !documentId.isBlank()
+                    ? Optional.of(documentId)
+                    : Optional.empty();
+        } catch (Exception e) {
+            log.warn("View token validation exception: {}", e.getMessage());
+            return Optional.empty();
+        }
+    }
+
     /** Marks the token as used after successful document submission. */
     public void markUsed(String jti) {
         tokenRepo.findByJti(jti).ifPresent(t -> {
