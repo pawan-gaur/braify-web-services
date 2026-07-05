@@ -51,8 +51,12 @@ public class DocumentResponse {
         private boolean required;
         private boolean signed;
         private String  signingMethod;
+        private String  value;         // signed value (signature image / typed text) — for showing prior signatures
+        private LocalDateTime signedAt;
+        private String  signedAtDisplay; // signedAt rendered in the signer's timezone, e.g. "Jul 4, 2026 03:50:27 GMT+2"
+        private String  signerName;    // resolved name of the signatory who owns/filled the field
 
-        public static FieldResponse from(ESignSignatureField f) {
+        public static FieldResponse from(ESignSignatureField f, String signerName) {
             return FieldResponse.builder()
                     .id(f.getId())
                     .signatoryId(f.getSignatoryId())
@@ -64,6 +68,12 @@ public class DocumentResponse {
                     .required(f.isRequired())
                     .signed(f.getValue() != null && !f.getValue().isBlank())
                     .signingMethod(f.getSigningMethod() != null ? f.getSigningMethod().name() : null)
+                    .value(f.getValue())
+                    .signedAt(f.getSignedAt())
+                    .signedAtDisplay(f.getSignedAt() != null
+                            ? com.braify.feature.esign.service.ESignTimeFormat.caption(f.getSignedAt(), f.getSignedTimeZone())
+                            : null)
+                    .signerName(signerName)
                     .build();
         }
     }
@@ -93,6 +103,15 @@ public class DocumentResponse {
     }
 
     public static DocumentResponse from(ESignDocument doc, List<ESignSignatureField> fields, boolean includePdf) {
+        // Resolve each field's signer name from the document's signatories (fallback: the client name).
+        java.util.Map<String, String> signatoryNames = new java.util.HashMap<>();
+        if (doc.getSignatories() != null)
+            doc.getSignatories().forEach(s -> signatoryNames.put(s.getId(), s.getName()));
+        java.util.function.Function<ESignSignatureField, String> nameFor = f ->
+                f.getSignatoryId() != null && signatoryNames.containsKey(f.getSignatoryId())
+                        ? signatoryNames.get(f.getSignatoryId())
+                        : doc.getClientName();
+
         return DocumentResponse.builder()
                 .id(doc.getId())
                 .title(doc.getTitle())
@@ -119,7 +138,7 @@ public class DocumentResponse {
                 .completedAt(doc.getCompletedAt())
                 .tokenExpiresAt(doc.getTokenExpiresAt())
                 .createdAt(doc.getCreatedAt())
-                .fields(fields.stream().map(FieldResponse::from).toList())
+                .fields(fields.stream().map(f -> FieldResponse.from(f, nameFor.apply(f))).toList())
                 .build();
     }
 }
