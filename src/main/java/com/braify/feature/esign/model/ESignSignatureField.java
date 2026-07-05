@@ -42,4 +42,6 @@ public class ESignSignatureField {
     private String        value;          // base64 PNG (SIGNATURE/INITIALS) or plain text
     private SigningMethod  signingMethod;
     private LocalDateTime  signedAt;
+    /** Signer's IANA timezone captured at signing (e.g. "Africa/Kigali"); null for legacy records. */
+    private String         signedTimeZone;
 }

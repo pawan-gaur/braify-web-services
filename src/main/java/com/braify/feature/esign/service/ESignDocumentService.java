@@ -376,12 +376,14 @@ public class ESignDocumentService {
         if (doc.getSigningMode() == ESignDocument.SigningMode.SEQUENTIAL) {
             ESignDocument.Signatory first = sigs.get(0);
             String token = tokenService.issueSigningToken(doc, first, tokenValidDays);
+            if (first.getInvitedAt() == null) first.setInvitedAt(LocalDateTime.now());
             if (!emailService.sendSigningInvitation(doc, first.getName(), first.getEmail(), true, token))
                 emailFailures.add(first.getEmail());
         } else {
             for (int i = 0; i < sigs.size(); i++) {
                 ESignDocument.Signatory s = sigs.get(i);
                 String token = tokenService.issueSigningToken(doc, s, tokenValidDays);
+                if (s.getInvitedAt() == null) s.setInvitedAt(LocalDateTime.now());
                 if (!emailService.sendSigningInvitation(doc, s.getName(), s.getEmail(), i == 0, token))
                     emailFailures.add(s.getEmail());
             }
@@ -442,6 +444,7 @@ public class ESignDocumentService {
         boolean first = true;
         for (ESignDocument.Signatory s : pending) {
             String token = tokenService.issueSigningToken(doc, s, tokenValidDays);
+            if (s.getInvitedAt() == null) s.setInvitedAt(LocalDateTime.now());
             emailService.sendSigningInvitation(doc, s.getName(), s.getEmail(), first, token);
             first = false;
             if (doc.getSigningMode() == ESignDocument.SigningMode.SEQUENTIAL) break; // only the active one
@@ -510,6 +513,7 @@ public class ESignDocumentService {
         doc.setTokenExpiresAt(java.time.LocalDateTime.now().plusDays(tokenValidDays));
 
         String token = tokenService.issueSigningToken(doc, target, tokenValidDays);
+        if (target.getInvitedAt() == null) target.setInvitedAt(LocalDateTime.now());
         boolean ok = emailService.sendSigningInvitation(doc, target.getName(), target.getEmail(), false, token);
         doc = docRepo.save(doc);
 

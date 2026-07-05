@@ -156,6 +156,7 @@ public class ESignDocument {
         @Builder.Default
         private SignatoryStatus status = SignatoryStatus.PENDING;
         private String        tokenJti;  // current signing token for this signatory
+        private LocalDateTime invitedAt; // when this signatory was first emailed their signing link
         private LocalDateTime viewedAt;
         private LocalDateTime signedAt;
     }

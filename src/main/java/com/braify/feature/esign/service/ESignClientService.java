@@ -137,6 +137,7 @@ public class ESignClientService {
         field.setSigningMethod(ESignSignatureField.SigningMethod.valueOf(
                 req.getSigningMethod().toUpperCase()));
         field.setSignedAt(LocalDateTime.now());
+        field.setSignedTimeZone(req.getTimeZone());   // signer's browser timezone, for display
         fieldRepo.save(field);
 
         auditService.logAsync(token.getDocumentId(), token.getClientEmail(),
@@ -144,7 +145,12 @@ public class ESignClientService {
                 ESignAuditEvent.EventType.FIELD_SIGNED, ip, ua,
                 Map.of("fieldId", fieldId, "method", req.getSigningMethod()));
 
-        return DocumentResponse.FieldResponse.from(field);
+        // Resolve the field owner's display name for the signature caption.
+        ESignDocument doc = fetchDoc(token.getDocumentId());
+        ESignDocument.Signatory signatory = resolveSignatory(doc, token);
+        String signerName = signatory != null ? signatory.getName() : doc.getClientName();
+
+        return DocumentResponse.FieldResponse.from(field, signerName);
     }
 
     // ── Submit all signatures ────────────────────────────────────────────────
@@ -208,9 +214,18 @@ public class ESignClientService {
                                        List<ESignSignatureField> fields,
                                        String ip, String ua) {
         try {
+            // Resolve the creator (sender) for the audit report + completion emails.
+            var creatorOpt = userRepo.findById(doc.getCreatedBy());
+            String creatorEmail = creatorOpt.map(u -> u.getEmail()).orElse(null);
+            String creatorName  = creatorOpt
+                    .map(u -> ((u.getFirstName() != null ? u.getFirstName() : "") + " "
+                             + (u.getLastName()  != null ? u.getLastName()  : "")).trim())
+                    .filter(s -> !s.isBlank())
+                    .orElse(null);
+
             // 1. Stamp signatures onto the source PDF (fetched from cloud or legacy bytes)
             byte[] sourceBytes = esignStorage.resolveSourceBytes(doc);
-            byte[] signedBytes = pdfService.stampSignatures(doc, sourceBytes, fields);
+            byte[] signedBytes = pdfService.stampSignatures(doc, sourceBytes, fields, creatorName, creatorEmail);
             String hash = pdfService.sha256Hex(signedBytes);
 
             // 2. Upload the signed PDF to cloud storage; keep only the reference.
@@ -229,12 +244,8 @@ public class ESignClientService {
                     Map.of("signedPdfHash", hash));
 
             // 2. Send completion emails
-            String creatorEmail = userRepo.findById(doc.getCreatedBy())
-                    .map(u -> u.getEmail())
-                    .orElse(null);
-
             if (creatorEmail != null) {
-                emailService.sendCompletionEmails(doc, creatorEmail, null, signedBytes);
+                emailService.sendCompletionEmails(doc, creatorEmail, creatorName, signedBytes);
                 auditService.log(doc.getId(), "SYSTEM",
                         ESignAuditEvent.ActorType.SYSTEM,
                         ESignAuditEvent.EventType.COMPLETION_EMAIL_SENT, ip, ua, null);
@@ -427,6 +438,7 @@ public class ESignClientService {
                 : 7;
 
         String tokenJwt = tokenService.issueSigningToken(doc, next, validDays);
+        if (next.getInvitedAt() == null) next.setInvitedAt(LocalDateTime.now());
         docRepo.save(doc);   // persist the new tokenJti on the signatory
         emailService.sendSigningInvitation(doc, next.getName(), next.getEmail(), false, tokenJwt);
 
