@@ -75,6 +75,7 @@ public class BulkEmailProcessor {
     private final EmailDispatcher        emailDispatcher;
     private final PdfGenerationService   pdfGenerationService;
     private final MongoTemplate          mongoTemplate;
+    private final com.braify.feature.placeholder.service.GlobalPlaceholderService globalPlaceholderService;
 
     /** Shared RestTemplate — thread-safe; reused across all jobs. */
     private final RestTemplate restTemplate = new RestTemplate();
@@ -131,12 +132,14 @@ public class BulkEmailProcessor {
         AtomicInteger doneCount    = new AtomicInteger(0);
 
         final Template finalPdfTemplate = pdfTemplate;
+        // Resolve the org's global placeholders once — shared read-only across workers.
+        final Map<String, Object> jobGlobals = globalPlaceholderService.resolveForOrg(job.getOrgId());
         ExecutorService pool = Executors.newFixedThreadPool(
                 Math.min(CONCURRENCY, pendingRows.size()));
 
         List<CompletableFuture<Void>> futures = pendingRows.stream()
                 .map(row -> CompletableFuture.runAsync(
-                        () -> processRow(job, row, finalPdfTemplate,
+                        () -> processRow(job, row, finalPdfTemplate, jobGlobals,
                                 sentCount, failedCount, doneCount),
                         pool))
                 .toList();
@@ -159,6 +162,7 @@ public class BulkEmailProcessor {
     private void processRow(BulkEmailJob job,
                             BulkEmailJob.BulkEmailRow row,
                             Template pdfTemplate,
+                            Map<String, Object> jobGlobals,
                             AtomicInteger sentCount,
                             AtomicInteger failedCount,
                             AtomicInteger doneCount) {
@@ -166,8 +170,9 @@ public class BulkEmailProcessor {
         if (Thread.currentThread().isInterrupted()) return;
 
         try {
-            // 1. Build email placeholder map
-            Map<String, Object> emailPlaceholders = new HashMap<>();
+            // 1. Build email placeholder map — seed with org globals, then let
+            //    per-row column values / recipient fields override them.
+            Map<String, Object> emailPlaceholders = new HashMap<>(jobGlobals);
             if (job.getColumnMapping() != null) {
                 job.getColumnMapping().forEach((placeholder, xlsxCol) ->
                         emailPlaceholders.put(placeholder, row.getData().getOrDefault(xlsxCol, "")));

@@ -1,6 +1,11 @@
 package com.braify.feature.auth.service;
 
 import com.braify.config.infra.email.EmailDispatcher;
+import com.braify.feature.email.model.EmailTemplate;
+import com.braify.feature.internaltemplate.InternalEmailTemplateService;
+import com.braify.feature.internaltemplate.InternalTemplateCodes;
+import com.braify.feature.internaltemplate.InternalTemplateProvider;
+import com.braify.feature.internaltemplate.InternalTemplateSeed;
 import com.braify.feature.user.model.AppUser;
 import com.braify.feature.auth.model.InvitationToken;
 import com.braify.feature.auth.repository.InvitationTokenRepository;
@@ -10,22 +15,28 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
-import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
  * Generates and sends email invitations and password-reset links via Resend.
  * If the Resend API key is not configured the token is still created and the
  * invite URL is logged at INFO level (useful in development).
+ *
+ * <p>The email bodies are seeded as INTERNAL templates (see {@link #internalTemplateSeeds()})
+ * and resolved by code at send time; the {@code buildInviteEmail}/{@code buildResetEmail}
+ * text blocks below remain as the seed source <em>and</em> the fallback if the DB record is
+ * missing.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class EmailInviteService {
+public class EmailInviteService implements InternalTemplateProvider {
 
     private final InvitationTokenRepository tokenRepository;
     private final EmailDispatcher           emailDispatcher;
+    private final InternalEmailTemplateService internalEmailTemplateService;
 
     @Value("${app.frontend-url:http://localhost:5173}")
     private String frontendUrl;
@@ -57,11 +68,18 @@ public class EmailInviteService {
                 .build();
         tokenRepository.save(token);
 
-        String link    = frontendUrl + "/accept-invite?token=" + rawToken;
-        String subject = "You've been invited to PDF Builder";
-        String body    = buildInviteEmail(user.getFirstName(), link);
+        String link = frontendUrl + "/accept-invite?token=" + rawToken;
+        Map<String, Object> vars = Map.of(
+                "firstName", user.getFirstName() != null ? user.getFirstName() : "",
+                "link", link);
 
-        trySend(user.getEmail(), subject, body);
+        var tpl = internalEmailTemplateService.find(InternalTemplateCodes.INVITE_EMAIL);
+        String subject = tpl.map(EmailTemplate::getSubject).filter(s -> s != null && !s.isBlank())
+                .orElse("You've been invited to Braify");
+        String body = tpl.map(EmailTemplate::getHtmlContent).filter(h -> h != null && !h.isBlank())
+                .orElseGet(() -> buildInviteEmail(user.getFirstName(), link));
+
+        trySend(user.getEmail(), subject, body, vars);
         // DEBUG only — invite tokens grant password-setting capability and must not
         // appear in production log aggregators (Splunk, CloudWatch, Datadog, etc.)
         log.debug("Invite link generated for {} (also sent by email): {}", user.getEmail(), link);
@@ -97,20 +115,28 @@ public class EmailInviteService {
                 .build();
         tokenRepository.save(token);
 
-        String link    = frontendUrl + "/reset-password?token=" + rawToken;
-        String subject = "PDF Builder — Reset your password";
-        String body    = buildResetEmail(user.getFirstName(), link);
+        String link = frontendUrl + "/reset-password?token=" + rawToken;
+        Map<String, Object> vars = Map.of(
+                "firstName", user.getFirstName() != null ? user.getFirstName() : "",
+                "link", link);
 
-        trySend(user.getEmail(), subject, body);
+        var tpl = internalEmailTemplateService.find(InternalTemplateCodes.PASSWORD_RESET_EMAIL);
+        String subject = tpl.map(EmailTemplate::getSubject).filter(s -> s != null && !s.isBlank())
+                .orElse("Braify — Reset your password");
+        String body = tpl.map(EmailTemplate::getHtmlContent).filter(h -> h != null && !h.isBlank())
+                .orElseGet(() -> buildResetEmail(user.getFirstName(), link));
+
+        trySend(user.getEmail(), subject, body, vars);
         // DEBUG only — reset tokens grant unauthenticated password-change capability
         log.debug("Password-reset link generated for {} (also sent by email): {}", user.getEmail(), link);
     }
 
     /* ── Private helpers ─────────────────────────────────────────────────── */
 
-    private void trySend(String to, String subject, String htmlBody) {
+    private void trySend(String to, String subject, String htmlBody, Map<String, Object> vars) {
         try {
-            emailDispatcher.sendHtmlEmail(to, subject, htmlBody, Collections.emptyMap());
+            // EmailDispatcher substitutes {{tokens}} in subject + html using vars.
+            emailDispatcher.sendHtmlEmail(to, subject, htmlBody, vars);
             log.info("Email sent via Resend → {}", to);
         } catch (Exception e) {
             // Don't let email failure break the user-creation / reset flow
@@ -130,7 +156,7 @@ public class EmailInviteService {
                     <!-- Header -->
                     <tr>
                       <td style="background:linear-gradient(135deg,#6366f1,#8b5cf6);padding:32px 40px;text-align:center;">
-                        <h1 style="margin:0;color:#fff;font-size:22px;font-weight:700;">PDF Builder Studio</h1>
+                        <h1 style="margin:0;color:#fff;font-size:22px;font-weight:700;">Braify</h1>
                         <p style="margin:6px 0 0;color:#c7d2fe;font-size:13px;">Template management platform</p>
                       </td>
                     </tr>
@@ -139,7 +165,7 @@ public class EmailInviteService {
                       <td style="padding:36px 40px;">
                         <p style="margin:0 0 12px;font-size:15px;color:#374151;">Hi <strong>%s</strong>,</p>
                         <p style="margin:0 0 24px;font-size:14px;color:#6b7280;line-height:1.6;">
-                          You've been invited to join <strong>PDF Builder Studio</strong>.
+                          You've been invited to join <strong>Braify</strong>.
                           Click the button below to set your password and activate your account.
                           This link expires in <strong>7 days</strong>.
                         </p>
@@ -157,7 +183,7 @@ public class EmailInviteService {
                     <!-- Footer -->
                     <tr>
                       <td style="padding:20px 40px;border-top:1px solid #f3f4f6;text-align:center;">
-                        <p style="margin:0;font-size:11px;color:#d1d5db;">© 2025 PDF Builder Studio. All rights reserved.</p>
+                        <p style="margin:0;font-size:11px;color:#d1d5db;">© 2025 Braify. All rights reserved.</p>
                       </td>
                     </tr>
                   </table>
@@ -180,7 +206,7 @@ public class EmailInviteService {
                     <!-- Header -->
                     <tr>
                       <td style="background:linear-gradient(135deg,#6366f1,#8b5cf6);padding:32px 40px;text-align:center;">
-                        <h1 style="margin:0;color:#fff;font-size:22px;font-weight:700;">PDF Builder Studio</h1>
+                        <h1 style="margin:0;color:#fff;font-size:22px;font-weight:700;">Braify</h1>
                         <p style="margin:6px 0 0;color:#c7d2fe;font-size:13px;">Password Reset Request</p>
                       </td>
                     </tr>
@@ -206,7 +232,7 @@ public class EmailInviteService {
                     <!-- Footer -->
                     <tr>
                       <td style="padding:20px 40px;border-top:1px solid #f3f4f6;text-align:center;">
-                        <p style="margin:0;font-size:11px;color:#d1d5db;">© 2025 PDF Builder Studio. All rights reserved.</p>
+                        <p style="margin:0;font-size:11px;color:#d1d5db;">© 2025 Braify. All rights reserved.</p>
                       </td>
                     </tr>
                   </table>
@@ -215,5 +241,26 @@ public class EmailInviteService {
             </body>
             </html>
             """.formatted(firstName, link, link, link);
+    }
+
+    /* ── INTERNAL template seeds ─────────────────────────────────────────────
+       Reuse the builders with {{token}} stand-ins to produce the seeded, tokenised
+       HTML — guaranteeing the DB template matches the built-in output exactly. */
+    @Override
+    public List<InternalTemplateSeed> internalTemplateSeeds() {
+        return List.of(
+                new InternalTemplateSeed(
+                        InternalTemplateCodes.INVITE_EMAIL,
+                        "System — User Invitation",
+                        "You've been invited to Braify",
+                        buildInviteEmail("{{firstName}}", "{{link}}"),
+                        List.of("firstName", "link")),
+                new InternalTemplateSeed(
+                        InternalTemplateCodes.PASSWORD_RESET_EMAIL,
+                        "System — Password Reset",
+                        "Braify — Reset your password",
+                        buildResetEmail("{{firstName}}", "{{link}}"),
+                        List.of("firstName", "link"))
+        );
     }
 }

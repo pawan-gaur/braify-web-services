@@ -33,6 +33,7 @@ public class EmailTemplateService {
     private final AuditLogService              auditLogService;
     private final EmailDispatcher              emailDispatcher;
     private final CssInliner                   cssInliner;
+    private final com.braify.feature.placeholder.service.GlobalPlaceholderService globalPlaceholderService;
 
     private static final AuditLog.ResourceType RESOURCE = AuditLog.ResourceType.EMAIL_TEMPLATE;
 
@@ -40,11 +41,25 @@ public class EmailTemplateService {
 
     public List<EmailTemplate> findAll(AppUser currentUser) {
         log.debug("findAll email templates for user='{}' org='{}'", currentUser.getEmail(), currentUser.getOrganizationId());
+        // INTERNAL system templates are managed separately and never shown in the org UI.
         if (currentUser.getRole() == AppUser.Role.PLATFORM_ADMIN) {
-            return emailTemplateRepository.findByDeletedFalseOrderByUpdatedAtDesc();
+            return emailTemplateRepository.findByTypeAndDeletedFalseOrderByUpdatedAtDesc(
+                    com.braify.shared.TemplateType.EXTERNAL);
         }
-        return emailTemplateRepository.findByOrganizationIdAndDeletedFalseOrderByUpdatedAtDesc(
-                currentUser.getOrganizationId());
+        return emailTemplateRepository.findByOrganizationIdAndTypeAndDeletedFalseOrderByUpdatedAtDesc(
+                currentUser.getOrganizationId(), com.braify.shared.TemplateType.EXTERNAL);
+    }
+
+    /**
+     * Platform-admin only: the INTERNAL system templates (invite, password reset,
+     * onboarding, e-sign). Non-admins get an empty list.
+     */
+    public List<EmailTemplate> findInternal(AppUser currentUser) {
+        if (currentUser.getRole() != AppUser.Role.PLATFORM_ADMIN) {
+            return java.util.List.of();
+        }
+        return emailTemplateRepository.findByTypeAndDeletedFalseOrderByUpdatedAtDesc(
+                com.braify.shared.TemplateType.INTERNAL);
     }
 
     public EmailTemplate findById(String id, AppUser currentUser) {
@@ -202,12 +217,15 @@ public class EmailTemplateService {
                 ? req.getSubject()
                 : (template.getSubject() != null && !template.getSubject().isBlank())
                         ? template.getSubject()
-                        : "Message from " + (template.getFromName() != null ? template.getFromName() : "PDF Builder");
+                        : "Message from " + (template.getFromName() != null ? template.getFromName() : "Braify");
 
-        // Convert Map<String,String> → Map<String,Object> for EmailDispatcher
-        Map<String, Object> placeholders = req.getPlaceholders() != null
-                ? Collections.unmodifiableMap(req.getPlaceholders())
-                : Collections.emptyMap();
+        // Layer org-level global placeholders under the caller-supplied values
+        // (explicit non-blank values win; globals fill everything else).
+        Map<String, Object> overrides = req.getPlaceholders() != null
+                ? new LinkedHashMap<>(req.getPlaceholders())
+                : null;
+        Map<String, Object> placeholders =
+                globalPlaceholderService.mergeForOrg(template.getOrganizationId(), overrides);
 
         CreateEmailResponse resendResponse =
                 emailDispatcher.sendHtmlEmail(

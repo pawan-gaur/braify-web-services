@@ -171,6 +171,31 @@ public class UserService {
         return response;
     }
 
+    /**
+     * Re-sends the invitation email to a user who has not yet accepted it
+     * (i.e. still has {@code mustChangePassword == true}). Any previous pending
+     * invite token is invalidated and a fresh 7-day token is issued.
+     */
+    public void resendInvite(String id, AppUser currentUser) {
+        log.info("Resending invite for user id='{}' by '{}'", id, currentUser.getEmail());
+        AppUser user = userRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+        assertSameOrg(currentUser, user.getOrganizationId());
+        assertCanManage(currentUser, user);
+
+        if (!user.isMustChangePassword()) {
+            throw new RuntimeException("This user has already accepted their invitation");
+        }
+
+        emailInviteService.sendInvite(user, currentUser.getId());
+
+        auditLogService.log(
+                user.getId(), user.getEmail(),
+                AuditLog.Action.SENT, AuditLog.ResourceType.USER,
+                0, null, currentUser.getEmail(), user.getOrganizationId());
+        log.info("Invite resent to '{}'", user.getEmail());
+    }
+
     public void deactivate(String id, AppUser currentUser) {
         log.info("Deactivating user id='{}' by '{}'", id, currentUser.getEmail());
         AppUser user = userRepository.findById(id)

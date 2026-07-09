@@ -1,5 +1,6 @@
 package com.braify.feature.email.model;
 
+import com.braify.shared.TemplateType;
 import lombok.Data;
 import org.springframework.data.annotation.CreatedBy;
 import org.springframework.data.annotation.CreatedDate;
@@ -7,6 +8,7 @@ import org.springframework.data.annotation.Id;
 import org.springframework.data.annotation.LastModifiedDate;
 import org.springframework.data.mongodb.core.index.CompoundIndex;
 import org.springframework.data.mongodb.core.index.CompoundIndexes;
+import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
 
 import java.time.LocalDateTime;
@@ -26,6 +28,19 @@ public class EmailTemplate {
     private String name;
     private String organizationId;
     private String description;
+
+    // ── Classification ────────────────────────────────────────────────────────
+    /** EXTERNAL (user/org authored) by default; INTERNAL for platform system templates. */
+    private TemplateType type = TemplateType.EXTERNAL;
+
+    /**
+     * Stable identifier for INTERNAL system templates (e.g. {@code INVITE_EMAIL}); used to
+     * resolve the template instead of a generated id. Null for EXTERNAL templates.
+     * Sparse-indexed for fast code lookups; uniqueness is enforced by the seeder's
+     * existence check (a partial/unique index would treat explicit nulls as duplicates).
+     */
+    @Indexed(sparse = true)
+    private String code;
 
     // ── Email-specific metadata ───────────────────────────────────────────────
     /** Value that appears in the email Subject header */
