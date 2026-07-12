@@ -60,8 +60,18 @@ public class ESignPdfService {
                 }
             }
 
+            // Fingerprint the SIGNED CONTENT before the audit report is appended. The report
+            // itself cannot carry the hash of the final file (that value would depend on the
+            // report bytes, which now include the value — a self-reference), so the
+            // "Document Hash (SHA-256)" printed in the History is the digest of the signed
+            // document up to this point. The whole-file hash used by /verify is computed
+            // separately by the caller and stored as ESignDocument.signedPdfHash.
+            ByteArrayOutputStream contentOut = new ByteArrayOutputStream();
+            pdf.save(contentOut);
+            String signedContentHash = sha256Hex(contentOut.toByteArray());
+
             // Append the Final Audit Report page(s)
-            appendAuditReport(pdf, doc, fields, creatorName, creatorEmail);
+            appendAuditReport(pdf, doc, fields, creatorName, creatorEmail, signedContentHash);
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             pdf.save(out);
@@ -174,7 +184,7 @@ public class ESignPdfService {
      * Spills onto additional pages when the history is long.
      */
     private void appendAuditReport(PDDocument pdf, ESignDocument doc, List<ESignSignatureField> fields,
-                                   String creatorName, String creatorEmail) throws IOException {
+                                   String creatorName, String creatorEmail, String signedContentHash) throws IOException {
         final float pageW = PDRectangle.A4.getWidth();
         final float pageH = PDRectangle.A4.getHeight();
         final float margin = 45;
@@ -224,7 +234,7 @@ public class ESignPdfService {
         y -= 8;
 
         // Chronological events
-        for (AuditEvent ev : buildAuditEvents(doc, fields, creatorName, creatorEmail)) {
+        for (AuditEvent ev : buildAuditEvents(doc, fields, creatorName, creatorEmail, signedContentHash)) {
             if (y - 30 < bottom) {                 // new page when out of room
                 cs.close();
                 page = new PDPage(PDRectangle.A4);
@@ -253,7 +263,7 @@ public class ESignPdfService {
     }
 
     private List<AuditEvent> buildAuditEvents(ESignDocument doc, List<ESignSignatureField> fields,
-                                              String creatorName, String creatorEmail) {
+                                              String creatorName, String creatorEmail, String signedContentHash) {
         List<AuditEvent> events = new java.util.ArrayList<>();
 
         String creator = creatorName != null
@@ -287,6 +297,15 @@ public class ESignPdfService {
 
         events.sort(java.util.Comparator.comparing(AuditEvent::ts,
                 java.util.Comparator.nullsLast(java.util.Comparator.naturalOrder())));
+
+        // Terminal tamper-evidence entry — appended AFTER the sort so it is always the last
+        // line in the History: the signing is complete and here is the document's SHA-256.
+        if (signedContentHash != null && !signedContentHash.isBlank()) {
+            LocalDateTime completedTs = doc.getCompletedAt() != null ? doc.getCompletedAt() : LocalDateTime.now();
+            events.add(new AuditEvent(completedTs, 0.10f, 0.55f, 0.25f,
+                    "Document signing completed - tamper-evident, verify with SHA-256",
+                    "SHA-256: " + signedContentHash));
+        }
         return events;
     }
 

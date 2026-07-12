@@ -2,6 +2,7 @@ package com.braify.config;
 
 import com.braify.security.ApiKeyAuthFilter;
 import com.braify.security.JwtAuthFilter;
+import com.braify.security.RestAuthenticationEntryPoint;
 import com.braify.security.UserDetailsServiceImpl;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
@@ -28,6 +29,7 @@ public class SecurityConfig {
     private final JwtAuthFilter    jwtAuthFilter;
     private final ApiKeyAuthFilter apiKeyAuthFilter;
     private final UserDetailsServiceImpl userDetailsService;
+    private final RestAuthenticationEntryPoint restAuthenticationEntryPoint;
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
@@ -39,6 +41,11 @@ public class SecurityConfig {
                 // MFA management requires an authenticated session (more specific rule first).
                 // Note: /api/auth/login/mfa is NOT matched here — it stays public (the login challenge).
                 .requestMatchers("/api/auth/mfa/**").authenticated()
+                // /me needs a valid session. It MUST be gated here (not permitAll) so an expired
+                // token yields 401 — which the frontend answers with a silent refresh + retry.
+                // Left under permitAll, a null Authentication reaches the controller and NPEs (500),
+                // and 500 does not trigger the refresh flow → the user is wrongly logged out.
+                .requestMatchers("/api/auth/me").authenticated()
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/api/esign/sign/**").permitAll()   // client signing (ESIGN token)
                 .requestMatchers("/api/esign/view/**").permitAll()   // read-only CC viewer (ESIGN_VIEW token)
@@ -48,6 +55,10 @@ public class SecurityConfig {
                 .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                 .anyRequest().authenticated()
             )
+            // Unauthenticated requests (missing / expired / invalid token) must return
+            // 401 — NOT the Spring default of 403 — so the client can distinguish a
+            // dead session from a genuine access-denied (403) and redirect to /login.
+            .exceptionHandling(ex -> ex.authenticationEntryPoint(restAuthenticationEntryPoint))
             // Register JwtAuthFilter first so its class is recorded in Spring Security's
             // internal filter-order map.  Then ApiKeyAuthFilter is inserted before it —
             // referencing a class that is now known to the order registry.

@@ -43,7 +43,7 @@ spring:
 # JWT
 jwt:
   secret: "{JWT_SECRET}"
-  expiration-hours: 24
+  expiration-hours: 9
 
 app:
   # AES-256-GCM encryption for sensitive at-rest fields (cloud credentials, etc.)

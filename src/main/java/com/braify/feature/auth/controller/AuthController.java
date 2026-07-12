@@ -19,14 +19,21 @@ import com.braify.feature.auth.service.AuthService;
 import com.braify.feature.auth.service.EmailInviteService;
 import com.braify.feature.user.service.UserService;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.Map;
 
@@ -46,12 +53,47 @@ public class AuthController {
     private final MfaService mfaService;
     private final com.braify.feature.auth.service.PasswordPolicyService passwordPolicyService;
 
+    /** Name of the httpOnly refresh-token cookie. Scoped to /api/auth so it is only ever sent to auth endpoints. */
+    private static final String REFRESH_COOKIE = "refresh_token";
+    private static final String REFRESH_COOKIE_PATH = "/api/auth";
+
+    @Value("${app.cookie-secure:false}")
+    private boolean cookieSecure;
+
+    @Value("${jwt.refresh-token-hours:8}")
+    private int refreshTokenHours;
+
     @PostMapping("/login")
     public ResponseEntity<LoginResponse> login(@Valid @RequestBody LoginRequest req,
-                                               HttpServletRequest httpReq) {
+                                               HttpServletRequest httpReq,
+                                               HttpServletResponse httpRes) {
         log.info("POST /api/auth/login email='{}'", req.getEmail());
         String ip = extractClientIp(httpReq);
-        return ResponseEntity.ok(authService.login(req, ip));
+        AuthService.LoginResult result = authService.login(req, ip);
+        setRefreshCookie(httpRes, result.refreshToken());   // no-op for the MFA-challenge response
+        return ResponseEntity.ok(result.response());
+    }
+
+    /**
+     * Exchanges the httpOnly refresh cookie for a fresh access token (rotating both).
+     * Public — the cookie is the credential. Returns 401 (and clears the cookie) when
+     * the session is gone, so the client falls back to /login.
+     */
+    @PostMapping("/refresh")
+    public ResponseEntity<?> refresh(@CookieValue(name = REFRESH_COOKIE, required = false) String refreshToken,
+                                     HttpServletResponse httpRes) {
+        try {
+            AuthService.LoginResult result = authService.refresh(refreshToken);
+            setRefreshCookie(httpRes, result.refreshToken());
+            return ResponseEntity.ok(result.response());
+        } catch (RuntimeException ex) {
+            log.info("Refresh rejected: {}", ex.getMessage());
+            clearRefreshCookie(httpRes);
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of(
+                    "status",    HttpStatus.UNAUTHORIZED.value(),
+                    "message",   "Session expired. Please log in again.",
+                    "timestamp", Instant.now().toString()));
+        }
     }
 
     // ── MFA ───────────────────────────────────────────────────────────────────
@@ -59,9 +101,12 @@ public class AuthController {
     /** Step 2 of login when MFA is required. Public (no session yet) — the mfaToken authorises it. */
     @PostMapping("/login/mfa")
     public ResponseEntity<LoginResponse> loginMfa(@RequestBody MfaVerifyRequest req,
-                                                  HttpServletRequest httpReq) {
+                                                  HttpServletRequest httpReq,
+                                                  HttpServletResponse httpRes) {
         log.info("POST /api/auth/login/mfa");
-        return ResponseEntity.ok(authService.verifyMfaAndLogin(req, extractClientIp(httpReq)));
+        AuthService.LoginResult result = authService.verifyMfaAndLogin(req, extractClientIp(httpReq));
+        setRefreshCookie(httpRes, result.refreshToken());
+        return ResponseEntity.ok(result.response());
     }
 
     /** Begin enrollment — returns the QR + secret. Requires an authenticated session. */
@@ -122,14 +167,49 @@ public class AuthController {
     }
 
     @PostMapping("/logout")
-    public ResponseEntity<Void> logout(@RequestHeader("Authorization") String authHeader) {
+    public ResponseEntity<Void> logout(@RequestHeader(value = "Authorization", required = false) String authHeader,
+                                       HttpServletResponse httpRes) {
         log.info("POST /api/auth/logout");
         if (authHeader != null && authHeader.startsWith("Bearer ")) {
-            String jti = jwtUtil.extractJti(authHeader.substring(7));
-            authService.logout(jti);
+            try {
+                String jti = jwtUtil.extractJti(authHeader.substring(7));
+                authService.logout(jti);
+            } catch (Exception e) {
+                // Access token may already be expired — nothing to revoke by jti, but we still
+                // clear the cookie below so the client is fully logged out.
+                log.debug("Logout: could not parse access-token jti: {}", e.getMessage());
+            }
         }
+        clearRefreshCookie(httpRes);
         log.info("Logout successful");
         return ResponseEntity.noContent().build();
+    }
+
+    // ── Refresh-cookie helpers ──────────────────────────────────────────────
+
+    /** Sets the rotating refresh token as an httpOnly cookie. No-op when {@code rawToken} is null. */
+    private void setRefreshCookie(HttpServletResponse res, String rawToken) {
+        if (rawToken == null) return;
+        ResponseCookie cookie = ResponseCookie.from(REFRESH_COOKIE, rawToken)
+                .httpOnly(true)
+                .secure(cookieSecure)
+                .sameSite("Lax")
+                .path(REFRESH_COOKIE_PATH)
+                .maxAge(Duration.ofHours(refreshTokenHours))
+                .build();
+        res.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
+    }
+
+    /** Expires the refresh cookie (logout / failed refresh). */
+    private void clearRefreshCookie(HttpServletResponse res) {
+        ResponseCookie cookie = ResponseCookie.from(REFRESH_COOKIE, "")
+                .httpOnly(true)
+                .secure(cookieSecure)
+                .sameSite("Lax")
+                .path(REFRESH_COOKIE_PATH)
+                .maxAge(0)
+                .build();
+        res.addHeader(HttpHeaders.SET_COOKIE, cookie.toString());
     }
 
     /** Returns the current user's full profile. */

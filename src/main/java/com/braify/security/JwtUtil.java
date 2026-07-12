@@ -12,7 +12,9 @@ import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.time.LocalDateTime;
+import java.util.Base64;
 import java.util.Date;
 import java.util.UUID;
 
@@ -23,11 +25,19 @@ public class JwtUtil {
     @Value("${jwt.secret}")
     private String secret;
 
-    @Value("${jwt.expiration-hours:24}")
-    private int expirationHours;
+    /**
+     * Access-token lifetime in minutes. Deliberately short — the token is silently
+     * re-minted through the refresh-cookie flow, so a leaked access token is only
+     * usable for this window.
+     */
+    @Value("${jwt.access-minutes:30}")
+    private int accessMinutes;
 
     @Value("${jwt.mfa-challenge-minutes:5}")
     private int mfaChallengeMinutes;
+
+    /** Cryptographically strong source for opaque refresh tokens. */
+    private final SecureRandom secureRandom = new SecureRandom();
 
     private SecretKey key() {
         // Derive a guaranteed 256-bit key by SHA-256-hashing the configured secret, so
@@ -52,9 +62,34 @@ public class JwtUtil {
                 .claim("orgId", user.getOrganizationId())
                 .claim("email", user.getEmail())
                 .issuedAt(new Date())
-                .expiration(new Date(System.currentTimeMillis() + expirationHours * 3600_000L))
+                .expiration(new Date(System.currentTimeMillis() + accessMinutes * 60_000L))
                 .signWith(key())
                 .compact();
+    }
+
+    // ── Refresh-token support ───────────────────────────────────────────────
+
+    /**
+     * Generates an opaque, high-entropy refresh token (256-bit, URL-safe). This is
+     * NOT a JWT — it carries no claims and is only meaningful as a lookup key against
+     * the {@code refreshTokenHash} persisted on the {@link com.braify.feature.session.model.UserSession}.
+     * Returned to the client once, as an httpOnly cookie; only its hash is stored.
+     */
+    public String generateRefreshToken() {
+        byte[] bytes = new byte[32];
+        secureRandom.nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    }
+
+    /** SHA-256 hash (URL-safe base64) of a raw refresh token, for at-rest storage + lookup. */
+    public String hashRefreshToken(String rawToken) {
+        try {
+            byte[] hash = MessageDigest.getInstance("SHA-256")
+                    .digest(rawToken.getBytes(StandardCharsets.UTF_8));
+            return Base64.getUrlEncoder().withoutPadding().encodeToString(hash);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 algorithm not available", e);
+        }
     }
 
     public Claims parseToken(String token) {
