@@ -46,6 +46,16 @@ public class EmailTemplateController {
         return emailTemplateService.findAll(getUser(auth));
     }
 
+    @Operation(summary = "List INTERNAL system templates",
+               description = "Platform-admin only. Returns the platform's built-in system email templates " +
+                             "(invite, password reset, onboarding, e-sign) — the ones addressed internally by code.")
+    @ApiResponse(responseCode = "200", description = "List of INTERNAL system templates")
+    @GetMapping("/internal")
+    public List<EmailTemplate> getInternal(Authentication auth) {
+        log.debug("GET /api/email-templates/internal caller='{}'", getUser(auth).getEmail());
+        return emailTemplateService.findInternal(getUser(auth));
+    }
+
     @Operation(summary = "Get email template by ID")
     @ApiResponse(responseCode = "200", description = "Email template found")
     @ApiResponse(responseCode = "404", description = "Not found or not accessible")

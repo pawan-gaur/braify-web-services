@@ -14,6 +14,9 @@ public interface UserSessionRepository extends MongoRepository<UserSession, Stri
     /* ── Auth service (session enforcement) ── */
     List<UserSession> findByUserIdAndActiveTrueOrderByCreatedAtAsc(String userId);
     Optional<UserSession> findByJtiAndActiveTrue(String jti);
+
+    /** Refresh flow — resolve the active session that owns a given refresh-token hash. */
+    Optional<UserSession> findByRefreshTokenHashAndActiveTrue(String refreshTokenHash);
     long countByUserIdAndActiveTrue(String userId);
     void deleteByJti(String jti);
 

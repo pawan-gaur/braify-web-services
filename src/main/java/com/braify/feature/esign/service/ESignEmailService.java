@@ -4,6 +4,9 @@ import com.braify.config.infra.email.EmailDispatcher;
 import com.braify.feature.email.model.EmailTemplate;
 import com.braify.feature.email.repository.EmailTemplateRepository;
 import com.braify.feature.esign.model.ESignDocument;
+import com.braify.feature.internaltemplate.InternalTemplateCodes;
+import com.braify.feature.internaltemplate.InternalTemplateProvider;
+import com.braify.feature.internaltemplate.InternalTemplateSeed;
 import com.braify.feature.organization.repository.OrganizationRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -14,11 +17,12 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class ESignEmailService {
+public class ESignEmailService implements InternalTemplateProvider {
 
     private final EmailDispatcher          emailDispatcher;
     private final OrganizationRepository   orgRepo;
@@ -59,31 +63,39 @@ public class ESignEmailService {
         String signingLink = baseUrl + "/sign/" + signingToken;
         String orgName     = resolveOrgName(doc.getOrgId());
 
-        // ── Resolve email body: custom template or built-in fallback ────────
+        // ── Resolve email body ──────────────────────────────────────────────
+        // Priority: 1) org-chosen custom template (EXTERNAL), 2) platform INTERNAL
+        // system template (by code), 3) built-in HTML fallback.
         String subject;
         String html;
 
+        Optional<EmailTemplate> customTpl = Optional.empty();
         if (doc.getEmailTemplateId() != null && !doc.getEmailTemplateId().isBlank()) {
-            Optional<EmailTemplate> tplOpt =
-                    emailTemplateRepo.findByIdAndDeletedFalse(doc.getEmailTemplateId());
-
-            if (tplOpt.isPresent()) {
-                EmailTemplate tpl = tplOpt.get();
-                subject = tpl.getSubject() != null && !tpl.getSubject().isBlank()
-                        ? tpl.getSubject()
-                        : "You have a document to sign — " + doc.getTitle();
-                html = applyESignPlaceholders(tpl.getHtmlContent(), recipientName, doc, signingLink, orgName);
-                log.debug("Using email template '{}' for doc {}", tpl.getName(), doc.getId());
-            } else {
-                log.warn("Email template '{}' not found for doc {} — using default",
+            customTpl = emailTemplateRepo.findByIdAndDeletedFalse(doc.getEmailTemplateId());
+            if (customTpl.isEmpty())
+                log.warn("Email template '{}' not found for doc {} — using system template",
                         doc.getEmailTemplateId(), doc.getId());
-                subject = "You have a document to sign — " + doc.getTitle();
-                html    = buildInvitationHtml(recipientName, doc, signingLink, orgName);
-            }
-        } else {
-            subject = "You have a document to sign — " + doc.getTitle();
-            html    = buildInvitationHtml(recipientName, doc, signingLink, orgName);
         }
+
+        if (customTpl.isPresent()) {
+            EmailTemplate tpl = customTpl.get();
+            subject = notBlank(tpl.getSubject()) ? tpl.getSubject() : "You have a document to sign — " + doc.getTitle();
+            html    = applyESignPlaceholders(tpl.getHtmlContent(), recipientName, doc, signingLink, orgName);
+            log.debug("Using custom email template '{}' for doc {}", tpl.getName(), doc.getId());
+        } else {
+            ResolvedEmail r = resolveInternal(
+                    InternalTemplateCodes.ESIGN_SIGNING_INVITATION,
+                    "You have a document to sign — {{documentTitle}}",
+                    () -> buildInvitationHtml(recipientName, doc, signingLink, orgName));
+            subject = r.subject();
+            html    = r.html();
+        }
+
+        Map<String, Object> vars = Map.of(
+                "clientName",    recipientName != null ? recipientName : "",
+                "documentTitle", doc.getTitle() != null ? doc.getTitle() : "",
+                "signingLink",   signingLink,
+                "orgName",       orgName);
 
         boolean sent = false;
         try {
@@ -94,11 +106,7 @@ public class ESignEmailService {
                     recipientEmail,
                     subject,
                     html,
-                    Map.of(
-                            "clientName",    recipientName != null ? recipientName : "",
-                            "documentTitle", doc.getTitle(),
-                            "signingLink",   signingLink
-                    ),
+                    vars,
                     orgName
             );
             sent = true;
@@ -114,11 +122,19 @@ public class ESignEmailService {
                     .filter(cc -> cc != null && !cc.isBlank())
                     .map(String::trim)
                     .toList();
-            String ccSubject = "For your information: " + doc.getTitle() + " sent for signature";
-            String ccHtml    = buildCcNotificationHtml(recipientName, doc, buildViewLink(doc), orgName);
+            String viewLink = buildViewLink(doc);
+            Map<String, Object> ccVars = Map.of(
+                    "clientName",    recipientName != null ? recipientName : "",
+                    "documentTitle", doc.getTitle() != null ? doc.getTitle() : "",
+                    "viewLink",      viewLink,
+                    "orgName",       orgName);
+            ResolvedEmail ccR = resolveInternal(
+                    InternalTemplateCodes.ESIGN_CC_NOTIFICATION,
+                    "For your information: {{documentTitle}} sent for signature",
+                    () -> buildCcNotificationHtml(recipientName, doc, viewLink, orgName));
             for (String cc : ccList) {
                 try {
-                    emailDispatcher.sendHtmlEmail(cc, ccSubject, ccHtml, Map.of(), orgName);
+                    emailDispatcher.sendHtmlEmail(cc, ccR.subject(), ccR.html(), ccVars, orgName);
                     log.info("CC notification sent to {} for doc {}", cc, doc.getId());
                 } catch (Exception e) {
                     log.error("Failed to send CC notification to {} for doc {}: {}", cc, doc.getId(), e.getMessage());
@@ -273,14 +289,21 @@ public class ESignEmailService {
 
         // ── Invitation-CC recipients: view-only "document signed" notice (no attachment) ──
         if (doc.getCcEmails() != null) {
-            String ccSubject = "Signed: " + doc.getTitle();
-            String ccHtml    = buildCcCompletionHtml(doc, buildViewLink(doc), orgName);
+            String viewLink = buildViewLink(doc);
+            Map<String, Object> ccVars = Map.of(
+                    "documentTitle", doc.getTitle() != null ? doc.getTitle() : "",
+                    "viewLink",      viewLink,
+                    "orgName",       orgName);
+            ResolvedEmail ccR = resolveInternal(
+                    InternalTemplateCodes.ESIGN_CC_COMPLETION,
+                    "Signed: {{documentTitle}}",
+                    () -> buildCcCompletionHtml(doc, viewLink, orgName));
             for (String raw : doc.getCcEmails()) {
                 if (raw == null || raw.isBlank()) continue;
                 String to = raw.trim();
                 if (!sent.add(to.toLowerCase())) continue;   // skip anyone already emailed a copy
                 try {
-                    emailDispatcher.sendHtmlEmail(to, ccSubject, ccHtml, Map.of(), orgName);
+                    emailDispatcher.sendHtmlEmail(to, ccR.subject(), ccR.html(), ccVars, orgName);
                     log.info("Completion view-notice sent to CC {} for doc {}", to, doc.getId());
                 } catch (Exception e) {
                     log.error("Failed to send completion view-notice to {} for doc {}: {}", to, doc.getId(), e.getMessage());
@@ -293,8 +316,17 @@ public class ESignEmailService {
     private void sendCompletionTo(String to, String greetingName, String subject, ESignDocument doc,
                                   String verifyLink, String orgName, byte[] signedPdfBytes, String filename) {
         try {
-            String html = buildCompletionHtml(greetingName, doc, verifyLink, orgName);
-            sendHtmlWithAttachment(to, subject, html, signedPdfBytes, filename, orgName);
+            String greeting = notBlank(greetingName) ? greetingName : "there";
+            Map<String, Object> vars = Map.of(
+                    "clientName",    greeting,
+                    "documentTitle", doc.getTitle() != null ? doc.getTitle() : "",
+                    "verifyLink",    verifyLink,
+                    "orgName",       orgName);
+            ResolvedEmail r = resolveInternal(
+                    InternalTemplateCodes.ESIGN_COMPLETION_SIGNER,
+                    subject, // built-in subject supplied by caller ("Signed document ready: <title>")
+                    () -> buildCompletionHtml(greetingName, doc, verifyLink, orgName));
+            sendHtmlWithAttachment(to, r.subject(), r.html(), vars, signedPdfBytes, filename, orgName);
             log.info("Completion email sent to {} for doc {}", to, doc.getId());
         } catch (Exception e) {
             log.error("Failed to send completion email to {} for doc {}: {}", to, doc.getId(), e.getMessage());
@@ -305,10 +337,10 @@ public class ESignEmailService {
      * Sends an HTML email with a single PDF attachment.
      * Uses sendHtmlEmailWithAttachment so no S3 template bucket is needed.
      */
-    private void sendHtmlWithAttachment(String to, String subject, String html,
+    private void sendHtmlWithAttachment(String to, String subject, String html, Map<String, Object> vars,
                                         byte[] pdfBytes, String filename, String senderDisplayName) {
         emailDispatcher.sendHtmlEmailWithAttachment(
-                to, subject, html, java.util.Map.of(), pdfBytes, filename, senderDisplayName);
+                to, subject, html, vars, pdfBytes, filename, senderDisplayName);
     }
 
     // ── HTML builders ───────────────────────────────────────────────────────
@@ -387,5 +419,58 @@ public class ESignEmailService {
 
     private String sanitizeFilename(String name) {
         return name == null ? "document" : name.replaceAll("[^a-zA-Z0-9._\\- ]", "").trim().replace(" ", "-");
+    }
+
+    // ── INTERNAL template resolution ──────────────────────────────────────────
+
+    private boolean notBlank(String s) { return s != null && !s.isBlank(); }
+
+    /** Resolved (still tokenised) subject + html; tokens are substituted by the dispatcher. */
+    private record ResolvedEmail(String subject, String html) {}
+
+    /**
+     * Resolves an INTERNAL system template by code. Returns its (tokenised) subject + html
+     * when present, otherwise falls back to the built-in HTML so mail never breaks.
+     */
+    private ResolvedEmail resolveInternal(String code, String fallbackSubject, Supplier<String> fallbackHtml) {
+        return emailTemplateRepo.findByCodeAndDeletedFalse(code)
+                .filter(t -> notBlank(t.getHtmlContent()))
+                .map(t -> new ResolvedEmail(
+                        notBlank(t.getSubject()) ? t.getSubject() : fallbackSubject,
+                        t.getHtmlContent()))
+                .orElseGet(() -> new ResolvedEmail(fallbackSubject, fallbackHtml.get()));
+    }
+
+    /* ── INTERNAL template seeds ──────────────────────────────────────────────
+       A title-only stand-in document lets the existing builders emit tokenised HTML. */
+    @Override
+    public List<InternalTemplateSeed> internalTemplateSeeds() {
+        ESignDocument tok = ESignDocument.builder().title("{{documentTitle}}").build();
+        return List.of(
+                new InternalTemplateSeed(
+                        InternalTemplateCodes.ESIGN_SIGNING_INVITATION,
+                        "System — E-Sign: Signing Invitation",
+                        "You have a document to sign — {{documentTitle}}",
+                        buildInvitationHtml("{{clientName}}", tok, "{{signingLink}}", "{{orgName}}"),
+                        List.of("clientName", "documentTitle", "signingLink", "orgName")),
+                new InternalTemplateSeed(
+                        InternalTemplateCodes.ESIGN_COMPLETION_SIGNER,
+                        "System — E-Sign: Document Signed",
+                        "Signed document ready: {{documentTitle}}",
+                        buildCompletionHtml("{{clientName}}", tok, "{{verifyLink}}", "{{orgName}}"),
+                        List.of("clientName", "documentTitle", "verifyLink", "orgName")),
+                new InternalTemplateSeed(
+                        InternalTemplateCodes.ESIGN_CC_NOTIFICATION,
+                        "System — E-Sign: CC Notification",
+                        "For your information: {{documentTitle}} sent for signature",
+                        buildCcNotificationHtml("{{clientName}}", tok, "{{viewLink}}", "{{orgName}}"),
+                        List.of("clientName", "documentTitle", "viewLink", "orgName")),
+                new InternalTemplateSeed(
+                        InternalTemplateCodes.ESIGN_CC_COMPLETION,
+                        "System — E-Sign: CC Completion",
+                        "Signed: {{documentTitle}}",
+                        buildCcCompletionHtml(tok, "{{viewLink}}", "{{orgName}}"),
+                        List.of("documentTitle", "viewLink", "orgName"))
+        );
     }
 }

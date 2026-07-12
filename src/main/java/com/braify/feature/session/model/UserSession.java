@@ -43,6 +43,14 @@ public class UserSession {
     private String deviceInfo;
     private String ipAddress;
 
+    /**
+     * SHA-256 hash of the session's current refresh token. Rotated on every
+     * successful refresh (the raw token is never stored). Indexed because the
+     * refresh endpoint looks the session up by this value.
+     */
+    @Indexed
+    private String refreshTokenHash;
+
     @Builder.Default
     private boolean active = true;
 

@@ -32,6 +32,7 @@ public class PdfGenerationService {
 
     private final PlaceholderService placeholderService;
     private final QuotaService       quotaService;
+    private final com.braify.feature.placeholder.service.GlobalPlaceholderService globalPlaceholderService;
 
     // Timeouts for fetching remote resources (images / CSS) during rendering.
     private static final int RESOURCE_CONNECT_TIMEOUT_MS = 4000;
@@ -81,7 +82,10 @@ public class PdfGenerationService {
         // Enforce monthly document quota
         quotaService.checkAndIncrementDocs(template.getOrganizationId());
 
-        String html     = placeholderService.replacePlaceholders(template.getHtmlContent(), data);
+        // Layer org-level global placeholders under the caller-supplied data
+        // (explicit non-blank values win; globals fill everything else).
+        Map<String, Object> merged = globalPlaceholderService.mergeForOrg(template.getOrganizationId(), data);
+        String html     = placeholderService.replacePlaceholders(template.getHtmlContent(), merged);
         String cleaned  = sanitizeHtml(html);
         String fullHtml = buildHtmlDocument(cleaned, template, branding);
 

@@ -1,5 +1,6 @@
 package com.braify.feature.pdf.model;
 
+import com.braify.shared.TemplateType;
 import lombok.Data;
 import org.springframework.data.annotation.CreatedBy;
 import org.springframework.data.annotation.CreatedDate;
@@ -25,6 +26,9 @@ public class Template {
     private String name;
     private String organizationId;
     private String description;
+
+    /** EXTERNAL (user/org authored) by default. PDF templates are never INTERNAL today. */
+    private TemplateType type = TemplateType.EXTERNAL;
 
     /** Raw HTML from GrapesJS canvas */
     private String htmlContent;

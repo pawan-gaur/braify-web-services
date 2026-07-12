@@ -1,6 +1,7 @@
 package com.braify.feature.email.repository;
 
 import com.braify.feature.email.model.EmailTemplate;
+import com.braify.shared.TemplateType;
 import org.springframework.data.mongodb.repository.MongoRepository;
 import org.springframework.stereotype.Repository;
 
@@ -15,6 +16,13 @@ public interface EmailTemplateRepository extends MongoRepository<EmailTemplate, 
     List<EmailTemplate> findByDeletedFalseAndNameContainingIgnoreCase(String name);
 
     Optional<EmailTemplate> findByIdAndDeletedFalse(String id);
+
+    /** INTERNAL system templates are resolved by their stable code. */
+    Optional<EmailTemplate> findByCodeAndDeletedFalse(String code);
+
+    /** Type-scoped listing — the user-facing template UI shows EXTERNAL only. */
+    List<EmailTemplate> findByTypeAndDeletedFalseOrderByUpdatedAtDesc(TemplateType type);
+    List<EmailTemplate> findByOrganizationIdAndTypeAndDeletedFalseOrderByUpdatedAtDesc(String organizationId, TemplateType type);
 
     /** Org-scoped queries */
     List<EmailTemplate> findByOrganizationIdAndDeletedFalseOrderByUpdatedAtDesc(String organizationId);

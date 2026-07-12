@@ -8,7 +8,10 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 import java.util.TimeZone;
 
 @SpringBootApplication
-@EnableAsync
+// proxyTargetClass = true forces CGLIB (subclass) proxies for @Async beans.
+// ESignEmailService is @Async AND implements InternalTemplateProvider; without this,
+// Spring would create a JDK interface proxy that is not injectable by its concrete type.
+@EnableAsync(proxyTargetClass = true)
 @EnableScheduling
 public class PdfGeneratorApplication {
     public static void main(String[] args) {

@@ -95,4 +95,13 @@ public class UserController {
         log.info("User '{}' disabled", id);
         return ResponseEntity.noContent().build();
     }
+
+    @PostMapping("/{id}/resend-invite")
+    @PreAuthorize("hasAnyRole('PLATFORM_ADMIN','ORG_ADMIN','ADMIN')")
+    public ResponseEntity<Void> resendInvite(@PathVariable String id, Authentication auth) {
+        log.info("POST /api/users/{}/resend-invite by '{}'", id, currentUser(auth).getEmail());
+        userService.resendInvite(id, currentUser(auth));
+        log.info("Invite resent for user '{}'", id);
+        return ResponseEntity.noContent().build();
+    }
 }

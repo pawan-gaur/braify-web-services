@@ -41,7 +41,15 @@ public class AuthService {
 
     private static final int MAX_SESSIONS = 3;
 
-    public LoginResponse login(LoginRequest req, String ipAddress) {
+    /**
+     * Bundles the JSON body returned to the client with the raw refresh token, which
+     * the controller sets as an httpOnly cookie (never in the JSON body). {@code
+     * refreshToken} is {@code null} for the MFA-challenge response, where no session
+     * has been issued yet.
+     */
+    public record LoginResult(LoginResponse response, String refreshToken) {}
+
+    public LoginResult login(LoginRequest req, String ipAddress) {
         log.info("Login attempt for email='{}'", req.getEmail());
         AppUser user = userRepository.findByEmail(req.getEmail())
                 .orElseThrow(() -> {
@@ -82,10 +90,10 @@ public class AuthService {
         if (mfaReq == MfaService.MfaRequirement.CHALLENGE) {
             log.info("MFA challenge required for '{}'", user.getEmail());
             // No session/token issued yet — only a short-lived challenge token.
-            return LoginResponse.builder()
+            return new LoginResult(LoginResponse.builder()
                     .mfaRequired(true)
                     .mfaToken(jwtUtil.generateMfaChallengeToken(user))
-                    .build();
+                    .build(), null);
         }
         boolean mustSetupMfa = (mfaReq == MfaService.MfaRequirement.MUST_SETUP);
         return issueSession(user, req.getDeviceInfo(), ipAddress, false, mustSetupMfa);
@@ -96,7 +104,7 @@ public class AuthService {
      * verifies the TOTP/recovery code, then issues the real session — the same path a
      * non-MFA login takes.
      */
-    public LoginResponse verifyMfaAndLogin(MfaVerifyRequest req, String ipAddress) {
+    public LoginResult verifyMfaAndLogin(MfaVerifyRequest req, String ipAddress) {
         if (req.getMfaToken() == null || !jwtUtil.isValidMfaChallengeToken(req.getMfaToken())) {
             throw new RuntimeException("Your verification session expired. Please sign in again.");
         }
@@ -142,8 +150,8 @@ public class AuthService {
      * Shared session-issuing path: enforce session limit, mint the JWT, persist the
      * {@link UserSession}, audit the LOGIN, and build the full {@link LoginResponse}.
      */
-    private LoginResponse issueSession(AppUser user, String deviceInfo, String ipAddress,
-                                       boolean mfaUsed, boolean mustSetupMfa) {
+    private LoginResult issueSession(AppUser user, String deviceInfo, String ipAddress,
+                                     boolean mfaUsed, boolean mustSetupMfa) {
         // Password expiry (platform policy): force a change at login when overdue.
         if (!user.isMustChangePassword() && passwordPolicyService.isExpired(user)) {
             user.setMustChangePassword(true);
@@ -172,15 +180,18 @@ public class AuthService {
         String token = jwtUtil.generateToken(user);
         String jti   = jwtUtil.extractJti(token);
 
+        // Opaque refresh token — returned to the client (cookie); only its hash is stored.
+        String rawRefreshToken = jwtUtil.generateRefreshToken();
+
         // Absolute session length is the configured timeout, capped by the JWT's own expiry.
-        LocalDateTime policyExpiry = LocalDateTime.now().plusHours(sessionHours);
-        LocalDateTime jwtExpiry    = jwtUtil.expiresAt(token);
-        LocalDateTime sessionExpiry = (jwtExpiry != null && jwtExpiry.isBefore(policyExpiry))
-                ? jwtExpiry : policyExpiry;
+        // NOTE: the JWT (access) is now short-lived (~30 min) and re-minted via refresh, so the
+        // session's absolute window is driven by the platform sessionHours policy, not the JWT.
+        LocalDateTime sessionExpiry = LocalDateTime.now().plusHours(sessionHours);
 
         UserSession session = UserSession.builder()
                 .userId(user.getId())
                 .jti(jti)
+                .refreshTokenHash(jwtUtil.hashRefreshToken(rawRefreshToken))
                 .organizationId(user.getOrganizationId())
                 .userRole(user.getRole().name())
                 .deviceInfo(deviceInfo)
@@ -200,11 +211,74 @@ public class AuthService {
                            "mfa",        String.valueOf(mfaUsed)),
                 user);
 
-        // Fetch org (name + features) if applicable
+        log.info("Login successful for user '{}' (role={}, mfa={})", user.getEmail(), user.getRole(), mfaUsed);
+        return new LoginResult(buildLoginResponse(user, token, mustSetupMfa), rawRefreshToken);
+    }
+
+    /**
+     * Exchanges a valid refresh token for a fresh access token, rotating both the
+     * access-token {@code jti} and the refresh token on the same {@link UserSession}.
+     * Enforces the same absolute + idle limits as {@link com.braify.security.JwtAuthFilter}.
+     *
+     * @throws RuntimeException if the token is missing/unknown or the session has
+     *         been revoked, hit its absolute expiry, or timed out on idle. The
+     *         controller maps any failure here to HTTP 401.
+     */
+    public LoginResult refresh(String rawRefreshToken) {
+        if (rawRefreshToken == null || rawRefreshToken.isBlank()) {
+            throw new RuntimeException("Missing refresh token");
+        }
+        String hash = jwtUtil.hashRefreshToken(rawRefreshToken);
+        UserSession session = sessionRepository.findByRefreshTokenHashAndActiveTrue(hash)
+                .orElseThrow(() -> new RuntimeException("Invalid or expired refresh token"));
+
+        LocalDateTime now = LocalDateTime.now();
+
+        // Absolute session timeout.
+        if (session.getExpiresAt() != null && session.getExpiresAt().isBefore(now)) {
+            deactivate(session, "absolute timeout");
+            throw new RuntimeException("Session expired");
+        }
+        // Idle timeout (same policy the JwtAuthFilter enforces).
+        var sessionsCfg = platformSettingsService.getSettings().getSecurity().getSessions();
+        int idleMinutes = sessionsCfg != null ? sessionsCfg.getIdleTimeoutMinutes() : 30;
+        if (session.getLastUsedAt() != null
+                && session.getLastUsedAt().plusMinutes(idleMinutes).isBefore(now)) {
+            deactivate(session, "idle timeout");
+            throw new RuntimeException("Session idle timeout");
+        }
+
+        AppUser user = userRepository.findById(session.getUserId())
+                .orElseThrow(() -> new RuntimeException("User not found"));
+        if (!user.isActive()) {
+            deactivate(session, "account disabled");
+            throw new RuntimeException("Account is disabled");
+        }
+
+        // Rotate: new access token (new jti) + new refresh token on the SAME session row.
+        String newToken       = jwtUtil.generateToken(user);
+        String newRawRefresh  = jwtUtil.generateRefreshToken();
+        session.setJti(jwtUtil.extractJti(newToken));
+        session.setRefreshTokenHash(jwtUtil.hashRefreshToken(newRawRefresh));
+        session.setLastUsedAt(now);
+        sessionRepository.save(session);
+
+        log.debug("Refreshed session for user '{}' (jti rotated)", user.getEmail());
+        // mustSetupMfa is a login-time gate; a refreshed session has already passed it.
+        return new LoginResult(buildLoginResponse(user, newToken, false), newRawRefresh);
+    }
+
+    private void deactivate(UserSession session, String reason) {
+        session.setActive(false);
+        sessionRepository.save(session);
+        log.debug("Session jti='{}' deactivated on refresh — {}", session.getJti(), reason);
+    }
+
+    /** Builds the client-facing login payload (token + user + org features). */
+    private LoginResponse buildLoginResponse(AppUser user, String token, boolean mustSetupMfa) {
         Organization org = user.getOrganizationId() != null
                 ? orgRepository.findById(user.getOrganizationId()).orElse(null)
                 : null;
-
         String orgName = org != null ? org.getName() : null;
 
         // PLATFORM_ADMIN sees all features; regular users see their org's assigned features
@@ -213,7 +287,6 @@ public class AuthService {
                 ? Feature.allKeys()
                 : (org != null && org.getFeatures() != null ? org.getFeatures() : List.of());
 
-        log.info("Login successful for user '{}' (role={}, mfa={})", user.getEmail(), user.getRole(), mfaUsed);
         return LoginResponse.builder()
                 .token(token)
                 .userId(user.getId())

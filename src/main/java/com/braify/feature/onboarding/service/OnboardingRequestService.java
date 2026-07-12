@@ -9,6 +9,11 @@ import com.braify.feature.user.model.AppUser;
 import com.braify.feature.audit.model.AuditLog;
 import com.braify.feature.audit.service.AuditLogService;
 import com.braify.feature.auth.service.EmailInviteService;
+import com.braify.feature.email.model.EmailTemplate;
+import com.braify.feature.internaltemplate.InternalEmailTemplateService;
+import com.braify.feature.internaltemplate.InternalTemplateCodes;
+import com.braify.feature.internaltemplate.InternalTemplateProvider;
+import com.braify.feature.internaltemplate.InternalTemplateSeed;
 import com.braify.shared.Feature;
 import com.braify.feature.user.repository.AppUserRepository;
 import com.braify.feature.onboarding.repository.OnboardingRequestRepository;
@@ -19,14 +24,14 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
-import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class OnboardingRequestService {
+public class OnboardingRequestService implements InternalTemplateProvider {
 
     private final OnboardingRequestRepository requestRepository;
     private final OrganizationRepository      orgRepository;
@@ -35,6 +40,7 @@ public class OnboardingRequestService {
     private final EmailDispatcher             emailDispatcher;
     private final PasswordEncoder             passwordEncoder;
     private final AuditLogService             auditLogService;
+    private final InternalEmailTemplateService internalEmailTemplateService;
     private final com.braify.feature.platform.service.PlatformSettingsService platformSettingsService;
 
     // ── Submit (public) ───────────────────────────────────────────────────────
@@ -201,35 +207,80 @@ public class OnboardingRequestService {
     // ── Email helpers ─────────────────────────────────────────────────────────
 
     private void sendSubmissionConfirmation(OnboardingRequest req) {
-        String subject = "We've received your Braify application — " + req.getOrganizationName();
-        String body = buildConfirmationEmail(req);
-        trySend(req.getApplicantEmail(), subject, body);
+        int year = java.time.Year.now().getValue();
+        Map<String, Object> vars = Map.of(
+                "applicantName",    nz(req.getApplicantName()),
+                "organizationName", nz(req.getOrganizationName()));
+        var tpl = internalEmailTemplateService.find(InternalTemplateCodes.ONBOARDING_CONFIRMATION);
+        String subject = tpl.map(EmailTemplate::getSubject).filter(this::notBlank)
+                .orElse("We've received your Braify application — " + nz(req.getOrganizationName()));
+        String body = tpl.map(EmailTemplate::getHtmlContent).filter(this::notBlank)
+                .orElseGet(() -> buildConfirmationEmail(req.getApplicantName(), req.getOrganizationName(), year));
+        trySend(req.getApplicantEmail(), subject, body, vars);
     }
 
     private void sendRejectionEmail(OnboardingRequest req) {
-        String subject = "Update on your Braify application";
-        String body = buildRejectionEmail(req);
-        trySend(req.getApplicantEmail(), subject, body);
+        int year = java.time.Year.now().getValue();
+        String noteBlock = rejectionNoteBlock(req.getReviewNote());
+        Map<String, Object> vars = Map.of(
+                "applicantName",    nz(req.getApplicantName()),
+                "organizationName", nz(req.getOrganizationName()),
+                "reviewNoteBlock",  noteBlock);
+        var tpl = internalEmailTemplateService.find(InternalTemplateCodes.ONBOARDING_REJECTION);
+        String subject = tpl.map(EmailTemplate::getSubject).filter(this::notBlank)
+                .orElse("Update on your Braify application");
+        String body = tpl.map(EmailTemplate::getHtmlContent).filter(this::notBlank)
+                .orElseGet(() -> buildRejectionEmail(req.getApplicantName(), req.getOrganizationName(), noteBlock, year));
+        trySend(req.getApplicantEmail(), subject, body, vars);
     }
 
     private void sendInfoRequiredEmail(OnboardingRequest req) {
-        String subject = "Additional information needed — Braify application";
-        String body = buildInfoRequiredEmail(req);
-        trySend(req.getApplicantEmail(), subject, body);
+        int year = java.time.Year.now().getValue();
+        String noteBlock = infoNoteBlock(req.getReviewNote());
+        Map<String, Object> vars = Map.of(
+                "applicantName",    nz(req.getApplicantName()),
+                "organizationName", nz(req.getOrganizationName()),
+                "reviewNoteBlock",  noteBlock);
+        var tpl = internalEmailTemplateService.find(InternalTemplateCodes.ONBOARDING_INFO_REQUIRED);
+        String subject = tpl.map(EmailTemplate::getSubject).filter(this::notBlank)
+                .orElse("Additional information needed — Braify application");
+        String body = tpl.map(EmailTemplate::getHtmlContent).filter(this::notBlank)
+                .orElseGet(() -> buildInfoRequiredEmail(req.getApplicantName(), req.getOrganizationName(), noteBlock, year));
+        trySend(req.getApplicantEmail(), subject, body, vars);
     }
 
-    private void trySend(String to, String subject, String html) {
+    private void trySend(String to, String subject, String html, Map<String, Object> vars) {
         try {
-            emailDispatcher.sendHtmlEmail(to, subject, html, Collections.emptyMap());
+            // EmailDispatcher substitutes {{tokens}} in subject + html using vars.
+            emailDispatcher.sendHtmlEmail(to, subject, html, vars);
             log.info("Email sent → {}", to);
         } catch (Exception e) {
             log.warn("Could not send email to {}: {}", to, e.getMessage());
         }
     }
 
+    private String nz(String s) { return s != null ? s : ""; }
+    private boolean notBlank(String s) { return s != null && !s.isBlank(); }
+
+    /** Red "Reason" callout for rejection emails; empty string when no note. */
+    private String rejectionNoteBlock(String note) {
+        return (note != null && !note.isBlank())
+                ? "<div style='background:#fef2f2;border-left:3px solid #ef4444;padding:12px 16px;border-radius:8px;margin:16px 0;'>"
+                  + "<p style='margin:0;font-size:13px;color:#991b1b;'><strong>Reason:</strong> " + note + "</p></div>"
+                : "";
+    }
+
+    /** Amber "Information needed" callout for info-required emails; empty string when no note. */
+    private String infoNoteBlock(String note) {
+        return (note != null && !note.isBlank())
+                ? "<div style='background:#fffbeb;border-left:3px solid #f59e0b;padding:12px 16px;border-radius:8px;margin:16px 0;'>"
+                  + "<p style='margin:0;font-size:13px;color:#92400e;'><strong>Information needed:</strong> " + note + "</p></div>"
+                : "";
+    }
+
     // ── Email templates ───────────────────────────────────────────────────────
 
-    private String buildConfirmationEmail(OnboardingRequest req) {
+    private String buildConfirmationEmail(String applicantName, String organizationName, int year) {
         return """
             <!DOCTYPE html>
             <html><head><meta charset="UTF-8"></head>
@@ -275,14 +326,10 @@ public class OnboardingRequestService {
                 </td></tr>
               </table>
             </body></html>
-            """.formatted(req.getApplicantName(), req.getOrganizationName(), java.time.Year.now().getValue());
+            """.formatted(applicantName, organizationName, year);
     }
 
-    private String buildRejectionEmail(OnboardingRequest req) {
-        String noteHtml = (req.getReviewNote() != null && !req.getReviewNote().isBlank())
-                ? "<div style='background:#fef2f2;border-left:3px solid #ef4444;padding:12px 16px;border-radius:8px;margin:16px 0;'>"
-                  + "<p style='margin:0;font-size:13px;color:#991b1b;'><strong>Reason:</strong> " + req.getReviewNote() + "</p></div>"
-                : "";
+    private String buildRejectionEmail(String applicantName, String organizationName, String noteHtml, int year) {
         return """
             <!DOCTYPE html>
             <html><head><meta charset="UTF-8"></head>
@@ -319,14 +366,10 @@ public class OnboardingRequestService {
                 </td></tr>
               </table>
             </body></html>
-            """.formatted(req.getApplicantName(), req.getOrganizationName(), noteHtml, java.time.Year.now().getValue());
+            """.formatted(applicantName, organizationName, noteHtml, year);
     }
 
-    private String buildInfoRequiredEmail(OnboardingRequest req) {
-        String noteHtml = (req.getReviewNote() != null && !req.getReviewNote().isBlank())
-                ? "<div style='background:#fffbeb;border-left:3px solid #f59e0b;padding:12px 16px;border-radius:8px;margin:16px 0;'>"
-                  + "<p style='margin:0;font-size:13px;color:#92400e;'><strong>Information needed:</strong> " + req.getReviewNote() + "</p></div>"
-                : "";
+    private String buildInfoRequiredEmail(String applicantName, String organizationName, String noteHtml, int year) {
         return """
             <!DOCTYPE html>
             <html><head><meta charset="UTF-8"></head>
@@ -363,6 +406,32 @@ public class OnboardingRequestService {
                 </td></tr>
               </table>
             </body></html>
-            """.formatted(req.getApplicantName(), req.getOrganizationName(), noteHtml, java.time.Year.now().getValue());
+            """.formatted(applicantName, organizationName, noteHtml, year);
+    }
+
+    /* ── INTERNAL template seeds ──────────────────────────────────────────── */
+    @Override
+    public List<InternalTemplateSeed> internalTemplateSeeds() {
+        int year = java.time.Year.now().getValue();
+        return List.of(
+                new InternalTemplateSeed(
+                        InternalTemplateCodes.ONBOARDING_CONFIRMATION,
+                        "System — Onboarding: Application Received",
+                        "We've received your Braify application — {{organizationName}}",
+                        buildConfirmationEmail("{{applicantName}}", "{{organizationName}}", year),
+                        List.of("applicantName", "organizationName")),
+                new InternalTemplateSeed(
+                        InternalTemplateCodes.ONBOARDING_REJECTION,
+                        "System — Onboarding: Application Rejected",
+                        "Update on your Braify application",
+                        buildRejectionEmail("{{applicantName}}", "{{organizationName}}", "{{reviewNoteBlock}}", year),
+                        List.of("applicantName", "organizationName", "reviewNoteBlock")),
+                new InternalTemplateSeed(
+                        InternalTemplateCodes.ONBOARDING_INFO_REQUIRED,
+                        "System — Onboarding: Info Required",
+                        "Additional information needed — Braify application",
+                        buildInfoRequiredEmail("{{applicantName}}", "{{organizationName}}", "{{reviewNoteBlock}}", year),
+                        List.of("applicantName", "organizationName", "reviewNoteBlock"))
+        );
     }
 }
