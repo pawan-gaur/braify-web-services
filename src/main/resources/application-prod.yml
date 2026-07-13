@@ -44,9 +44,18 @@ app:
     secret: "${ENCRYPTION_SECRET}"
   frontend-url: "${APP_FRONTEND_URL:https://braify.com}"
   base-url: "${APP_BASE_URL:https://braify.com}"
+  # Refresh cookie is only sent over HTTPS in production.
+  cookie-secure: true
   # CORS: comma-separated allowed origins for external API consumers
   cors:
     allowed-origins: "${APP_CORS_ALLOWED_ORIGINS:https://braify.com}"
+
+# Do NOT expose the API docs / Swagger UI in production.
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
 
 # Resend Configuration
 resend:

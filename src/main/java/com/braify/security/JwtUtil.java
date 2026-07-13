@@ -4,6 +4,7 @@ import com.braify.feature.user.model.AppUser;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -38,6 +39,23 @@ public class JwtUtil {
 
     /** Cryptographically strong source for opaque refresh tokens. */
     private final SecureRandom secureRandom = new SecureRandom();
+
+    /**
+     * Fail fast on startup if the JWT secret is missing, unresolved, or too weak — so the app
+     * can never sign tokens with a predictable/known key (which would allow token forgery).
+     */
+    @PostConstruct
+    void validateSecret() {
+        if (secret == null || secret.isBlank()
+                || secret.equals("{JWT_SECRET}") || secret.equals("${JWT_SECRET}")) {
+            throw new IllegalStateException(
+                    "jwt.secret is not configured. Set the JWT_SECRET environment variable to a strong random value (>= 32 chars).");
+        }
+        if (secret.trim().length() < 32) {
+            throw new IllegalStateException(
+                    "jwt.secret is too short (" + secret.trim().length() + " chars). Use a random value of at least 32 characters.");
+        }
+    }
 
     private SecretKey key() {
         // Derive a guaranteed 256-bit key by SHA-256-hashing the configured secret, so

@@ -33,16 +33,14 @@ spring:
   # Email sent via Resend (see resend.* below); SMTP/JavaMailSender is disabled
   autoconfigure:
     exclude: org.springframework.boot.autoconfigure.mail.MailSenderAutoConfiguration
-
-  devtools:
-    restart:
-      enabled: true
-    livereload:
-      enabled: true
+  # NOTE: DevTools (restart/livereload) is configured in application-dev.yml only, so it is
+  # never enabled outside the dev profile. (The dependency is <optional> and absent from the prod jar.)
 
 # JWT
 jwt:
-  secret: "{JWT_SECRET}"
+  # MUST be provided via the JWT_SECRET env var (>=32 chars, random). No usable default —
+  # JwtUtil fails fast on startup if it is missing/short so the app never signs with a weak key.
+  secret: "${JWT_SECRET}"
   expiration-hours: 9
 
 app:
