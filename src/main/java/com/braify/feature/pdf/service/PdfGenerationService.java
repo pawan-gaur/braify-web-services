@@ -133,12 +133,16 @@ public class PdfGenerationService {
             if (branding.getPrimaryColor() != null && !branding.getPrimaryColor().isBlank()) {
                 brandColorVar = "--brand-color: " + branding.getPrimaryColor() + ";";
             }
-            if (branding.getLogoBase64() != null && !branding.getLogoBase64().isBlank()) {
+            // Prefer the hosted logo URL (works after cloud offload); fall back to inline base64.
+            String pdfLogo = (branding.getLogoUrl() != null && !branding.getLogoUrl().isBlank())
+                    ? branding.getLogoUrl()
+                    : branding.getLogoBase64();
+            if (pdfLogo != null && !pdfLogo.isBlank()) {
                 headerHtml = """
                         <div style="text-align:left;margin-bottom:12px;">
                           <img src="%s" alt="Logo" style="max-height:48px;max-width:200px;"/>
                         </div>
-                        """.formatted(branding.getLogoBase64());
+                        """.formatted(pdfLogo);
             }
             if (branding.getFooterText() != null && !branding.getFooterText().isBlank()) {
                 footerHtml = """
