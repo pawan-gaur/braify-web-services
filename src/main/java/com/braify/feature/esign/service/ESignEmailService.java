@@ -85,17 +85,22 @@ public class ESignEmailService implements InternalTemplateProvider {
         } else {
             ResolvedEmail r = resolveInternal(
                     InternalTemplateCodes.ESIGN_SIGNING_INVITATION,
-                    "You have a document to sign — {{documentTitle}}",
-                    () -> buildInvitationHtml(recipientName, doc, signingLink, orgName));
+                    "You have a document to sign — {{documentName}}",
+                    this::buildInvitationHtml);
             subject = r.subject();
             html    = r.html();
         }
 
-        Map<String, Object> vars = Map.of(
-                "clientName",    recipientName != null ? recipientName : "",
-                "documentTitle", doc.getTitle() != null ? doc.getTitle() : "",
-                "signingLink",   signingLink,
-                "orgName",       orgName);
+        Map<String, Object> vars = new java.util.HashMap<>(brandVars(doc.getOrgId(), orgName));
+        vars.put("signerName",    recipientName != null ? recipientName : "");
+        vars.put("signerEmail",   recipientEmail != null ? recipientEmail : "");
+        vars.put("documentName",  doc.getTitle() != null ? doc.getTitle() : "");
+        vars.put("expiryDate",    fmt(doc.getTokenExpiresAt(), EXPIRY_FMT));
+        vars.put("expiresIn",     expiresInPhrase(doc.getTokenExpiresAt()));
+        vars.put("signingLink",   signingLink);
+        // legacy aliases for any org-custom template still using the old tokens
+        vars.put("clientName",    recipientName != null ? recipientName : "");
+        vars.put("documentTitle", doc.getTitle() != null ? doc.getTitle() : "");
 
         boolean sent = false;
         try {
@@ -123,15 +128,17 @@ public class ESignEmailService implements InternalTemplateProvider {
                     .map(String::trim)
                     .toList();
             String viewLink = buildViewLink(doc);
-            Map<String, Object> ccVars = Map.of(
-                    "clientName",    recipientName != null ? recipientName : "",
-                    "documentTitle", doc.getTitle() != null ? doc.getTitle() : "",
-                    "viewLink",      viewLink,
-                    "orgName",       orgName);
+            Map<String, Object> ccVars = new java.util.HashMap<>(brandVars(doc.getOrgId(), orgName));
+            ccVars.put("ccName",       "there");   // CC recipients are stored as emails only — generic greeting
+            ccVars.put("signerName",   notBlank(recipientName) ? recipientName : "a recipient");
+            ccVars.put("signerEmail",  recipientEmail != null ? recipientEmail : "");
+            ccVars.put("documentName", doc.getTitle() != null ? doc.getTitle() : "");
+            ccVars.put("sentOn",       fmt(doc.getSentAt() != null ? doc.getSentAt() : java.time.LocalDateTime.now(), SIGNED_FMT));
+            ccVars.put("viewLink",     viewLink);
             ResolvedEmail ccR = resolveInternal(
                     InternalTemplateCodes.ESIGN_CC_NOTIFICATION,
-                    "For your information: {{documentTitle}} sent for signature",
-                    () -> buildCcNotificationHtml(recipientName, doc, viewLink, orgName));
+                    "For your information: {{documentName}} sent for signature",
+                    this::buildCcNotificationHtml);
             for (String cc : ccList) {
                 try {
                     emailDispatcher.sendHtmlEmail(cc, ccR.subject(), ccR.html(), ccVars, orgName);
@@ -145,72 +152,11 @@ public class ESignEmailService implements InternalTemplateProvider {
         return sent;
     }
 
-    /**
-     * Informational email for CC ("keep in the loop") recipients when the document is sent.
-     * Contains a VIEW-ONLY link (no signing, no download) — CC recipients can view the document
-     * but never sign it.
-     */
-    private String buildCcNotificationHtml(String signerName, ESignDocument doc, String viewLink, String orgName) {
-        String signer = (signerName != null && !signerName.isBlank()) ? signerName : "a recipient";
-        return """
-                <!DOCTYPE html>
-                <html>
-                <head><meta charset="UTF-8"></head>
-                <body style="font-family:Arial,sans-serif;max-width:600px;margin:40px auto;color:#333">
-                  <div style="background:#7c3aed;padding:24px;border-radius:8px 8px 0 0;text-align:center">
-                    <h1 style="color:#fff;margin:0;font-size:22px">%s e-Sign</h1>
-                  </div>
-                  <div style="background:#fff;padding:32px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px">
-                    <p>Hello,</p>
-                    <p>You are being kept informed that the document below has been sent to
-                       <strong>%s</strong> for electronic signature:</p>
-                    <p style="font-size:18px;font-weight:bold;color:#7c3aed">%s</p>
-                    <div style="text-align:center;margin:28px 0">
-                      <a href="%s"
-                         style="background:#7c3aed;color:#fff;padding:12px 28px;
-                                border-radius:6px;text-decoration:none;font-weight:bold">
-                        View Document
-                      </a>
-                    </div>
-                    <p style="color:#6b7280">This is a view-only link — you cannot sign or edit the document.
-                       No action is required from you.</p>
-                    <p style="color:#6b7280;font-size:12px">Powered by %s e-Sign</p>
-                  </div>
-                </body>
-                </html>
-                """.formatted(orgName, signer, doc.getTitle(), viewLink, orgName);
-    }
+    /** CC ("keep in the loop") notice when a document is sent — view-only, Template-01 design. */
+    private String buildCcNotificationHtml() { return ESignEmailTemplates.CC_NOTIFICATION; }
 
-    /**
-     * Notifies CC recipients that a document has been fully signed, with a VIEW-ONLY link to the
-     * signed document (no attachment, no download).
-     */
-    private String buildCcCompletionHtml(ESignDocument doc, String viewLink, String orgName) {
-        return """
-                <!DOCTYPE html>
-                <html>
-                <head><meta charset="UTF-8"></head>
-                <body style="font-family:Arial,sans-serif;max-width:600px;margin:40px auto;color:#333">
-                  <div style="background:#16a34a;padding:24px;border-radius:8px 8px 0 0;text-align:center">
-                    <h1 style="color:#fff;margin:0;font-size:22px">Document Signed ✓</h1>
-                  </div>
-                  <div style="background:#fff;padding:32px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px">
-                    <p>Hello,</p>
-                    <p>The document <strong>%s</strong> has been fully signed by all signatories.</p>
-                    <div style="text-align:center;margin:28px 0">
-                      <a href="%s"
-                         style="background:#16a34a;color:#fff;padding:12px 28px;
-                                border-radius:6px;text-decoration:none;font-weight:bold">
-                        View Signed Document
-                      </a>
-                    </div>
-                    <p style="color:#6b7280">This is a view-only link. No action is required from you.</p>
-                    <p style="color:#6b7280;font-size:12px">Powered by %s e-Sign</p>
-                  </div>
-                </body>
-                </html>
-                """.formatted(doc.getTitle(), viewLink, orgName);
-    }
+    /** CC notice when a document is fully signed — view-only, Template-02 design. */
+    private String buildCcCompletionHtml() { return ESignEmailTemplates.CC_COMPLETION; }
 
     /**
      * Substitutes e-sign–specific placeholders inside an email template's HTML content.
@@ -290,14 +236,14 @@ public class ESignEmailService implements InternalTemplateProvider {
         // ── Invitation-CC recipients: view-only "document signed" notice (no attachment) ──
         if (doc.getCcEmails() != null) {
             String viewLink = buildViewLink(doc);
-            Map<String, Object> ccVars = Map.of(
-                    "documentTitle", doc.getTitle() != null ? doc.getTitle() : "",
-                    "viewLink",      viewLink,
-                    "orgName",       orgName);
+            Map<String, Object> ccVars = new java.util.HashMap<>(brandVars(doc.getOrgId(), orgName));
+            ccVars.put("documentName", doc.getTitle() != null ? doc.getTitle() : "");
+            ccVars.put("signedOn",     fmt(doc.getCompletedAt(), SIGNED_FMT));
+            ccVars.put("viewLink",     viewLink);
             ResolvedEmail ccR = resolveInternal(
                     InternalTemplateCodes.ESIGN_CC_COMPLETION,
-                    "Signed: {{documentTitle}}",
-                    () -> buildCcCompletionHtml(doc, viewLink, orgName));
+                    "Signed: {{documentName}}",
+                    this::buildCcCompletionHtml);
             for (String raw : doc.getCcEmails()) {
                 if (raw == null || raw.isBlank()) continue;
                 String to = raw.trim();
@@ -317,15 +263,20 @@ public class ESignEmailService implements InternalTemplateProvider {
                                   String verifyLink, String orgName, byte[] signedPdfBytes, String filename) {
         try {
             String greeting = notBlank(greetingName) ? greetingName : "there";
-            Map<String, Object> vars = Map.of(
-                    "clientName",    greeting,
-                    "documentTitle", doc.getTitle() != null ? doc.getTitle() : "",
-                    "verifyLink",    verifyLink,
-                    "orgName",       orgName);
+            Map<String, Object> vars = new java.util.HashMap<>(brandVars(doc.getOrgId(), orgName));
+            vars.put("signerName",        greeting);
+            vars.put("signerEmail",       to != null ? to : "");
+            vars.put("documentName",      doc.getTitle() != null ? doc.getTitle() : "");
+            vars.put("signedOn",          fmt(doc.getCompletedAt(), SIGNED_FMT));
+            vars.put("documentHashBlock", hashBlock(doc.getSignedPdfHash()));
+            vars.put("verifyLink",        verifyLink);
+            // legacy aliases
+            vars.put("clientName",        greeting);
+            vars.put("documentTitle",     doc.getTitle() != null ? doc.getTitle() : "");
             ResolvedEmail r = resolveInternal(
                     InternalTemplateCodes.ESIGN_COMPLETION_SIGNER,
                     subject, // built-in subject supplied by caller ("Signed document ready: <title>")
-                    () -> buildCompletionHtml(greetingName, doc, verifyLink, orgName));
+                    this::buildCompletionHtml);
             sendHtmlWithAttachment(to, r.subject(), r.html(), vars, signedPdfBytes, filename, orgName);
             log.info("Completion email sent to {} for doc {}", to, doc.getId());
         } catch (Exception e) {
@@ -343,66 +294,107 @@ public class ESignEmailService implements InternalTemplateProvider {
                 to, subject, html, vars, pdfBytes, filename, senderDisplayName);
     }
 
-    // ── HTML builders ───────────────────────────────────────────────────────
+    // ── HTML builders (canonical tokenised bodies; see ESignEmailTemplates) ──
 
-    private String buildInvitationHtml(String recipientName, ESignDocument doc, String signingLink, String orgName) {
-        return """
-                <!DOCTYPE html>
-                <html>
-                <head><meta charset="UTF-8"></head>
-                <body style="font-family:Arial,sans-serif;max-width:600px;margin:40px auto;color:#333">
-                  <div style="background:#7c3aed;padding:24px;border-radius:8px 8px 0 0;text-align:center">
-                    <h1 style="color:#fff;margin:0;font-size:22px">%s e-Sign</h1>
-                  </div>
-                  <div style="background:#fff;padding:32px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px">
-                    <p>Hello <strong>%s</strong>,</p>
-                    <p>You have been requested to sign a document:</p>
-                    <p style="font-size:18px;font-weight:bold;color:#7c3aed">%s</p>
-                    <p>Please click the button below to review and sign the document.</p>
-                    <div style="text-align:center;margin:32px 0">
-                      <a href="%s"
-                         style="background:#7c3aed;color:#fff;padding:14px 32px;
-                                border-radius:6px;text-decoration:none;font-weight:bold;font-size:16px">
-                        Review &amp; Sign Document
-                      </a>
-                    </div>
-                    <p style="color:#6b7280;font-size:12px">
-                      This link is unique to you. Do not share it.<br>
-                      If you did not expect this request, please ignore this email.
-                    </p>
-                  </div>
-                </body>
-                </html>
-                """.formatted(orgName, recipientName, doc.getTitle(), signingLink);
+    private String buildInvitationHtml() { return ESignEmailTemplates.INVITATION; }
+
+    private String buildCompletionHtml() { return ESignEmailTemplates.COMPLETION; }
+
+    // ── Brand + content variable assembly ────────────────────────────────────
+
+    private static final java.time.format.DateTimeFormatter EXPIRY_FMT =
+            java.time.format.DateTimeFormatter.ofPattern("MMMM d, yyyy");
+    private static final java.time.format.DateTimeFormatter SIGNED_FMT =
+            java.time.format.DateTimeFormatter.ofPattern("MMM d, yyyy · h:mm a");
+
+    private String fmt(java.time.LocalDateTime t, java.time.format.DateTimeFormatter f) {
+        return t != null ? t.format(f) : "";
     }
 
-    private String buildCompletionHtml(String greetingName, ESignDocument doc, String verifyLink, String orgName) {
-        String greeting = (greetingName != null && !greetingName.isBlank()) ? greetingName : "there";
-        return """
-                <!DOCTYPE html>
-                <html>
-                <head><meta charset="UTF-8"></head>
-                <body style="font-family:Arial,sans-serif;max-width:600px;margin:40px auto;color:#333">
-                  <div style="background:#16a34a;padding:24px;border-radius:8px 8px 0 0;text-align:center">
-                    <h1 style="color:#fff;margin:0;font-size:22px">Document Signed ✓</h1>
-                  </div>
-                  <div style="background:#fff;padding:32px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px">
-                    <p>Hello <strong>%s</strong>,</p>
-                    <p>The document <strong>%s</strong> has been successfully signed.</p>
-                    <p>The signed copy is attached to this email.</p>
-                    <p>You can also verify the document's authenticity at any time:</p>
-                    <div style="text-align:center;margin:24px 0">
-                      <a href="%s"
-                         style="background:#16a34a;color:#fff;padding:12px 28px;
-                                border-radius:6px;text-decoration:none;font-weight:bold">
-                        Verify Document
-                      </a>
-                    </div>
-                    <p style="color:#6b7280;font-size:12px">Powered by %s e-Sign</p>
-                  </div>
-                </body>
-                </html>
-                """.formatted(greeting, doc.getTitle(), verifyLink, orgName);
+    private long daysUntil(java.time.LocalDateTime t) {
+        return t != null ? Math.max(0, java.time.Duration.between(java.time.LocalDateTime.now(), t).toDays()) : 0;
+    }
+
+    /** Human phrase for the expiry pill: "today" / "in 1 day" / "in 5 days" (empty when no expiry). */
+    private String expiresInPhrase(java.time.LocalDateTime t) {
+        if (t == null) return "";
+        long d = daysUntil(t);
+        if (d <= 0) return "today";
+        return "in " + d + (d == 1 ? " day" : " days");
+    }
+
+    /** Loads the org's branding (logo, colours, reply-to, footer), or null. */
+    private com.braify.feature.branding.model.OrgBranding loadBranding(String orgId) {
+        if (orgId == null || orgId.isBlank()) return null;
+        return orgRepo.findById(orgId)
+                .map(com.braify.feature.organization.model.Organization::getBranding)
+                .orElse(null);
+    }
+
+    /** Converts {@code #RRGGBB}/{@code #RGB} to an {@code rgba(...)} string with the given alpha. */
+    private String hexToRgba(String hex, double alpha) {
+        try {
+            String h = (hex == null ? "#4F46E5" : hex.trim()).replace("#", "");
+            if (h.length() == 3) {
+                StringBuilder e = new StringBuilder();
+                for (char c : h.toCharArray()) e.append(c).append(c);
+                h = e.toString();
+            }
+            int n = Integer.parseInt(h, 16);
+            return "rgba(" + ((n >> 16) & 255) + ", " + ((n >> 8) & 255) + ", " + (n & 255) + ", " + alpha + ")";
+        } catch (Exception e) {
+            return "rgba(79, 70, 229, " + alpha + ")";
+        }
+    }
+
+    /** Brand tokens shared by every e-sign email: logo/initial, org name, accent palette, footer contact. */
+    private Map<String, Object> brandVars(String orgId, String orgName) {
+        com.braify.feature.branding.model.OrgBranding b = loadBranding(orgId);
+        String accent = (b != null && notBlank(b.getPrimaryColor())) ? b.getPrimaryColor().trim() : "#4F46E5";
+        String logo   = (b != null) ? b.getLogoUrl() : null;
+        String initial = (orgName != null && !orgName.isBlank()) ? orgName.trim().substring(0, 1).toUpperCase() : "N";
+
+        // Email clients (Gmail especially) block data: image URIs, so only embed a hosted
+        // http(s) logo; otherwise render the reliable coloured initial badge.
+        boolean hostedLogo = notBlank(logo) && (logo.startsWith("http://") || logo.startsWith("https://"));
+        String brandMark = hostedLogo
+                ? "<img src=\"" + logo + "\" alt=\"\" width=\"34\" height=\"34\" style=\"width:34px;height:34px;border-radius:8px;object-fit:contain;display:block;\">"
+                : "<div style=\"width:34px;height:34px;line-height:34px;border-radius:8px;background:" + accent + ";color:#fff;text-align:center;font-weight:700;font-size:16px;\">" + initial + "</div>";
+
+        Map<String, Object> m = new java.util.HashMap<>();
+        m.put("organizationName", orgName != null ? orgName : "");
+        m.put("orgName",          orgName != null ? orgName : "");   // legacy alias
+        m.put("brandMark",        brandMark);
+        m.put("accent",           accent);
+        m.put("accentSoft",       hexToRgba(accent, 0.10));
+        m.put("accentBorder",     hexToRgba(accent, 0.55));
+        m.put("footerContact",    buildFooterContact(b, accent));
+        return m;
+    }
+
+    /** "Need help? support · address" footer line, or empty when neither is configured. */
+    private String buildFooterContact(com.braify.feature.branding.model.OrgBranding b, String accent) {
+        String support = (b != null) ? b.getEmailReplyTo() : null;
+        String address = (b != null) ? b.getFooterText()   : null;
+        boolean hasS = notBlank(support), hasA = notBlank(address);
+        if (!hasS && !hasA) return "";
+        // Inline spans (no flexbox) so it aligns in Gmail/Outlook.
+        StringBuilder sb = new StringBuilder("<div style=\"font-size:11.5px;line-height:1.7;color:#94A3B8;\">");
+        if (hasS) sb.append("<span>Need help? <a href=\"mailto:").append(support)
+                    .append("\" style=\"color:").append(accent).append(";font-weight:600;text-decoration:none;\">")
+                    .append(support).append("</a></span>");
+        if (hasS && hasA) sb.append("<span style=\"color:#CBD5E1;\"> · </span>");
+        if (hasA) sb.append("<span>").append(address).append("</span>");
+        return sb.append("</div>").toString();
+    }
+
+    /** The SHA-256 "document fingerprint" row for the completion email, or empty when no hash. */
+    private String hashBlock(String hash) {
+        if (!notBlank(hash)) return "";
+        return "<div style=\"border-top:1px solid #E2E8F0;padding:12px 20px;background:#F1F5F9;\">"
+             + "<div style=\"font-size:10.5px;font-weight:700;letter-spacing:0.1em;color:#94A3B8;margin-bottom:4px;\">DOCUMENT FINGERPRINT (SHA-256)</div>"
+             + "<div style=\"font-family:'SF Mono',ui-monospace,Consolas,Menlo,monospace;font-size:11.5px;color:#475569;word-break:break-all;line-height:1.5;\">"
+             + hash + "</div></div>";
     }
 
     /**
@@ -442,35 +434,41 @@ public class ESignEmailService implements InternalTemplateProvider {
     }
 
     /* ── INTERNAL template seeds ──────────────────────────────────────────────
-       A title-only stand-in document lets the existing builders emit tokenised HTML. */
+       Canonical tokenised bodies live in ESignEmailTemplates; substitution values
+       are assembled per-send in brandVars(...) + the send methods. */
     @Override
     public List<InternalTemplateSeed> internalTemplateSeeds() {
-        ESignDocument tok = ESignDocument.builder().title("{{documentTitle}}").build();
         return List.of(
                 new InternalTemplateSeed(
                         InternalTemplateCodes.ESIGN_SIGNING_INVITATION,
                         "System — E-Sign: Signing Invitation",
-                        "You have a document to sign — {{documentTitle}}",
-                        buildInvitationHtml("{{clientName}}", tok, "{{signingLink}}", "{{orgName}}"),
-                        List.of("clientName", "documentTitle", "signingLink", "orgName")),
+                        "You have a document to sign — {{documentName}}",
+                        buildInvitationHtml(),
+                        List.of("organizationName", "brandMark", "accent", "accentSoft", "accentBorder",
+                                "signerName", "signerEmail", "documentName", "expiryDate", "expiresIn",
+                                "signingLink", "footerContact")),
                 new InternalTemplateSeed(
                         InternalTemplateCodes.ESIGN_COMPLETION_SIGNER,
                         "System — E-Sign: Document Signed",
-                        "Signed document ready: {{documentTitle}}",
-                        buildCompletionHtml("{{clientName}}", tok, "{{verifyLink}}", "{{orgName}}"),
-                        List.of("clientName", "documentTitle", "verifyLink", "orgName")),
+                        "Signed document ready: {{documentName}}",
+                        buildCompletionHtml(),
+                        List.of("organizationName", "brandMark", "accent", "accentSoft", "accentBorder",
+                                "signerName", "signerEmail", "documentName", "signedOn", "documentHashBlock",
+                                "verifyLink", "footerContact")),
                 new InternalTemplateSeed(
                         InternalTemplateCodes.ESIGN_CC_NOTIFICATION,
                         "System — E-Sign: CC Notification",
-                        "For your information: {{documentTitle}} sent for signature",
-                        buildCcNotificationHtml("{{clientName}}", tok, "{{viewLink}}", "{{orgName}}"),
-                        List.of("clientName", "documentTitle", "viewLink", "orgName")),
+                        "For your information: {{documentName}} sent for signature",
+                        buildCcNotificationHtml(),
+                        List.of("organizationName", "brandMark", "accent", "accentSoft", "ccName",
+                                "signerName", "signerEmail", "documentName", "sentOn", "viewLink", "footerContact")),
                 new InternalTemplateSeed(
                         InternalTemplateCodes.ESIGN_CC_COMPLETION,
                         "System — E-Sign: CC Completion",
-                        "Signed: {{documentTitle}}",
-                        buildCcCompletionHtml(tok, "{{viewLink}}", "{{orgName}}"),
-                        List.of("documentTitle", "viewLink", "orgName"))
+                        "Signed: {{documentName}}",
+                        buildCcCompletionHtml(),
+                        List.of("organizationName", "brandMark", "accent", "accentSoft", "accentBorder",
+                                "documentName", "signedOn", "viewLink", "footerContact"))
         );
     }
 }

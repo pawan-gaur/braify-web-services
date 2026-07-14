@@ -1,5 +1,6 @@
 package com.braify.feature.onboarding.service;
 
+import com.braify.config.infra.email.EmailBrandVars;
 import com.braify.config.infra.email.EmailDispatcher;
 import com.braify.feature.onboarding.dto.OnboardingReviewRequest;
 import com.braify.feature.onboarding.dto.OnboardingSubmitRequest;
@@ -24,6 +25,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -41,7 +43,10 @@ public class OnboardingRequestService implements InternalTemplateProvider {
     private final PasswordEncoder             passwordEncoder;
     private final AuditLogService             auditLogService;
     private final InternalEmailTemplateService internalEmailTemplateService;
+    private final EmailBrandVars              emailBrandVars;
     private final com.braify.feature.platform.service.PlatformSettingsService platformSettingsService;
+
+    private static final String PLATFORM_NAME = "Braify";
 
     // ── Submit (public) ───────────────────────────────────────────────────────
 
@@ -206,46 +211,45 @@ public class OnboardingRequestService implements InternalTemplateProvider {
 
     // ── Email helpers ─────────────────────────────────────────────────────────
 
+    /** Platform-level brand tokens + applicant/org fields shared by all onboarding emails. */
+    private Map<String, Object> onboardingVars(OnboardingRequest req) {
+        // Applicants have no org yet, so branding is platform-level (Braify badge/accent).
+        Map<String, Object> vars = new HashMap<>(emailBrandVars.forOrg(null, PLATFORM_NAME));
+        vars.put("platformName",     PLATFORM_NAME);
+        vars.put("organizationName", nz(req.getOrganizationName()));   // the org they applied for
+        vars.put("applicantName",    notBlank(req.getApplicantName()) ? req.getApplicantName() : "there");
+        return vars;
+    }
+
     private void sendSubmissionConfirmation(OnboardingRequest req) {
-        int year = java.time.Year.now().getValue();
-        Map<String, Object> vars = Map.of(
-                "applicantName",    nz(req.getApplicantName()),
-                "organizationName", nz(req.getOrganizationName()));
+        Map<String, Object> vars = onboardingVars(req);
         var tpl = internalEmailTemplateService.find(InternalTemplateCodes.ONBOARDING_CONFIRMATION);
         String subject = tpl.map(EmailTemplate::getSubject).filter(this::notBlank)
-                .orElse("We've received your Braify application — " + nz(req.getOrganizationName()));
+                .orElse("We've received your application — {{organizationName}}");
         String body = tpl.map(EmailTemplate::getHtmlContent).filter(this::notBlank)
-                .orElseGet(() -> buildConfirmationEmail(req.getApplicantName(), req.getOrganizationName(), year));
+                .orElseGet(this::buildConfirmationEmail);
         trySend(req.getApplicantEmail(), subject, body, vars);
     }
 
     private void sendRejectionEmail(OnboardingRequest req) {
-        int year = java.time.Year.now().getValue();
-        String noteBlock = rejectionNoteBlock(req.getReviewNote());
-        Map<String, Object> vars = Map.of(
-                "applicantName",    nz(req.getApplicantName()),
-                "organizationName", nz(req.getOrganizationName()),
-                "reviewNoteBlock",  noteBlock);
+        Map<String, Object> vars = onboardingVars(req);
+        vars.put("reviewNoteBlock", rejectionNoteBlock(req.getReviewNote()));
         var tpl = internalEmailTemplateService.find(InternalTemplateCodes.ONBOARDING_REJECTION);
         String subject = tpl.map(EmailTemplate::getSubject).filter(this::notBlank)
-                .orElse("Update on your Braify application");
+                .orElse("Update on your {{platformName}} application");
         String body = tpl.map(EmailTemplate::getHtmlContent).filter(this::notBlank)
-                .orElseGet(() -> buildRejectionEmail(req.getApplicantName(), req.getOrganizationName(), noteBlock, year));
+                .orElseGet(this::buildRejectionEmail);
         trySend(req.getApplicantEmail(), subject, body, vars);
     }
 
     private void sendInfoRequiredEmail(OnboardingRequest req) {
-        int year = java.time.Year.now().getValue();
-        String noteBlock = infoNoteBlock(req.getReviewNote());
-        Map<String, Object> vars = Map.of(
-                "applicantName",    nz(req.getApplicantName()),
-                "organizationName", nz(req.getOrganizationName()),
-                "reviewNoteBlock",  noteBlock);
+        Map<String, Object> vars = onboardingVars(req);
+        vars.put("reviewNoteBlock", infoNoteBlock(req.getReviewNote()));
         var tpl = internalEmailTemplateService.find(InternalTemplateCodes.ONBOARDING_INFO_REQUIRED);
         String subject = tpl.map(EmailTemplate::getSubject).filter(this::notBlank)
-                .orElse("Additional information needed — Braify application");
+                .orElse("Additional information needed — {{platformName}}");
         String body = tpl.map(EmailTemplate::getHtmlContent).filter(this::notBlank)
-                .orElseGet(() -> buildInfoRequiredEmail(req.getApplicantName(), req.getOrganizationName(), noteBlock, year));
+                .orElseGet(this::buildInfoRequiredEmail);
         trySend(req.getApplicantEmail(), subject, body, vars);
     }
 
@@ -278,160 +282,131 @@ public class OnboardingRequestService implements InternalTemplateProvider {
                 : "";
     }
 
-    // ── Email templates ───────────────────────────────────────────────────────
+    // ── Email templates (new design; platform-branded, table layout) ──────────
 
-    private String buildConfirmationEmail(String applicantName, String organizationName, int year) {
+    /** Brand bar: platform badge + name on the left, SECURE E-SIGN on the right. */
+    private String brandBar() {
         return """
-            <!DOCTYPE html>
-            <html><head><meta charset="UTF-8"></head>
-            <body style="margin:0;padding:0;background:#f3f4f6;font-family:Inter,Arial,sans-serif;">
-              <table width="100%%" cellpadding="0" cellspacing="0" style="padding:40px 0;">
-                <tr><td align="center">
-                  <table width="520" cellpadding="0" cellspacing="0"
-                    style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.07);">
-                    <tr>
-                      <td style="background:linear-gradient(135deg,#6366f1,#8b5cf6);padding:32px 40px;text-align:center;">
-                        <h1 style="margin:0;color:#fff;font-size:22px;font-weight:700;">Braify</h1>
-                        <p style="margin:6px 0 0;color:#c7d2fe;font-size:13px;">Application received</p>
-                      </td>
-                    </tr>
-                    <tr>
-                      <td style="padding:36px 40px;">
-                        <p style="margin:0 0 12px;font-size:15px;color:#374151;">Hi <strong>%s</strong>,</p>
-                        <p style="margin:0 0 20px;font-size:14px;color:#6b7280;line-height:1.6;">
-                          Thank you for applying to join <strong>Braify</strong>! We've received your application
-                          for <strong>%s</strong> and our team will review it shortly.
-                        </p>
-                        <div style="background:#f9fafb;border-radius:12px;padding:20px;margin-bottom:24px;">
-                          <p style="margin:0 0 8px;font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;">
-                            What happens next?
-                          </p>
-                          <ul style="margin:0;padding:0 0 0 16px;font-size:13px;color:#4b5563;line-height:1.8;">
-                            <li>Our team reviews your details (usually within 1–2 business days)</li>
-                            <li>You'll receive an email with the outcome</li>
-                            <li>If approved, you'll get a link to set your password and access Braify</li>
-                          </ul>
-                        </div>
-                        <p style="font-size:12px;color:#9ca3af;margin:0;">
-                          Questions? Reply to this email or contact our support team.
-                        </p>
-                      </td>
-                    </tr>
-                    <tr>
-                      <td style="padding:20px 40px;border-top:1px solid #f3f4f6;text-align:center;">
-                        <p style="margin:0;font-size:11px;color:#d1d5db;">© %d Braify. All rights reserved.</p>
-                      </td>
-                    </tr>
-                  </table>
-                </td></tr>
-              </table>
-            </body></html>
-            """.formatted(applicantName, organizationName, year);
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-bottom:1px solid #EEF2F6;"><tr>
+              <td style="padding:22px 32px;vertical-align:middle;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+                  <td style="vertical-align:middle;padding-right:10px;">{{brandMark}}</td>
+                  <td style="vertical-align:middle;font-size:15px;font-weight:700;color:#0F172A;">{{platformName}}</td>
+                </tr></table>
+              </td>
+              <td align="right" style="padding:22px 32px;vertical-align:middle;white-space:nowrap;">
+                <span style="display:inline-block;width:6px;height:6px;border-radius:999px;background:#22C55E;vertical-align:middle;margin-right:6px;"></span><span style="font-size:10.5px;font-weight:700;letter-spacing:0.14em;color:#94A3B8;vertical-align:middle;">SECURE E-SIGN</span>
+              </td>
+            </tr></table>
+            """;
     }
 
-    private String buildRejectionEmail(String applicantName, String organizationName, String noteHtml, int year) {
+    private String footer() {
         return """
-            <!DOCTYPE html>
-            <html><head><meta charset="UTF-8"></head>
-            <body style="margin:0;padding:0;background:#f3f4f6;font-family:Inter,Arial,sans-serif;">
-              <table width="100%%" cellpadding="0" cellspacing="0" style="padding:40px 0;">
-                <tr><td align="center">
-                  <table width="520" cellpadding="0" cellspacing="0"
-                    style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.07);">
-                    <tr>
-                      <td style="background:linear-gradient(135deg,#6366f1,#8b5cf6);padding:32px 40px;text-align:center;">
-                        <h1 style="margin:0;color:#fff;font-size:22px;font-weight:700;">Braify</h1>
-                        <p style="margin:6px 0 0;color:#c7d2fe;font-size:13px;">Application update</p>
-                      </td>
-                    </tr>
-                    <tr>
-                      <td style="padding:36px 40px;">
-                        <p style="margin:0 0 12px;font-size:15px;color:#374151;">Hi <strong>%s</strong>,</p>
-                        <p style="margin:0 0 16px;font-size:14px;color:#6b7280;line-height:1.6;">
-                          Thank you for your interest in Braify. After reviewing your application for
-                          <strong>%s</strong>, we're unable to proceed at this time.
-                        </p>
-                        %s
-                        <p style="font-size:13px;color:#6b7280;margin:0;">
-                          If you believe this was an error or would like to reapply, please contact our team.
-                        </p>
-                      </td>
-                    </tr>
-                    <tr>
-                      <td style="padding:20px 40px;border-top:1px solid #f3f4f6;text-align:center;">
-                        <p style="margin:0;font-size:11px;color:#d1d5db;">© %d Braify. All rights reserved.</p>
-                      </td>
-                    </tr>
-                  </table>
-                </td></tr>
-              </table>
-            </body></html>
-            """.formatted(applicantName, organizationName, noteHtml, year);
+            <div style="padding:22px 32px 28px;background:#F8FAFC;border-top:1px solid #EEF2F6;">
+              {{footerContact}}
+              <div style="margin-top:14px;font-size:11px;color:#CBD5E1;">Powered by <strong style="color:#94A3B8;">{{platformName}}</strong> · 256-bit encrypted &amp; audit-logged</div>
+            </div>
+            """;
     }
 
-    private String buildInfoRequiredEmail(String applicantName, String organizationName, String noteHtml, int year) {
+    private String buildConfirmationEmail() {
         return """
             <!DOCTYPE html>
-            <html><head><meta charset="UTF-8"></head>
-            <body style="margin:0;padding:0;background:#f3f4f6;font-family:Inter,Arial,sans-serif;">
-              <table width="100%%" cellpadding="0" cellspacing="0" style="padding:40px 0;">
-                <tr><td align="center">
-                  <table width="520" cellpadding="0" cellspacing="0"
-                    style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.07);">
-                    <tr>
-                      <td style="background:linear-gradient(135deg,#6366f1,#8b5cf6);padding:32px 40px;text-align:center;">
-                        <h1 style="margin:0;color:#fff;font-size:22px;font-weight:700;">Braify</h1>
-                        <p style="margin:6px 0 0;color:#c7d2fe;font-size:13px;">Action required</p>
-                      </td>
-                    </tr>
-                    <tr>
-                      <td style="padding:36px 40px;">
-                        <p style="margin:0 0 12px;font-size:15px;color:#374151;">Hi <strong>%s</strong>,</p>
-                        <p style="margin:0 0 16px;font-size:14px;color:#6b7280;line-height:1.6;">
-                          We're reviewing your application for <strong>%s</strong> and need a bit more information
-                          before we can proceed.
-                        </p>
-                        %s
-                        <p style="font-size:13px;color:#6b7280;margin:0;">
-                          Please reply to this email with the requested details and we'll continue reviewing your application.
-                        </p>
-                      </td>
-                    </tr>
-                    <tr>
-                      <td style="padding:20px 40px;border-top:1px solid #f3f4f6;text-align:center;">
-                        <p style="margin:0;font-size:11px;color:#d1d5db;">© %d Braify. All rights reserved.</p>
-                      </td>
-                    </tr>
-                  </table>
-                </td></tr>
-              </table>
-            </body></html>
-            """.formatted(applicantName, organizationName, noteHtml, year);
+            <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+            <body style="margin:0;padding:0;background:#EEF2F6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#EEF2F6;padding:32px 12px;"><tr><td align="center">
+              <div style="width:600px;max-width:100%;text-align:left;background:#fff;border:1px solid #E2E8F0;border-radius:16px;overflow:hidden;box-shadow:0 12px 32px -12px rgba(15,23,42,0.12);">
+                <div style="height:4px;background:{{accent}};"></div>
+                %BRANDBAR%
+                <div style="padding:36px 32px 8px;">
+                  <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;color:{{accent}};margin-bottom:14px;">APPLICATION RECEIVED</div>
+                  <h1 style="margin:0 0 14px;font-size:26px;line-height:1.25;font-weight:700;color:#0F172A;letter-spacing:-0.02em;">We've received your application</h1>
+                  <p style="margin:0 0 22px;font-size:15px;line-height:1.6;color:#475569;">Hi <strong style="color:#0F172A;">{{applicantName}}</strong>, thanks for applying to join <strong style="color:#0F172A;">{{platformName}}</strong>. We've received your application for <strong style="color:#0F172A;">{{organizationName}}</strong> and our team will review it shortly.</p>
+                  <div style="border:1px solid #E2E8F0;border-radius:12px;background:#F8FAFC;padding:18px 20px;">
+                    <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;color:#94A3B8;margin-bottom:10px;">WHAT HAPPENS NEXT</div>
+                    <ul style="margin:0;padding:0 0 0 18px;font-size:13.5px;color:#475569;line-height:1.9;">
+                      <li>Our team reviews your details (usually within 1–2 business days)</li>
+                      <li>You'll receive an email with the outcome</li>
+                      <li>If approved, you'll get a link to set your password and access {{platformName}}</li>
+                    </ul>
+                  </div>
+                  <p style="margin:22px 0 30px;font-size:12.5px;line-height:1.5;color:#94A3B8;">Questions? Just reply to this email and our team will help.</p>
+                </div>
+                %FOOTER%
+              </div>
+            </td></tr></table></body></html>
+            """.replace("%BRANDBAR%", brandBar()).replace("%FOOTER%", footer());
+    }
+
+    private String buildRejectionEmail() {
+        return """
+            <!DOCTYPE html>
+            <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+            <body style="margin:0;padding:0;background:#EEF2F6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#EEF2F6;padding:32px 12px;"><tr><td align="center">
+              <div style="width:600px;max-width:100%;text-align:left;background:#fff;border:1px solid #E2E8F0;border-radius:16px;overflow:hidden;box-shadow:0 12px 32px -12px rgba(15,23,42,0.12);">
+                <div style="height:4px;background:#64748B;"></div>
+                %BRANDBAR%
+                <div style="padding:36px 32px 8px;">
+                  <div style="display:inline-block;font-size:11px;font-weight:700;letter-spacing:0.14em;color:#475569;background:#F1F5F9;border:1px solid #E2E8F0;border-radius:999px;padding:5px 12px;margin-bottom:16px;">APPLICATION UPDATE</div>
+                  <h1 style="margin:0 0 14px;font-size:26px;line-height:1.25;font-weight:700;color:#0F172A;letter-spacing:-0.02em;">Update on your application</h1>
+                  <p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#475569;">Hi <strong style="color:#0F172A;">{{applicantName}}</strong>, thank you for your interest in {{platformName}}. After reviewing your application for <strong style="color:#0F172A;">{{organizationName}}</strong>, we're unable to proceed at this time.</p>
+                  {{reviewNoteBlock}}
+                  <p style="margin:16px 0 30px;font-size:13.5px;line-height:1.6;color:#475569;">If you believe this was an error or would like to reapply, please contact our team.</p>
+                </div>
+                %FOOTER%
+              </div>
+            </td></tr></table></body></html>
+            """.replace("%BRANDBAR%", brandBar()).replace("%FOOTER%", footer());
+    }
+
+    private String buildInfoRequiredEmail() {
+        return """
+            <!DOCTYPE html>
+            <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+            <body style="margin:0;padding:0;background:#EEF2F6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#EEF2F6;padding:32px 12px;"><tr><td align="center">
+              <div style="width:600px;max-width:100%;text-align:left;background:#fff;border:1px solid #E2E8F0;border-radius:16px;overflow:hidden;box-shadow:0 12px 32px -12px rgba(15,23,42,0.12);">
+                <div style="height:4px;background:#F59E0B;"></div>
+                %BRANDBAR%
+                <div style="padding:36px 32px 8px;">
+                  <div style="display:inline-block;font-size:11px;font-weight:700;letter-spacing:0.14em;color:#B45309;background:#FEF3C7;border-radius:999px;padding:5px 12px;margin-bottom:16px;">ACTION REQUIRED</div>
+                  <h1 style="margin:0 0 14px;font-size:26px;line-height:1.25;font-weight:700;color:#0F172A;letter-spacing:-0.02em;">Additional information needed</h1>
+                  <p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#475569;">Hi <strong style="color:#0F172A;">{{applicantName}}</strong>, we're reviewing your application for <strong style="color:#0F172A;">{{organizationName}}</strong> and need a bit more information before we can proceed.</p>
+                  {{reviewNoteBlock}}
+                  <p style="margin:16px 0 30px;font-size:13.5px;line-height:1.6;color:#475569;">Please reply to this email with the requested details and we'll continue reviewing your application.</p>
+                </div>
+                %FOOTER%
+              </div>
+            </td></tr></table></body></html>
+            """.replace("%BRANDBAR%", brandBar()).replace("%FOOTER%", footer());
     }
 
     /* ── INTERNAL template seeds ──────────────────────────────────────────── */
     @Override
     public List<InternalTemplateSeed> internalTemplateSeeds() {
-        int year = java.time.Year.now().getValue();
+        List<String> base     = List.of("applicantName", "organizationName", "platformName", "brandMark", "accent", "footerContact");
+        List<String> withNote = List.of("applicantName", "organizationName", "platformName", "brandMark", "accent", "footerContact", "reviewNoteBlock");
         return List.of(
                 new InternalTemplateSeed(
                         InternalTemplateCodes.ONBOARDING_CONFIRMATION,
                         "System — Onboarding: Application Received",
-                        "We've received your Braify application — {{organizationName}}",
-                        buildConfirmationEmail("{{applicantName}}", "{{organizationName}}", year),
-                        List.of("applicantName", "organizationName")),
+                        "We've received your application — {{organizationName}}",
+                        buildConfirmationEmail(),
+                        base),
                 new InternalTemplateSeed(
                         InternalTemplateCodes.ONBOARDING_REJECTION,
                         "System — Onboarding: Application Rejected",
-                        "Update on your Braify application",
-                        buildRejectionEmail("{{applicantName}}", "{{organizationName}}", "{{reviewNoteBlock}}", year),
-                        List.of("applicantName", "organizationName", "reviewNoteBlock")),
+                        "Update on your {{platformName}} application",
+                        buildRejectionEmail(),
+                        withNote),
                 new InternalTemplateSeed(
                         InternalTemplateCodes.ONBOARDING_INFO_REQUIRED,
                         "System — Onboarding: Info Required",
-                        "Additional information needed — Braify application",
-                        buildInfoRequiredEmail("{{applicantName}}", "{{organizationName}}", "{{reviewNoteBlock}}", year),
-                        List.of("applicantName", "organizationName", "reviewNoteBlock"))
+                        "Additional information needed — {{platformName}}",
+                        buildInfoRequiredEmail(),
+                        withNote)
         );
     }
 }

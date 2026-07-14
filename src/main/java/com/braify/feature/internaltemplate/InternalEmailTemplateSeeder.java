@@ -54,30 +54,49 @@ public class InternalEmailTemplateSeeder implements CommandLineRunner {
         }
     }
 
-    /** Create any INTERNAL template that is not yet present (matched by code). */
+    /**
+     * Upsert every INTERNAL template from code. These are code-owned system templates,
+     * so an existing record is re-synced whenever its subject/html/name drifts from the
+     * seed (design changes ship on the next restart). Only writes when something changed.
+     */
     private void seedInternalTemplates() {
-        int created = 0;
+        int created = 0, updated = 0;
         for (InternalTemplateProvider provider : providers) {
             for (InternalTemplateSeed seed : provider.internalTemplateSeeds()) {
-                if (emailTemplateRepository.findByCodeAndDeletedFalse(seed.code()).isPresent()) {
-                    continue;
+                EmailTemplate existing = emailTemplateRepository.findByCodeAndDeletedFalse(seed.code()).orElse(null);
+                if (existing == null) {
+                    EmailTemplate t = new EmailTemplate();
+                    t.setName(seed.name());
+                    t.setSubject(seed.subjectWithTokens());
+                    t.setHtmlContent(seed.htmlWithTokens());
+                    t.setPlaceholders(seed.placeholders());
+                    t.setType(TemplateType.INTERNAL);
+                    t.setCode(seed.code());
+                    t.setOrganizationId(null); // platform-global
+                    t.setDeleted(false);
+                    emailTemplateRepository.save(t);
+                    created++;
+                    log.info("[InternalTemplate] Seeded '{}' (code={})", seed.name(), seed.code());
+                } else {
+                    boolean changed =
+                            !java.util.Objects.equals(existing.getSubject(),     seed.subjectWithTokens()) ||
+                            !java.util.Objects.equals(existing.getHtmlContent(), seed.htmlWithTokens())   ||
+                            !java.util.Objects.equals(existing.getName(),        seed.name());
+                    if (changed) {
+                        existing.setName(seed.name());
+                        existing.setSubject(seed.subjectWithTokens());
+                        existing.setHtmlContent(seed.htmlWithTokens());
+                        existing.setPlaceholders(seed.placeholders());
+                        existing.setType(TemplateType.INTERNAL);
+                        emailTemplateRepository.save(existing);
+                        updated++;
+                        log.info("[InternalTemplate] Re-synced '{}' (code={}) from code", seed.name(), seed.code());
+                    }
                 }
-                EmailTemplate t = new EmailTemplate();
-                t.setName(seed.name());
-                t.setSubject(seed.subjectWithTokens());
-                t.setHtmlContent(seed.htmlWithTokens());
-                t.setPlaceholders(seed.placeholders());
-                t.setType(TemplateType.INTERNAL);
-                t.setCode(seed.code());
-                t.setOrganizationId(null); // platform-global
-                t.setDeleted(false);
-                emailTemplateRepository.save(t);
-                created++;
-                log.info("[InternalTemplate] Seeded '{}' (code={})", seed.name(), seed.code());
             }
         }
-        if (created == 0) {
-            log.debug("[InternalTemplate] All INTERNAL email templates already present");
+        if (created == 0 && updated == 0) {
+            log.debug("[InternalTemplate] All INTERNAL email templates already up to date");
         }
     }
 }

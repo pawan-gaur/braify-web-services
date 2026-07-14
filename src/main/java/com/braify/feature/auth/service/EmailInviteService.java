@@ -1,12 +1,16 @@
 package com.braify.feature.auth.service;
 
+import com.braify.config.infra.email.EmailBrandVars;
 import com.braify.config.infra.email.EmailDispatcher;
 import com.braify.feature.email.model.EmailTemplate;
 import com.braify.feature.internaltemplate.InternalEmailTemplateService;
 import com.braify.feature.internaltemplate.InternalTemplateCodes;
 import com.braify.feature.internaltemplate.InternalTemplateProvider;
 import com.braify.feature.internaltemplate.InternalTemplateSeed;
+import com.braify.feature.organization.model.Organization;
+import com.braify.feature.organization.repository.OrganizationRepository;
 import com.braify.feature.user.model.AppUser;
+import com.braify.feature.user.repository.AppUserRepository;
 import com.braify.feature.auth.model.InvitationToken;
 import com.braify.feature.auth.repository.InvitationTokenRepository;
 import lombok.RequiredArgsConstructor;
@@ -15,6 +19,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -37,9 +43,15 @@ public class EmailInviteService implements InternalTemplateProvider {
     private final InvitationTokenRepository tokenRepository;
     private final EmailDispatcher           emailDispatcher;
     private final InternalEmailTemplateService internalEmailTemplateService;
+    private final OrganizationRepository    organizationRepository;
+    private final AppUserRepository         appUserRepository;
+    private final EmailBrandVars            emailBrandVars;
 
     @Value("${app.frontend-url:http://localhost:5173}")
     private String frontendUrl;
+
+    private static final String PLATFORM_NAME = "Braify";
+    private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("MMM d, yyyy");
 
     /* ── Public API ──────────────────────────────────────────────────────── */
 
@@ -69,15 +81,30 @@ public class EmailInviteService implements InternalTemplateProvider {
         tokenRepository.save(token);
 
         String link = frontendUrl + "/accept-invite?token=" + rawToken;
-        Map<String, Object> vars = Map.of(
-                "firstName", user.getFirstName() != null ? user.getFirstName() : "",
-                "link", link);
+        LocalDateTime expiresAt = token.getExpiresAt();
+
+        // Organisation name + brand tokens (logo / accent / footer) for the invited user's org.
+        String orgName = user.getOrganizationId() != null
+                ? organizationRepository.findById(user.getOrganizationId())
+                    .map(Organization::getName).orElse(PLATFORM_NAME)
+                : PLATFORM_NAME;
+
+        Map<String, Object> vars = new HashMap<>(emailBrandVars.forOrg(user.getOrganizationId(), orgName));
+        vars.put("platformName",  PLATFORM_NAME);
+        vars.put("signerName",    fullName(user));
+        vars.put("signerEmail",   user.getEmail() != null ? user.getEmail() : "");
+        vars.put("inviterName",   inviterName(createdById));
+        vars.put("inviterEmail",  inviterEmail(createdById));
+        vars.put("expiryDate",    expiresAt != null ? DATE_FMT.format(expiresAt) : "");
+        vars.put("expiresIn",     "in 7 days");
+        vars.put("link",          link);
+        vars.put("firstName",     user.getFirstName() != null ? user.getFirstName() : ""); // legacy
 
         var tpl = internalEmailTemplateService.find(InternalTemplateCodes.INVITE_EMAIL);
         String subject = tpl.map(EmailTemplate::getSubject).filter(s -> s != null && !s.isBlank())
-                .orElse("You've been invited to Braify");
+                .orElse("You're invited to join {{organizationName}} on {{platformName}}");
         String body = tpl.map(EmailTemplate::getHtmlContent).filter(h -> h != null && !h.isBlank())
-                .orElseGet(() -> buildInviteEmail(user.getFirstName(), link));
+                .orElseGet(this::buildInviteEmail);
 
         trySend(user.getEmail(), subject, body, vars);
         // DEBUG only — invite tokens grant password-setting capability and must not
@@ -116,15 +143,23 @@ public class EmailInviteService implements InternalTemplateProvider {
         tokenRepository.save(token);
 
         String link = frontendUrl + "/reset-password?token=" + rawToken;
-        Map<String, Object> vars = Map.of(
-                "firstName", user.getFirstName() != null ? user.getFirstName() : "",
-                "link", link);
+        String orgName = user.getOrganizationId() != null
+                ? organizationRepository.findById(user.getOrganizationId())
+                    .map(Organization::getName).orElse(PLATFORM_NAME)
+                : PLATFORM_NAME;
+
+        Map<String, Object> vars = new HashMap<>(emailBrandVars.forOrg(user.getOrganizationId(), orgName));
+        vars.put("platformName", PLATFORM_NAME);
+        vars.put("firstName",    user.getFirstName() != null && !user.getFirstName().isBlank()
+                                    ? user.getFirstName() : "there");
+        vars.put("expiresIn",    "in 1 hour");
+        vars.put("link",         link);
 
         var tpl = internalEmailTemplateService.find(InternalTemplateCodes.PASSWORD_RESET_EMAIL);
         String subject = tpl.map(EmailTemplate::getSubject).filter(s -> s != null && !s.isBlank())
-                .orElse("Braify — Reset your password");
+                .orElse("Reset your password — {{platformName}}");
         String body = tpl.map(EmailTemplate::getHtmlContent).filter(h -> h != null && !h.isBlank())
-                .orElseGet(() -> buildResetEmail(user.getFirstName(), link));
+                .orElseGet(this::buildResetEmail);
 
         trySend(user.getEmail(), subject, body, vars);
         // DEBUG only — reset tokens grant unauthenticated password-change capability
@@ -144,103 +179,129 @@ public class EmailInviteService implements InternalTemplateProvider {
         }
     }
 
-    private String buildInviteEmail(String firstName, String link) {
-        return """
-            <!DOCTYPE html>
-            <html>
-            <head><meta charset="UTF-8"></head>
-            <body style="margin:0;padding:0;background:#f3f4f6;font-family:Inter,Arial,sans-serif;">
-              <table width="100%%" cellpadding="0" cellspacing="0" style="padding:40px 0;">
-                <tr><td align="center">
-                  <table width="520" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.07);">
-                    <!-- Header -->
-                    <tr>
-                      <td style="background:linear-gradient(135deg,#6366f1,#8b5cf6);padding:32px 40px;text-align:center;">
-                        <h1 style="margin:0;color:#fff;font-size:22px;font-weight:700;">Braify</h1>
-                        <p style="margin:6px 0 0;color:#c7d2fe;font-size:13px;">Template management platform</p>
-                      </td>
-                    </tr>
-                    <!-- Body -->
-                    <tr>
-                      <td style="padding:36px 40px;">
-                        <p style="margin:0 0 12px;font-size:15px;color:#374151;">Hi <strong>%s</strong>,</p>
-                        <p style="margin:0 0 24px;font-size:14px;color:#6b7280;line-height:1.6;">
-                          You've been invited to join <strong>Braify</strong>.
-                          Click the button below to set your password and activate your account.
-                          This link expires in <strong>7 days</strong>.
-                        </p>
-                        <div style="text-align:center;margin:32px 0;">
-                          <a href="%s" style="display:inline-block;padding:14px 36px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;text-decoration:none;border-radius:10px;font-weight:700;font-size:15px;">
-                            Accept Invitation
-                          </a>
-                        </div>
-                        <p style="font-size:12px;color:#9ca3af;margin:0;">
-                          If you didn't expect this invitation, you can safely ignore this email.
-                          <br>Or copy this link: <a href="%s" style="color:#6366f1;">%s</a>
-                        </p>
-                      </td>
-                    </tr>
-                    <!-- Footer -->
-                    <tr>
-                      <td style="padding:20px 40px;border-top:1px solid #f3f4f6;text-align:center;">
-                        <p style="margin:0;font-size:11px;color:#d1d5db;">© 2025 Braify. All rights reserved.</p>
-                      </td>
-                    </tr>
-                  </table>
-                </td></tr>
-              </table>
-            </body>
-            </html>
-            """.formatted(firstName, link, link, link);
+    private String fullName(AppUser u) {
+        String fn = u.getFirstName() != null ? u.getFirstName().trim() : "";
+        String ln = u.getLastName()  != null ? u.getLastName().trim()  : "";
+        String full = (fn + " " + ln).trim();
+        return full.isEmpty() ? "there" : full;
     }
 
-    private String buildResetEmail(String firstName, String link) {
+    private String inviterName(String createdById) {
+        if (createdById == null) return "Your administrator";
+        return appUserRepository.findById(createdById).map(u -> {
+            String n = ((u.getFirstName() != null ? u.getFirstName() : "") + " "
+                      + (u.getLastName()  != null ? u.getLastName()  : "")).trim();
+            return !n.isEmpty() ? n : (u.getEmail() != null ? u.getEmail() : "Your administrator");
+        }).orElse("Your administrator");
+    }
+
+    private String inviterEmail(String createdById) {
+        if (createdById == null) return "";
+        return appUserRepository.findById(createdById).map(AppUser::getEmail).orElse("");
+    }
+
+    /**
+     * Platform invitation email (Template 04) — tokenised, email-client-safe (table layout).
+     * Used both as the INTERNAL seed body and the fallback; {@code {{tokens}}} are substituted
+     * by {@link EmailDispatcher} from the value map assembled in {@link #sendInvite}.
+     */
+    private String buildInviteEmail() {
         return """
             <!DOCTYPE html>
-            <html>
-            <head><meta charset="UTF-8"></head>
-            <body style="margin:0;padding:0;background:#f3f4f6;font-family:Inter,Arial,sans-serif;">
-              <table width="100%%" cellpadding="0" cellspacing="0" style="padding:40px 0;">
-                <tr><td align="center">
-                  <table width="520" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.07);">
-                    <!-- Header -->
-                    <tr>
-                      <td style="background:linear-gradient(135deg,#6366f1,#8b5cf6);padding:32px 40px;text-align:center;">
-                        <h1 style="margin:0;color:#fff;font-size:22px;font-weight:700;">Braify</h1>
-                        <p style="margin:6px 0 0;color:#c7d2fe;font-size:13px;">Password Reset Request</p>
+            <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+            <body style="margin:0;padding:0;background:#EEF2F6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#EEF2F6;padding:32px 12px;"><tr><td align="center">
+              <div style="width:600px;max-width:100%;text-align:left;background:#fff;border:1px solid #E2E8F0;border-radius:16px;overflow:hidden;box-shadow:0 12px 32px -12px rgba(15,23,42,0.12);">
+                <div style="height:4px;background:{{accent}};"></div>
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-bottom:1px solid #EEF2F6;"><tr>
+                  <td style="padding:22px 32px;vertical-align:middle;">
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+                      <td style="vertical-align:middle;padding-right:10px;">{{brandMark}}</td>
+                      <td style="vertical-align:middle;font-size:15px;font-weight:700;color:#0F172A;">{{organizationName}}</td>
+                    </tr></table>
+                  </td>
+                  <td align="right" style="padding:22px 32px;vertical-align:middle;white-space:nowrap;">
+                    <span style="display:inline-block;width:6px;height:6px;border-radius:999px;background:#22C55E;vertical-align:middle;margin-right:6px;"></span><span style="font-size:10.5px;font-weight:700;letter-spacing:0.14em;color:#94A3B8;vertical-align:middle;">SECURE E-SIGN</span>
+                  </td>
+                </tr></table>
+                <div style="padding:36px 32px 8px;">
+                  <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;color:{{accent}};margin-bottom:14px;">YOU'RE INVITED</div>
+                  <h1 style="margin:0 0 14px;font-size:26px;line-height:1.25;font-weight:700;color:#0F172A;letter-spacing:-0.02em;">Join {{organizationName}} on {{platformName}}</h1>
+                  <p style="margin:0 0 26px;font-size:15px;line-height:1.6;color:#475569;">Hi <strong style="color:#0F172A;">{{signerName}}</strong>,<br><strong style="color:#0F172A;">{{inviterName}}</strong> has invited you to join <strong style="color:#0F172A;">{{organizationName}}</strong> on {{platformName}}. Set your password to activate your account and start signing securely.</p>
+                  <div style="border:1px solid #E2E8F0;border-radius:12px;background:#F8FAFC;overflow:hidden;">
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"><tr>
+                      <td width="50%" style="padding:14px 20px;border-right:1px solid #E2E8F0;vertical-align:top;">
+                        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;color:#94A3B8;margin-bottom:5px;">INVITED BY</div>
+                        <div style="font-size:13.5px;font-weight:600;color:#0F172A;">{{inviterName}}</div>
+                        <div style="font-size:12px;color:#64748B;margin-top:1px;">{{inviterEmail}}</div>
                       </td>
-                    </tr>
-                    <!-- Body -->
-                    <tr>
-                      <td style="padding:36px 40px;">
-                        <p style="margin:0 0 12px;font-size:15px;color:#374151;">Hi <strong>%s</strong>,</p>
-                        <p style="margin:0 0 24px;font-size:14px;color:#6b7280;line-height:1.6;">
-                          We received a request to reset your password. Click the button below to choose a new one.
-                          This link expires in <strong>1 hour</strong>.
-                        </p>
-                        <div style="text-align:center;margin:32px 0;">
-                          <a href="%s" style="display:inline-block;padding:14px 36px;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;text-decoration:none;border-radius:10px;font-weight:700;font-size:15px;">
-                            Reset Password
-                          </a>
-                        </div>
-                        <p style="font-size:12px;color:#9ca3af;margin:0;">
-                          If you didn't request a password reset, you can safely ignore this email.
-                          <br>Or copy this link: <a href="%s" style="color:#6366f1;">%s</a>
-                        </p>
+                      <td width="50%" style="padding:14px 20px;vertical-align:top;">
+                        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;color:#94A3B8;margin-bottom:5px;">ORGANIZATION</div>
+                        <div style="font-size:13.5px;font-weight:600;color:#0F172A;">{{organizationName}}</div>
+                        <div style="font-size:12px;color:#64748B;margin-top:1px;">{{signerEmail}}</div>
                       </td>
-                    </tr>
-                    <!-- Footer -->
-                    <tr>
-                      <td style="padding:20px 40px;border-top:1px solid #f3f4f6;text-align:center;">
-                        <p style="margin:0;font-size:11px;color:#d1d5db;">© 2025 Braify. All rights reserved.</p>
+                    </tr></table>
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid #E2E8F0;"><tr>
+                      <td style="padding:14px 20px;vertical-align:middle;">
+                        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;color:#94A3B8;margin-bottom:5px;">INVITATION EXPIRES</div>
+                        <div style="font-size:13.5px;font-weight:600;color:#0F172A;">{{expiryDate}}</div>
                       </td>
-                    </tr>
-                  </table>
-                </td></tr>
-              </table>
-            </body>
-            </html>
-            """.formatted(firstName, link, link, link);
+                      <td align="right" style="padding:14px 20px;vertical-align:middle;white-space:nowrap;">
+                        <span style="font-size:11px;font-weight:700;color:#B45309;background:#FEF3C7;border-radius:6px;padding:3px 9px;">{{expiresIn}}</span>
+                      </td>
+                    </tr></table>
+                  </div>
+                  <div style="text-align:center;margin:30px 0 8px;"><a href="{{link}}" style="display:inline-block;background:{{accent}};color:#fff;font-size:15px;font-weight:700;padding:15px 40px;border-radius:10px;text-decoration:none;">Accept Invitation</a></div>
+                  <p style="margin:0 auto 30px;text-align:center;font-size:12.5px;line-height:1.5;color:#94A3B8;max-width:400px;">This invitation link is unique to you and expires {{expiresIn}}. Please don't forward this email.</p>
+                </div>
+                <div style="padding:22px 32px 28px;background:#F8FAFC;border-top:1px solid #EEF2F6;">
+                  <p style="margin:0 0 12px;font-size:12px;line-height:1.6;color:#94A3B8;">If you weren't expecting this invitation, you can safely ignore this email — no account will be created and no further action is required.</p>
+                  {{footerContact}}
+                  <div style="margin-top:14px;font-size:11px;color:#CBD5E1;">Powered by <strong style="color:#94A3B8;">{{platformName}}</strong> · 256-bit encrypted &amp; audit-logged</div>
+                </div>
+              </div>
+            </td></tr></table></body></html>
+            """;
+    }
+
+    /** Password-reset email — new design (tokenised, email-client-safe table layout). */
+    private String buildResetEmail() {
+        return """
+            <!DOCTYPE html>
+            <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+            <body style="margin:0;padding:0;background:#EEF2F6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#EEF2F6;padding:32px 12px;"><tr><td align="center">
+              <div style="width:600px;max-width:100%;text-align:left;background:#fff;border:1px solid #E2E8F0;border-radius:16px;overflow:hidden;box-shadow:0 12px 32px -12px rgba(15,23,42,0.12);">
+                <div style="height:4px;background:{{accent}};"></div>
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-bottom:1px solid #EEF2F6;"><tr>
+                  <td style="padding:22px 32px;vertical-align:middle;">
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+                      <td style="vertical-align:middle;padding-right:10px;">{{brandMark}}</td>
+                      <td style="vertical-align:middle;font-size:15px;font-weight:700;color:#0F172A;">{{organizationName}}</td>
+                    </tr></table>
+                  </td>
+                  <td align="right" style="padding:22px 32px;vertical-align:middle;white-space:nowrap;">
+                    <span style="display:inline-block;width:6px;height:6px;border-radius:999px;background:#22C55E;vertical-align:middle;margin-right:6px;"></span><span style="font-size:10.5px;font-weight:700;letter-spacing:0.14em;color:#94A3B8;vertical-align:middle;">SECURE E-SIGN</span>
+                  </td>
+                </tr></table>
+                <div style="padding:36px 32px 8px;">
+                  <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;color:{{accent}};margin-bottom:14px;">PASSWORD RESET</div>
+                  <h1 style="margin:0 0 14px;font-size:26px;line-height:1.25;font-weight:700;color:#0F172A;letter-spacing:-0.02em;">Reset your password</h1>
+                  <p style="margin:0 0 26px;font-size:15px;line-height:1.6;color:#475569;">Hi <strong style="color:#0F172A;">{{firstName}}</strong>, we received a request to reset the password for your <strong style="color:#0F172A;">{{organizationName}}</strong> account. Click the button below to choose a new one.</p>
+                  <div style="border:1px solid #E2E8F0;border-radius:12px;background:#F8FAFC;padding:14px 20px;">
+                    <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;color:#94A3B8;margin-bottom:5px;">LINK EXPIRES</div>
+                    <div style="font-size:13.5px;font-weight:600;color:#0F172A;">{{expiresIn}}</div>
+                  </div>
+                  <div style="text-align:center;margin:30px 0 8px;"><a href="{{link}}" style="display:inline-block;background:{{accent}};color:#fff;font-size:15px;font-weight:700;padding:15px 40px;border-radius:10px;text-decoration:none;">Reset Password</a></div>
+                  <p style="margin:0 auto 30px;text-align:center;font-size:12.5px;line-height:1.5;color:#94A3B8;max-width:360px;">If you didn't request a password reset, you can safely ignore this email — your password won't change.</p>
+                </div>
+                <div style="padding:22px 32px 28px;background:#F8FAFC;border-top:1px solid #EEF2F6;">
+                  {{footerContact}}
+                  <div style="margin-top:14px;font-size:11px;color:#CBD5E1;">Powered by <strong style="color:#94A3B8;">{{platformName}}</strong> · 256-bit encrypted &amp; audit-logged</div>
+                </div>
+              </div>
+            </td></tr></table></body></html>
+            """;
     }
 
     /* ── INTERNAL template seeds ─────────────────────────────────────────────
@@ -252,15 +313,18 @@ public class EmailInviteService implements InternalTemplateProvider {
                 new InternalTemplateSeed(
                         InternalTemplateCodes.INVITE_EMAIL,
                         "System — User Invitation",
-                        "You've been invited to Braify",
-                        buildInviteEmail("{{firstName}}", "{{link}}"),
-                        List.of("firstName", "link")),
+                        "You're invited to join {{organizationName}} on {{platformName}}",
+                        buildInviteEmail(),
+                        List.of("organizationName", "brandMark", "accent", "platformName", "signerName",
+                                "signerEmail", "inviterName", "inviterEmail", "expiryDate", "expiresIn",
+                                "link", "footerContact")),
                 new InternalTemplateSeed(
                         InternalTemplateCodes.PASSWORD_RESET_EMAIL,
                         "System — Password Reset",
-                        "Braify — Reset your password",
-                        buildResetEmail("{{firstName}}", "{{link}}"),
-                        List.of("firstName", "link"))
+                        "Reset your password — {{platformName}}",
+                        buildResetEmail(),
+                        List.of("organizationName", "brandMark", "accent", "platformName",
+                                "firstName", "expiresIn", "link", "footerContact"))
         );
     }
 }

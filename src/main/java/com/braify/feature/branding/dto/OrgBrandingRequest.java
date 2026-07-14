@@ -8,8 +8,17 @@ import java.util.Map;
 @Data
 public class OrgBrandingRequest {
 
-    /** Base64 data-URL of the org logo (e.g. {@code data:image/png;base64,...}). Null = remove logo. */
+    /**
+     * Base64 data-URL of the org logo for a NEW upload (e.g. {@code data:image/png;base64,...}).
+     * Sent only when the logo changes. Null/blank + null {@link #logoUrl} = remove the logo.
+     */
     private String logoBase64;
+
+    /**
+     * Existing logo URL echoed back by the client when the logo is unchanged, so a branding
+     * save that doesn't touch the logo keeps it. Ignored when {@link #logoBase64} is a new data URL.
+     */
+    private String logoUrl;
 
     /**
      * Primary CSS hex colour string, e.g. {@code #6366f1}.

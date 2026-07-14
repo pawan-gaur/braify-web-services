@@ -25,6 +25,10 @@ public class OrgBrandingService {
 
     private final OrganizationRepository orgRepository;
     private final AuditLogService        auditLogService;
+    private final BrandingLogoStorage    logoStorage;
+
+    @org.springframework.beans.factory.annotation.Value("${app.base-url:http://localhost:5173}")
+    private String baseUrl;
 
     // ── Read ─────────────────────────────────────────────────────────────────
 
@@ -66,8 +70,15 @@ public class OrgBrandingService {
                 ? existing.getCreatedBy()
                 : caller.getId();
 
+        LogoResult logo = resolveLogo(orgId, existing, req);
+
         OrgBranding branding = OrgBranding.builder()
-                .logoBase64(req.getLogoBase64())
+                .logoBase64(logo.base64())
+                .logoUrl(logo.url())
+                .logoBucket(logo.bucket())
+                .logoKey(logo.key())
+                .logoProvider(logo.provider())
+                .logoContentType(logo.contentType())
                 .primaryColor(req.getPrimaryColor())
                 .accentColor(req.getAccentColor())
                 .emailSenderName(req.getEmailSenderName())
@@ -89,6 +100,108 @@ public class OrgBrandingService {
                 org.getId());
 
         return toResponse(org);
+    }
+
+    // ── Logo storage ────────────────────────────────────────────────────────────
+
+    private record LogoResult(String base64, String url, String bucket, String key,
+                              String provider, String contentType) {}
+    private record DecodedImage(byte[] bytes, String contentType, String ext) {}
+
+    /** Public logo bytes for the streaming endpoint (from cloud, else decoded base64), or null. */
+    public record LogoData(byte[] bytes, String contentType) {}
+
+    public LogoData getLogoData(String orgId) {
+        Organization org = orgRepository.findById(orgId).orElse(null);
+        if (org == null || org.getBranding() == null) return null;
+        OrgBranding b = org.getBranding();
+        if (b.getLogoKey() != null) {
+            byte[] bytes = logoStorage.download(orgId, b.getLogoBucket(), b.getLogoKey());
+            return new LogoData(bytes, b.getLogoContentType() != null ? b.getLogoContentType() : "image/png");
+        }
+        DecodedImage d = decodeDataUrl(b.getLogoBase64());
+        return d != null ? new LogoData(d.bytes(), d.contentType()) : null;
+    }
+
+    private String logoEndpointUrl(String orgId) {
+        // Stable endpoint + a version query param so a re-upload busts the browser / email-proxy
+        // cache (the URL path is identical every time, otherwise the old image keeps showing).
+        return baseUrl.replaceAll("/$", "") + "/api/public/branding/" + orgId + "/logo?v=" + System.currentTimeMillis();
+    }
+
+    /**
+     * Decides the logo fields to persist:
+     * <ul>
+     *   <li>new data-URL → offload bytes to the org cloud bucket (fallback: keep inline base64),
+     *       serve via the public endpoint;</li>
+     *   <li>unchanged (client echoed {@code logoUrl}) → keep existing fields;</li>
+     *   <li>nothing → remove the logo (best-effort delete of any cloud object).</li>
+     * </ul>
+     */
+    private LogoResult resolveLogo(String orgId, OrgBranding existing, OrgBrandingRequest req) {
+        String reqLogo = req.getLogoBase64();
+        log.info("resolveLogo org={} newUpload={} logoUrl='{}'",
+                orgId, reqLogo != null && reqLogo.startsWith("data:"), req.getLogoUrl());
+
+        if (reqLogo != null && reqLogo.startsWith("data:")) {
+            DecodedImage d = decodeDataUrl(reqLogo);
+            if (d != null && logoStorage.isCloudConfigured(orgId)) {
+                try {
+                    if (existing != null && existing.getLogoKey() != null)
+                        logoStorage.deleteQuietly(orgId, existing.getLogoBucket(), existing.getLogoKey());
+                    var s = logoStorage.upload(orgId, d.bytes(), d.contentType(), d.ext());
+                    return new LogoResult(null, logoEndpointUrl(orgId),
+                            s.bucket(), s.key(), s.provider(), s.contentType());
+                } catch (Exception e) {
+                    log.warn("Logo cloud offload failed for org {} — keeping inline base64: {}", orgId, e.getMessage());
+                }
+            }
+            // No cloud (or offload failed): keep the data URL, still served via the endpoint.
+            return new LogoResult(reqLogo, logoEndpointUrl(orgId), null, null, null,
+                    d != null ? d.contentType() : null);
+        }
+
+        String reqUrl = req.getLogoUrl() != null ? req.getLogoUrl().trim() : "";
+        if (!reqUrl.isBlank()) {
+            // Unchanged uploaded logo — client echoed our own endpoint URL back; keep as-is.
+            if (existing != null && reqUrl.equals(existing.getLogoUrl())
+                    && (existing.getLogoKey() != null || existing.getLogoBase64() != null)) {
+                return new LogoResult(existing.getLogoBase64(), existing.getLogoUrl(),
+                        existing.getLogoBucket(), existing.getLogoKey(),
+                        existing.getLogoProvider(), existing.getLogoContentType());
+            }
+            // A directly-provided external image URL — store it as-is (no cloud upload).
+            if (reqUrl.startsWith("http://") || reqUrl.startsWith("https://")) {
+                if (existing != null && existing.getLogoKey() != null)   // drop any prior cloud object
+                    logoStorage.deleteQuietly(orgId, existing.getLogoBucket(), existing.getLogoKey());
+                log.info("Branding logo set to external URL for org {} -> {}", orgId, reqUrl);
+                return new LogoResult(null, reqUrl, null, null, null, null);
+            }
+            throw new RuntimeException("Logo URL must start with http:// or https://");
+        }
+
+        // Removed.
+        if (existing != null && existing.getLogoKey() != null)
+            logoStorage.deleteQuietly(orgId, existing.getLogoBucket(), existing.getLogoKey());
+        return new LogoResult(null, null, null, null, null, null);
+    }
+
+    private DecodedImage decodeDataUrl(String dataUrl) {
+        if (dataUrl == null || !dataUrl.startsWith("data:")) return null;
+        try {
+            int comma = dataUrl.indexOf(',');
+            if (comma < 0) return null;
+            String meta = dataUrl.substring(5, comma);                 // after "data:"
+            String mime = meta.contains(";") ? meta.substring(0, meta.indexOf(';')) : meta;
+            if (mime.isBlank()) mime = "image/png";
+            String ext = mime.contains("/") ? mime.substring(mime.indexOf('/') + 1) : "png";
+            if (ext.equalsIgnoreCase("svg+xml")) ext = "svg";
+            byte[] bytes = java.util.Base64.getDecoder().decode(dataUrl.substring(comma + 1));
+            return new DecodedImage(bytes, mime, ext);
+        } catch (Exception e) {
+            log.warn("Could not decode logo data URL: {}", e.getMessage());
+            return null;
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -136,6 +249,7 @@ public class OrgBrandingService {
         OrgBranding b = org.getBranding();
         boolean configured = b != null && (
                 (b.getLogoBase64()     != null && !b.getLogoBase64().isBlank())     ||
+                (b.getLogoUrl()        != null && !b.getLogoUrl().isBlank())         ||
                 (b.getPrimaryColor()   != null && !b.getPrimaryColor().isBlank())   ||
                 (b.getAccentColor()    != null && !b.getAccentColor().isBlank())    ||
                 (b.getEmailSenderName()!= null && !b.getEmailSenderName().isBlank())||
@@ -147,6 +261,7 @@ public class OrgBrandingService {
                 .organizationId(org.getId())
                 .organizationName(org.getName())
                 .logoBase64(b != null ? b.getLogoBase64() : null)
+                .logoUrl(b != null ? b.getLogoUrl() : null)
                 .primaryColor(b != null ? b.getPrimaryColor() : null)
                 .accentColor(b != null ? b.getAccentColor() : null)
                 .emailSenderName(b != null ? b.getEmailSenderName() : null)
