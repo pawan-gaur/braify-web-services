@@ -718,17 +718,40 @@ public class ESignDocumentService {
 
     public DocumentResponse getDocument(String docId, UserDetailsImpl principal) {
         ESignDocument doc = getAccessibleDoc(docId, principal);
+        boolean pdfAccess = canViewPdf(doc, principal);
         List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(docId);
-        DocumentResponse resp = DocumentResponse.from(doc, fields, true);  // include PDF for detail view
-        // Cloud-stored docs: hand the client pre-signed URLs instead of embedded bytes.
-        resp.setSourcePdfUrl(esignStorage.sourcePresignedUrl(doc));
-        resp.setSignedPdfUrl(esignStorage.signedPresignedUrl(doc));
+        // Include PDF bytes/URLs ONLY for flow participants; others still get metadata
+        // (Overview, Audit Trail) but no document content.
+        DocumentResponse resp = DocumentResponse.from(doc, fields, pdfAccess);
+        if (pdfAccess) {
+            resp.setSourcePdfUrl(esignStorage.sourcePresignedUrl(doc));
+            resp.setSignedPdfUrl(esignStorage.signedPresignedUrl(doc));
+        }
+        resp.setCanViewPdf(pdfAccess);
         return resp;
+    }
+
+    /**
+     * PDF access is limited to the people in the signing flow: the creator (initiator)
+     * and the signatories (matched by email, incl. the legacy single-signer). Everyone
+     * else — including org/platform admins who can still see the document's metadata —
+     * is denied the source/signed PDF.
+     */
+    private boolean canViewPdf(ESignDocument doc, UserDetailsImpl principal) {
+        if (doc.getCreatedBy() != null && doc.getCreatedBy().equals(principal.getId())) return true;
+        String email = principal.getUsername();
+        if (email == null || email.isBlank()) return false;
+        if (doc.getSignatories() != null && doc.getSignatories().stream()
+                .anyMatch(s -> s.getEmail() != null && email.equalsIgnoreCase(s.getEmail())))
+            return true;
+        return email.equalsIgnoreCase(doc.getClientEmail());   // legacy single-signer
     }
 
     /** Signed PDF bytes for download (cloud or legacy); null if not yet generated. */
     public byte[] getSignedPdfBytes(String docId, UserDetailsImpl principal) {
         ESignDocument doc = getAccessibleDoc(docId, principal);
+        if (!canViewPdf(doc, principal))
+            throw new AccessDeniedException("You don't have access to view this document.");
         return esignStorage.resolveSignedBytes(doc);
     }
 
@@ -739,6 +762,8 @@ public class ESignDocumentService {
      */
     public byte[] getSourcePdfBytes(String docId, UserDetailsImpl principal) {
         ESignDocument doc = getAccessibleDoc(docId, principal);
+        if (!canViewPdf(doc, principal))
+            throw new AccessDeniedException("You don't have access to view this document.");
         return esignStorage.resolveSourceBytes(doc);
     }
 

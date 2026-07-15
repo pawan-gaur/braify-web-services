@@ -29,6 +29,8 @@ public class DocumentResponse {
     private String signedPdfBase64;       // LEGACY: embedded-byte docs only; null for cloud-stored docs
     private String sourcePdfUrl;          // pre-signed cloud URL for the source PDF (cloud-stored docs)
     private String signedPdfUrl;          // pre-signed cloud URL for the signed PDF (cloud-stored docs)
+    /** True only for the flow participants (creator + signatories); gates the PDF viewer/download. */
+    private boolean canViewPdf;
     private String signedPdfHash;
     private boolean allowClientUpload;              // whether client may upload supporting docs after signing
     private List<String> allowedClientUploadFileTypes; // empty = all types accepted
