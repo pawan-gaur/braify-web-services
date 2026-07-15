@@ -373,10 +373,24 @@ public class ESignClientService {
     // ── Public verify ────────────────────────────────────────────────────────
 
     /**
-     * Returns public document metadata for the verification page.
-     * No authentication needed — the document ID is the access key.
+     * Result of a public verification: the document metadata plus a live integrity check.
+     * {@code storedHash} is the SHA-256 recorded when the PDF was finalized; {@code computedHash}
+     * is re-derived here from the stored PDF bytes; {@code integrityVerified} is true only when the
+     * two match (i.e. the file on storage has not been altered since signing).
      */
-    public DocumentResponse verifyDocument(String docId) {
+    public record VerificationResult(DocumentResponse document,
+                                     String storedHash,
+                                     String computedHash,
+                                     boolean integrityVerified,
+                                     boolean pdfAvailable) {}
+
+    /**
+     * Verifies a completed document for the public verification page. No authentication needed —
+     * the document ID is the access key. Unlike a metadata-only lookup, this RE-HASHES the stored
+     * signed PDF and compares it to the recorded hash, so the result reflects true intactness of the
+     * file rather than merely echoing a stored value.
+     */
+    public VerificationResult verifyDocumentIntegrity(String docId) {
         ESignDocument doc = docRepo.findById(docId)
                 .orElseThrow(() -> new IllegalArgumentException("Document not found"));
 
@@ -384,7 +398,28 @@ public class ESignClientService {
             throw new IllegalStateException("Document is not yet completed");
 
         List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(docId);
-        return DocumentResponse.from(doc, fields, false);
+        DocumentResponse dr = DocumentResponse.from(doc, fields, false);
+
+        String storedHash = doc.getSignedPdfHash();
+        String computedHash = null;
+        boolean pdfAvailable = false;
+        try {
+            byte[] signedBytes = esignStorage.resolveSignedBytes(doc);
+            if (signedBytes != null && signedBytes.length > 0) {
+                computedHash = pdfService.sha256Hex(signedBytes);
+                pdfAvailable = true;
+            }
+        } catch (Exception e) {
+            // Storage unreachable / legacy doc with no signed bytes — report as "could not verify"
+            // rather than failing the whole request; integrityVerified stays false.
+            log.warn("Verify: could not resolve signed PDF for doc {}: {}", docId, e.getMessage());
+        }
+
+        boolean integrityVerified = pdfAvailable
+                && storedHash != null && !storedHash.isBlank()
+                && storedHash.equalsIgnoreCase(computedHash);
+
+        return new VerificationResult(dr, storedHash, computedHash, integrityVerified, pdfAvailable);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

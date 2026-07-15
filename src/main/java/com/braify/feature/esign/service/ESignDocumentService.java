@@ -53,6 +53,7 @@ public class ESignDocumentService {
     private final AuditLogService               auditLogService;
     private final QuotaService                  quotaService;
     private final ESignStorageService           esignStorage;
+    private final OrgContactService             contactService;
 
     // ── Create ──────────────────────────────────────────────────────────────
 
@@ -141,6 +142,9 @@ public class ESignDocumentService {
         doc.setPdfBucket(ref.bucket());
         doc.setPdfCloudProvider(ref.provider());
         doc = docRepo.save(doc);
+
+        // Remember every recipient in the org address book (best-effort; never blocks creation).
+        contactService.rememberDocumentRecipients(doc);
 
         auditService.log(doc.getId(), principal.getUsername(),
                 ESignAuditEvent.ActorType.CREATOR,
