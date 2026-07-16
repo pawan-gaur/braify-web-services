@@ -31,7 +31,7 @@ public class JwtUtil {
      * re-minted through the refresh-cookie flow, so a leaked access token is only
      * usable for this window.
      */
-    @Value("${jwt.access-minutes:30}")
+    @Value("${jwt.access-minutes:540}")
     private int accessMinutes;
 
     @Value("${jwt.mfa-challenge-minutes:5}")

@@ -9,6 +9,10 @@ import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.graphics.image.PDImageXObject;
+import org.apache.pdfbox.pdmodel.interactive.action.PDActionURI;
+import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotationLink;
+import org.apache.pdfbox.pdmodel.interactive.annotation.PDBorderStyleDictionary;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayInputStream;
@@ -23,6 +27,10 @@ import java.util.List;
 @Slf4j
 @Service
 public class ESignPdfService {
+
+    /** Public base URL of the app; used to build the /verify/{id} link printed on the audit report. */
+    @Value("${app.base-url:https://braify.com}")
+    private String baseUrl;
 
     // ── Public API ──────────────────────────────────────────────────────────
 
@@ -254,12 +262,37 @@ public class ESignPdfService {
             y -= 9;
         }
 
-        // Footer
-        cs.setNonStrokingColor(0.45f, 0.45f, 0.45f);
-        drawText(cs, reg, 8, margin, 34, "Powered by Braify e-Sign");
+        // Footer — "Powered by Braify e-Sign" is a clickable link to the Braify site.
+        cs.setNonStrokingColor(0.42f, 0.32f, 0.91f);   // accent colour so it reads as a link
+        drawLink(page, cs, reg, 8, margin, 34, "Powered by Braify e-Sign", "https://braify.com/");
         cs.setNonStrokingColor(0f, 0f, 0f);
 
         cs.close();
+    }
+
+    /** Draws text and overlays a borderless URL link annotation covering it. */
+    private void drawLink(PDPage page, PDPageContentStream cs, PDType1Font font, float size,
+                          float x, float y, String text, String url) throws IOException {
+        drawText(cs, font, size, x, y, text);
+
+        float w = font.getStringWidth(text) / 1000f * size;
+        PDAnnotationLink link = new PDAnnotationLink();
+        PDBorderStyleDictionary noBorder = new PDBorderStyleDictionary();
+        noBorder.setWidth(0);
+        link.setBorderStyle(noBorder);
+
+        PDRectangle rect = new PDRectangle();
+        rect.setLowerLeftX(x);
+        rect.setLowerLeftY(y - 2);
+        rect.setUpperRightX(x + w);
+        rect.setUpperRightY(y + size);
+        link.setRectangle(rect);
+
+        PDActionURI action = new PDActionURI();
+        action.setURI(url);
+        link.setAction(action);
+
+        page.getAnnotations().add(link);
     }
 
     private List<AuditEvent> buildAuditEvents(ESignDocument doc, List<ESignSignatureField> fields,
@@ -298,13 +331,24 @@ public class ESignPdfService {
         events.sort(java.util.Comparator.comparing(AuditEvent::ts,
                 java.util.Comparator.nullsLast(java.util.Comparator.naturalOrder())));
 
-        // Terminal tamper-evidence entry — appended AFTER the sort so it is always the last
-        // line in the History: the signing is complete and here is the document's SHA-256.
+        // Terminal entry — appended AFTER the sort so it is always the last line in the History.
+        // NOTE: this fingerprint covers the signed document content BEFORE this audit page was
+        // appended (a page cannot contain the hash of the file it is part of — see stampSignatures).
+        // It therefore does NOT match SHA-256 of the whole downloaded PDF. The whole-file hash used
+        // for verification is shown on the document's Verify page (GET /api/esign/verify/{id}).
+        LocalDateTime completedTs = doc.getCompletedAt() != null ? doc.getCompletedAt() : LocalDateTime.now();
         if (signedContentHash != null && !signedContentHash.isBlank()) {
-            LocalDateTime completedTs = doc.getCompletedAt() != null ? doc.getCompletedAt() : LocalDateTime.now();
             events.add(new AuditEvent(completedTs, 0.10f, 0.55f, 0.25f,
-                    "Document signing completed - tamper-evident, verify with SHA-256",
-                    "SHA-256: " + signedContentHash));
+                    "Document signing completed",
+                    "Content fingerprint (SHA-256), excludes this audit page. The whole-file hash is "
+                    + "on the Verify page: " + signedContentHash));
+        }
+
+        // Public verification link — appended last so it sits directly under the completion entry.
+        if (doc.getId() != null && !doc.getId().isBlank()) {
+            events.add(new AuditEvent(completedTs, 0.10f, 0.36f, 0.80f,
+                    "Verify this document online",
+                    baseUrl + "/verify/" + doc.getId()));
         }
         return events;
     }

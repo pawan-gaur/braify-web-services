@@ -25,7 +25,12 @@ public class ESignVerifyController {
 
     @Operation(summary = "Verify signed document",
                description = "Returns a public summary of a completed e-sign document for third-party integrity verification. " +
-                             "Includes: `status`, `clientName`, `clientEmail`, `completedAt`, `signedPdfHash` (SHA-256 of the signed PDF bytes), and `verified` (boolean — true only when status is COMPLETED). " +
+                             "The server re-hashes the stored signed PDF and compares it to the hash recorded at signing. " +
+                             "Includes: `status`, `clientName`, `clientEmail`, `completedAt`, " +
+                             "`signedPdfHash` (SHA-256 of the whole signed PDF file, recorded at signing), " +
+                             "`computedPdfHash` (SHA-256 re-derived now from the stored file), " +
+                             "`integrityVerified` (boolean — true only when the two hashes match), and " +
+                             "`verified` (boolean — true only when status is COMPLETED). " +
                              "Does **not** return the PDF bytes — use the creator's download endpoint for that.")
     @SecurityRequirements   // marks as requiring NO auth in the spec
     @ApiResponse(responseCode = "200", description = "Verification summary")
@@ -34,18 +39,21 @@ public class ESignVerifyController {
     public ResponseEntity<Map<String, Object>> verify(
             @Parameter(description = "E-sign document ID") @PathVariable String id) {
         log.info("GET /api/esign/verify/{}", id);
-        DocumentResponse doc = clientService.verifyDocument(id);
+        var v = clientService.verifyDocumentIntegrity(id);
+        DocumentResponse doc = v.document();
 
-        Map<String, Object> result = Map.of(
-                "documentId",    doc.getId(),
-                "title",         doc.getTitle(),
-                "status",        doc.getStatus(),
-                "clientName",    doc.getClientName() != null ? doc.getClientName() : "",
-                "clientEmail",   doc.getClientEmail() != null ? doc.getClientEmail() : "",
-                "completedAt",   doc.getCompletedAt() != null ? doc.getCompletedAt().toString() : "",
-                "signedPdfHash", doc.getSignedPdfHash() != null ? doc.getSignedPdfHash() : "",
-                "verified",      "COMPLETED".equals(doc.getStatus())
-        );
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("documentId",        doc.getId());
+        result.put("title",             doc.getTitle());
+        result.put("status",            doc.getStatus());
+        result.put("clientName",        doc.getClientName() != null ? doc.getClientName() : "");
+        result.put("clientEmail",       doc.getClientEmail() != null ? doc.getClientEmail() : "");
+        result.put("completedAt",       doc.getCompletedAt() != null ? doc.getCompletedAt().toString() : "");
+        result.put("signedPdfHash",     v.storedHash() != null ? v.storedHash() : "");
+        result.put("computedPdfHash",   v.computedHash() != null ? v.computedHash() : "");
+        result.put("integrityVerified", v.integrityVerified());
+        result.put("pdfAvailable",      v.pdfAvailable());
+        result.put("verified",          "COMPLETED".equals(doc.getStatus()));
 
         return ResponseEntity.ok(result);
     }
