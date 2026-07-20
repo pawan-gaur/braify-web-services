@@ -144,6 +144,14 @@ public class ESignDocument {
     @Builder.Default
     private List<ClientAttachment> clientAttachments = new ArrayList<>();
 
+    /**
+     * Record of who was emailed the final signed document (and the CC "signed" notice) once
+     * signing completed — one entry per recipient, with per-recipient delivery status. Populated
+     * by the completion-email flow and refreshed on "resend final copy".
+     */
+    @Builder.Default
+    private List<CompletionNotification> completionNotifications = new ArrayList<>();
+
     /* ── Signatory sub-document ─────────────────────────────────────────── */
     public enum SignatoryStatus { PENDING, VIEWED, SIGNED }
 
@@ -170,5 +178,22 @@ public class ESignDocument {
         private long          fileSize;     // bytes
         private LocalDateTime uploadedAt;
         private String        uploadedFromIp;
+    }
+
+    /* ── Completion-notification sub-document ────────────────────────────── */
+
+    /** Which "bucket" a completion recipient belongs to (drives the label + whether the PDF is attached). */
+    public enum NotificationRole { SIGNATORY, CREATOR, COMPLETION_CC, INVITATION_CC }
+
+    public enum NotificationStatus { SENT, FAILED }
+
+    @Data @Builder @NoArgsConstructor @AllArgsConstructor
+    public static class CompletionNotification {
+        private String             email;
+        private String             name;            // may be null (CC lists store emails only)
+        private NotificationRole   role;
+        private NotificationStatus status;
+        private boolean            withAttachment;  // true = signed PDF attached; false = view-only notice
+        private LocalDateTime      sentAt;
     }
 }
