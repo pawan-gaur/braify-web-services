@@ -1,7 +1,11 @@
 package com.braify.feature.esign.service;
 
+import com.braify.feature.branding.service.OrgBrandingService;
 import com.braify.feature.esign.model.ESignDocument;
 import com.braify.feature.esign.model.ESignSignatureField;
+import com.braify.feature.organization.model.Organization;
+import com.braify.feature.organization.repository.OrganizationRepository;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
@@ -26,7 +30,11 @@ import java.util.List;
 
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class ESignPdfService {
+
+    private final OrganizationRepository orgRepository;
+    private final OrgBrandingService     brandingService;
 
     /** Public base URL of the app; used to build the /verify/{id} link printed on the audit report. */
     @Value("${app.base-url:https://braify.com}")
@@ -262,12 +270,92 @@ public class ESignPdfService {
             y -= 9;
         }
 
-        // Footer — "Powered by Braify e-Sign" is a clickable link to the Braify site.
-        cs.setNonStrokingColor(0.42f, 0.32f, 0.91f);   // accent colour so it reads as a link
-        drawLink(page, cs, reg, 8, margin, 34, "Powered by Braify e-Sign", "https://braify.com/");
-        cs.setNonStrokingColor(0f, 0f, 0f);
+        // ── Footer band: [org logo] Org Name  ·············  Powered by Braify e-Sign ──
+        drawAuditFooter(pdf, page, cs, bold, reg, doc.getOrgId(), margin, pageW);
 
         cs.close();
+    }
+
+    /**
+     * Branded footer for the audit report: the org logo + org name on the left, and a
+     * clickable "Powered by Braify e-Sign" on the right, above a subtle divider rule.
+     */
+    private void drawAuditFooter(PDDocument pdf, PDPage page, PDPageContentStream cs,
+                                 PDType1Font bold, PDType1Font reg,
+                                 String orgId, float margin, float pageW) throws IOException {
+        final float footerY = 30f;
+
+        // Divider rule above the footer.
+        cs.setStrokingColor(0.88f, 0.90f, 0.94f);
+        cs.setLineWidth(0.75f);
+        cs.moveTo(margin, footerY + 22); cs.lineTo(pageW - margin, footerY + 22); cs.stroke();
+        cs.setStrokingColor(0f, 0f, 0f);
+
+        // Left: org logo + name.
+        float cursorX = margin;
+        byte[] logoBytes = resolveLogoBytes(orgId);
+        if (logoBytes != null) {
+            try {
+                PDImageXObject logo = PDImageXObject.createFromByteArray(pdf, logoBytes, "org-logo");
+                float logoH = 24f;
+                float logoW = Math.min(120f, logoH * (float) logo.getWidth() / logo.getHeight());
+                cs.drawImage(logo, cursorX, footerY - 7, logoW, logoH);
+                cursorX += logoW + 12;
+            } catch (Exception e) {
+                log.warn("Audit footer logo embed failed: {}", e.getMessage());
+            }
+        }
+        String orgName = resolveOrgName(orgId);
+        if (orgName != null && !orgName.isBlank()) {
+            cs.setNonStrokingColor(0.06f, 0.09f, 0.16f);   // dark slate
+            drawText(cs, bold, 12, cursorX, footerY + 2, orgName);
+            cs.setNonStrokingColor(0f, 0f, 0f);
+        }
+
+        // Right: "Powered by Braify e-Sign" as a clickable link (href unchanged).
+        String powered = "Powered by Braify e-Sign";
+        float pSize = 9f;
+        float pw = reg.getStringWidth(powered) / 1000f * pSize;
+        float px = pageW - margin - pw;
+        cs.setNonStrokingColor(0.42f, 0.32f, 0.91f);   // accent so it reads as a link
+        drawLink(page, cs, reg, pSize, px, footerY + 2, powered, "https://braify.com/");
+        cs.setNonStrokingColor(0f, 0f, 0f);
+    }
+
+    /** Org display name for the audit footer, or null. */
+    private String resolveOrgName(String orgId) {
+        if (orgId == null) return null;
+        return orgRepository.findById(orgId).map(Organization::getName).orElse(null);
+    }
+
+    /**
+     * Raster logo bytes for embedding in the PDF footer (PNG/JPEG only — SVG unsupported).
+     * Tries cloud/base64 storage first, then falls back to fetching an external logo URL.
+     */
+    private byte[] resolveLogoBytes(String orgId) {
+        if (orgId == null) return null;
+        try {
+            OrgBrandingService.LogoData data = brandingService.getLogoData(orgId);
+            if (data != null && data.bytes() != null && data.bytes().length > 0
+                    && !String.valueOf(data.contentType()).toLowerCase().contains("svg")) {
+                return data.bytes();
+            }
+            // External URL logo (not in cloud/base64) → fetch it.
+            Organization org = orgRepository.findById(orgId).orElse(null);
+            String url = (org != null && org.getBranding() != null) ? org.getBranding().getLogoUrl() : null;
+            if (url != null && (url.startsWith("http://") || url.startsWith("https://"))
+                    && !url.toLowerCase().endsWith(".svg")) {
+                java.net.URLConnection c = java.net.URI.create(url).toURL().openConnection();
+                c.setConnectTimeout(4000);
+                c.setReadTimeout(6000);
+                try (var in = c.getInputStream()) {
+                    return in.readAllBytes();
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Audit footer logo resolve failed for org {}: {}", orgId, e.getMessage());
+        }
+        return null;
     }
 
     /** Draws text and overlays a borderless URL link annotation covering it. */
