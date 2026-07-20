@@ -11,7 +11,7 @@ import com.braify.feature.organization.repository.OrganizationRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.scheduling.annotation.Async;
+import java.time.LocalDateTime;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -183,19 +183,25 @@ public class ESignEmailService implements InternalTemplateProvider {
     }
 
     /**
-     * Sends the completed signed PDF to both the creator and the client.
-     * Uses sendHtmlEmail (inline HTML) + separate attachment call so no S3
-     * template bucket is required.
+     * Sends the completed signed PDF to every signatory, the creator, and the
+     * "send a copy" recipients, plus a view-only "document signed" notice to the
+     * invitation-CC recipients. Uses sendHtmlEmail (inline HTML) + separate
+     * attachment call so no S3 template bucket is required.
+     *
+     * <p>Runs synchronously and returns one {@link ESignDocument.CompletionNotification}
+     * per recipient (with per-recipient delivery status) so the caller can persist an
+     * auditable record of who was notified. Callers invoke this from an async context.</p>
      */
-    @Async
-    public void sendCompletionEmails(ESignDocument doc,
-                                     String creatorEmail,
-                                     String creatorName,
-                                     byte[] signedPdfBytes) {
+    public List<ESignDocument.CompletionNotification> sendCompletionEmails(ESignDocument doc,
+                                                                           String creatorEmail,
+                                                                           String creatorName,
+                                                                           byte[] signedPdfBytes) {
         String filename   = sanitizeFilename(doc.getTitle()) + "-signed.pdf";
         String verifyLink = baseUrl + "/verify/" + doc.getId();
         String subject    = "Signed document ready: " + doc.getTitle();
         String orgName    = resolveOrgName(doc.getOrgId());
+
+        List<ESignDocument.CompletionNotification> notifications = new java.util.ArrayList<>();
 
         // Send to each recipient at most once (case-insensitive de-dupe across all groups).
         java.util.Set<String> sent = new java.util.HashSet<>();
@@ -206,21 +212,28 @@ public class ESignEmailService implements InternalTemplateProvider {
             for (ESignDocument.Signatory s : sigs) {
                 if (s.getEmail() == null || s.getEmail().isBlank()) continue;
                 if (!sent.add(s.getEmail().trim().toLowerCase())) continue;
-                sendCompletionTo(s.getEmail().trim(), s.getName(), subject, doc, verifyLink, orgName,
+                boolean ok = sendCompletionTo(s.getEmail().trim(), s.getName(), subject, doc, verifyLink, orgName,
                         signedPdfBytes, filename);
+                notifications.add(note(s.getEmail().trim(), s.getName(),
+                        ESignDocument.NotificationRole.SIGNATORY, ok, true));
             }
         } else if (doc.getClientEmail() != null && !doc.getClientEmail().isBlank()) {
             // legacy single-signer document
-            if (sent.add(doc.getClientEmail().trim().toLowerCase()))
-                sendCompletionTo(doc.getClientEmail().trim(), doc.getClientName(), subject, doc, verifyLink,
+            if (sent.add(doc.getClientEmail().trim().toLowerCase())) {
+                boolean ok = sendCompletionTo(doc.getClientEmail().trim(), doc.getClientName(), subject, doc, verifyLink,
                         orgName, signedPdfBytes, filename);
+                notifications.add(note(doc.getClientEmail().trim(), doc.getClientName(),
+                        ESignDocument.NotificationRole.SIGNATORY, ok, true));
+            }
         }
 
         // ── Creator ──────────────────────────────────────────────────────────
         if (creatorEmail != null && !creatorEmail.isBlank()
                 && sent.add(creatorEmail.trim().toLowerCase())) {
-            sendCompletionTo(creatorEmail.trim(), creatorName, subject, doc, verifyLink, orgName,
+            boolean ok = sendCompletionTo(creatorEmail.trim(), creatorName, subject, doc, verifyLink, orgName,
                     signedPdfBytes, filename);
+            notifications.add(note(creatorEmail.trim(), creatorName,
+                    ESignDocument.NotificationRole.CREATOR, ok, true));
         }
 
         // ── Copies to additional recipients ("send a copy of the signed document to") ──
@@ -229,7 +242,8 @@ public class ESignEmailService implements InternalTemplateProvider {
                 if (raw == null || raw.isBlank()) continue;
                 String to = raw.trim();
                 if (!sent.add(to.toLowerCase())) continue;
-                sendCompletionTo(to, null, subject, doc, verifyLink, orgName, signedPdfBytes, filename);
+                boolean ok = sendCompletionTo(to, null, subject, doc, verifyLink, orgName, signedPdfBytes, filename);
+                notifications.add(note(to, null, ESignDocument.NotificationRole.COMPLETION_CC, ok, true));
             }
         }
 
@@ -248,19 +262,39 @@ public class ESignEmailService implements InternalTemplateProvider {
                 if (raw == null || raw.isBlank()) continue;
                 String to = raw.trim();
                 if (!sent.add(to.toLowerCase())) continue;   // skip anyone already emailed a copy
+                boolean ok;
                 try {
                     emailDispatcher.sendHtmlEmail(to, ccR.subject(), ccR.html(), ccVars, orgName);
                     log.info("Completion view-notice sent to CC {} for doc {}", to, doc.getId());
+                    ok = true;
                 } catch (Exception e) {
                     log.error("Failed to send completion view-notice to {} for doc {}: {}", to, doc.getId(), e.getMessage());
+                    ok = false;
                 }
+                notifications.add(note(to, null, ESignDocument.NotificationRole.INVITATION_CC, ok, false));
             }
         }
+
+        return notifications;
     }
 
-    /** Sends one completion email (signed PDF attached); logs and swallows failures. */
-    private void sendCompletionTo(String to, String greetingName, String subject, ESignDocument doc,
-                                  String verifyLink, String orgName, byte[] signedPdfBytes, String filename) {
+    /** Builds a single completion-notification record. */
+    private ESignDocument.CompletionNotification note(String email, String name,
+                                                      ESignDocument.NotificationRole role,
+                                                      boolean ok, boolean withAttachment) {
+        return ESignDocument.CompletionNotification.builder()
+                .email(email)
+                .name(name)
+                .role(role)
+                .status(ok ? ESignDocument.NotificationStatus.SENT : ESignDocument.NotificationStatus.FAILED)
+                .withAttachment(withAttachment)
+                .sentAt(LocalDateTime.now())
+                .build();
+    }
+
+    /** Sends one completion email (signed PDF attached); logs and swallows failures. Returns true on success. */
+    private boolean sendCompletionTo(String to, String greetingName, String subject, ESignDocument doc,
+                                     String verifyLink, String orgName, byte[] signedPdfBytes, String filename) {
         try {
             String greeting = notBlank(greetingName) ? greetingName : "there";
             Map<String, Object> vars = new java.util.HashMap<>(brandVars(doc.getOrgId(), orgName));
@@ -279,8 +313,10 @@ public class ESignEmailService implements InternalTemplateProvider {
                     this::buildCompletionHtml);
             sendHtmlWithAttachment(to, r.subject(), r.html(), vars, signedPdfBytes, filename, orgName);
             log.info("Completion email sent to {} for doc {}", to, doc.getId());
+            return true;
         } catch (Exception e) {
             log.error("Failed to send completion email to {} for doc {}: {}", to, doc.getId(), e.getMessage());
+            return false;
         }
     }
 

@@ -42,6 +42,30 @@ public class DocumentResponse {
     private LocalDateTime createdAt;
     private List<FieldResponse> fields;
 
+    /** Who was emailed the final signed document (populated once completed). */
+    private List<CompletionNotificationResponse> completionNotifications;
+
+    @Data @Builder
+    public static class CompletionNotificationResponse {
+        private String  email;
+        private String  name;
+        private String  role;            // SIGNATORY | CREATOR | COMPLETION_CC | INVITATION_CC
+        private String  status;          // SENT | FAILED
+        private boolean withAttachment;  // true = signed PDF attached; false = view-only notice
+        private LocalDateTime sentAt;
+
+        static CompletionNotificationResponse from(ESignDocument.CompletionNotification n) {
+            return CompletionNotificationResponse.builder()
+                    .email(n.getEmail())
+                    .name(n.getName())
+                    .role(n.getRole() != null ? n.getRole().name() : null)
+                    .status(n.getStatus() != null ? n.getStatus().name() : null)
+                    .withAttachment(n.isWithAttachment())
+                    .sentAt(n.getSentAt())
+                    .build();
+        }
+    }
+
     @Data @Builder
     public static class FieldResponse {
         private String  id;
@@ -141,6 +165,9 @@ public class DocumentResponse {
                 .tokenExpiresAt(doc.getTokenExpiresAt())
                 .createdAt(doc.getCreatedAt())
                 .fields(fields.stream().map(f -> FieldResponse.from(f, nameFor.apply(f))).toList())
+                .completionNotifications(doc.getCompletionNotifications() == null ? List.of()
+                        : doc.getCompletionNotifications().stream()
+                                .map(CompletionNotificationResponse::from).toList())
                 .build();
     }
 }

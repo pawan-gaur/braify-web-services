@@ -305,7 +305,7 @@ public class OnboardingRequestService implements InternalTemplateProvider {
         return """
             <div style="padding:22px 32px 28px;background:#F8FAFC;border-top:1px solid #EEF2F6;">
               {{footerContact}}
-              <div style="margin-top:14px;font-size:11px;color:#CBD5E1;">Powered by <strong style="color:#94A3B8;">{{platformName}}</strong> · 256-bit encrypted &amp; audit-logged</div>
+              <div style="margin-top:14px;font-size:11px;color:#CBD5E1;">Powered by <a href="https://braify.com/" style="color:#94A3B8;font-weight:700;text-decoration:none;">{{platformName}}</a> · 256-bit encrypted &amp; audit-logged</div>
             </div>
             """;
     }

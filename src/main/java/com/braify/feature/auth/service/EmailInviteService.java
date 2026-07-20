@@ -257,7 +257,7 @@ public class EmailInviteService implements InternalTemplateProvider {
                 <div style="padding:22px 32px 28px;background:#F8FAFC;border-top:1px solid #EEF2F6;">
                   <p style="margin:0 0 12px;font-size:12px;line-height:1.6;color:#94A3B8;">If you weren't expecting this invitation, you can safely ignore this email — no account will be created and no further action is required.</p>
                   {{footerContact}}
-                  <div style="margin-top:14px;font-size:11px;color:#CBD5E1;">Powered by <strong style="color:#94A3B8;">{{platformName}}</strong> · 256-bit encrypted &amp; audit-logged</div>
+                  <div style="margin-top:14px;font-size:11px;color:#CBD5E1;">Powered by <a href="https://braify.com/" style="color:#94A3B8;font-weight:700;text-decoration:none;">{{platformName}}</a> · 256-bit encrypted &amp; audit-logged</div>
                 </div>
               </div>
             </td></tr></table></body></html>
@@ -297,7 +297,7 @@ public class EmailInviteService implements InternalTemplateProvider {
                 </div>
                 <div style="padding:22px 32px 28px;background:#F8FAFC;border-top:1px solid #EEF2F6;">
                   {{footerContact}}
-                  <div style="margin-top:14px;font-size:11px;color:#CBD5E1;">Powered by <strong style="color:#94A3B8;">{{platformName}}</strong> · 256-bit encrypted &amp; audit-logged</div>
+                  <div style="margin-top:14px;font-size:11px;color:#CBD5E1;">Powered by <a href="https://braify.com/" style="color:#94A3B8;font-weight:700;text-decoration:none;">{{platformName}}</a> · 256-bit encrypted &amp; audit-logged</div>
                 </div>
               </div>
             </td></tr></table></body></html>

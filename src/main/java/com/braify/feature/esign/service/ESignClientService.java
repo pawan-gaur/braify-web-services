@@ -243,13 +243,14 @@ public class ESignClientService {
                     ESignAuditEvent.EventType.PDF_GENERATED, ip, ua,
                     Map.of("signedPdfHash", hash));
 
-            // 2. Send completion emails
-            if (creatorEmail != null) {
-                emailService.sendCompletionEmails(doc, creatorEmail, creatorName, signedBytes);
-                auditService.log(doc.getId(), "SYSTEM",
-                        ESignAuditEvent.ActorType.SYSTEM,
-                        ESignAuditEvent.EventType.COMPLETION_EMAIL_SENT, ip, ua, null);
-            }
+            // 2. Send completion emails and record who was notified (per-recipient status).
+            var notifications = emailService.sendCompletionEmails(doc, creatorEmail, creatorName, signedBytes);
+            doc.setCompletionNotifications(notifications);
+            docRepo.save(doc);
+            auditService.log(doc.getId(), "SYSTEM",
+                    ESignAuditEvent.ActorType.SYSTEM,
+                    ESignAuditEvent.EventType.COMPLETION_EMAIL_SENT, ip, ua,
+                    Map.of("recipients", notifications.size()));
 
         } catch (Exception e) {
             log.error("Async PDF finalization failed for doc {}: {}", doc.getId(), e.getMessage(), e);

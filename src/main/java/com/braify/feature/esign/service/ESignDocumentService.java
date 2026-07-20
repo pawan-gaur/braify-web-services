@@ -21,6 +21,7 @@ import com.braify.feature.esign.repository.ESignDocumentRepository;
 import com.braify.feature.esign.repository.ESignSignatureFieldRepository;
 import com.braify.feature.pdf.repository.TemplateRepository;
 import com.braify.feature.user.model.AppUser;
+import com.braify.feature.user.repository.AppUserRepository;
 import com.braify.security.UserDetailsImpl;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -54,6 +55,7 @@ public class ESignDocumentService {
     private final QuotaService                  quotaService;
     private final ESignStorageService           esignStorage;
     private final OrgContactService             contactService;
+    private final AppUserRepository             userRepo;
 
     // ── Create ──────────────────────────────────────────────────────────────
 
@@ -733,6 +735,40 @@ public class ESignDocumentService {
         }
         resp.setCanViewPdf(pdfAccess);
         return resp;
+    }
+
+    /**
+     * Re-sends the final signed PDF (and the CC "signed" notice) to all completion recipients,
+     * refreshing the per-recipient notification record. Only valid once the document is COMPLETED.
+     */
+    public DocumentResponse resendFinalCopy(String docId, UserDetailsImpl principal, String ip, String ua) {
+        ESignDocument doc = getAccessibleDoc(docId, principal);
+        if (doc.getStatus() != ESignDocument.Status.COMPLETED)
+            throw new IllegalStateException("The signed copy can only be resent once the document is completed.");
+
+        // Resolve the creator's identity for the email greeting (same as the finalize flow).
+        var creatorOpt = userRepo.findById(doc.getCreatedBy());
+        String creatorEmail = creatorOpt.map(AppUser::getEmail).orElse(null);
+        String creatorName  = creatorOpt
+                .map(u -> ((u.getFirstName() != null ? u.getFirstName() : "") + " "
+                         + (u.getLastName()  != null ? u.getLastName()  : "")).trim())
+                .filter(s -> !s.isBlank())
+                .orElse(null);
+
+        byte[] signedBytes = esignStorage.resolveSignedBytes(doc);
+        if (signedBytes == null || signedBytes.length == 0)
+            throw new IllegalStateException("The signed PDF is not available to resend.");
+
+        var notifications = emailService.sendCompletionEmails(doc, creatorEmail, creatorName, signedBytes);
+        doc.setCompletionNotifications(notifications);
+        docRepo.save(doc);
+
+        auditService.log(docId, principal.getUsername(),
+                ESignAuditEvent.ActorType.CREATOR,
+                ESignAuditEvent.EventType.COMPLETION_EMAIL_SENT, ip, ua,
+                Map.of("resend", true, "recipients", notifications.size()));
+
+        return getDocument(docId, principal);
     }
 
     /**
