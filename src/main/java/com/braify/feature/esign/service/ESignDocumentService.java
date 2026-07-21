@@ -771,6 +771,84 @@ public class ESignDocumentService {
         return getDocument(docId, principal);
     }
 
+    /** Role + display name of a completion recipient, derived from the document. */
+    private record RecipientInfo(ESignDocument.NotificationRole role, String name) {}
+
+    /**
+     * Re-sends the final signed copy (or CC notice) to a SINGLE recipient and refreshes just that
+     * recipient's notification record. The email must belong to the document (signatory, creator,
+     * copy recipient, or invitation-CC); otherwise the request is rejected.
+     */
+    public DocumentResponse resendFinalCopyToRecipient(String docId, String email,
+                                                       UserDetailsImpl principal, String ip, String ua) {
+        ESignDocument doc = getAccessibleDoc(docId, principal);
+        if (doc.getStatus() != ESignDocument.Status.COMPLETED)
+            throw new IllegalStateException("The signed copy can only be resent once the document is completed.");
+
+        String target = email == null ? "" : email.trim();
+        if (target.isBlank())
+            throw new IllegalArgumentException("A recipient email is required.");
+
+        RecipientInfo info = resolveRecipient(doc, target);
+        if (info == null)
+            throw new IllegalArgumentException("That email is not a recipient of this document.");
+
+        byte[] signedBytes = esignStorage.resolveSignedBytes(doc);
+        if (signedBytes == null || signedBytes.length == 0)
+            throw new IllegalStateException("The signed PDF is not available to resend.");
+
+        ESignDocument.CompletionNotification updated =
+                emailService.sendCompletionToRecipient(doc, target, info.name(), info.role(), signedBytes);
+
+        // Replace this recipient's record (keep everyone else's), then persist.
+        List<ESignDocument.CompletionNotification> list = doc.getCompletionNotifications() != null
+                ? new ArrayList<>(doc.getCompletionNotifications()) : new ArrayList<>();
+        list.removeIf(n -> n.getEmail() != null && n.getEmail().equalsIgnoreCase(target));
+        list.add(updated);
+        doc.setCompletionNotifications(list);
+        docRepo.save(doc);
+
+        auditService.log(docId, principal.getUsername(),
+                ESignAuditEvent.ActorType.CREATOR,
+                ESignAuditEvent.EventType.COMPLETION_EMAIL_SENT, ip, ua,
+                Map.of("resend", true, "recipient", target));
+
+        return getDocument(docId, principal);
+    }
+
+    /**
+     * Classifies an email against the document's recipients, following the same precedence the
+     * completion send uses (signatory &gt; creator &gt; copy recipient &gt; invitation-CC), so an
+     * individual resend reproduces how the person was originally notified. Returns null if the
+     * email is not a recipient.
+     */
+    private RecipientInfo resolveRecipient(ESignDocument doc, String email) {
+        if (doc.getSignatories() != null && !doc.getSignatories().isEmpty()) {
+            for (ESignDocument.Signatory s : doc.getSignatories())
+                if (s.getEmail() != null && s.getEmail().trim().equalsIgnoreCase(email))
+                    return new RecipientInfo(ESignDocument.NotificationRole.SIGNATORY, s.getName());
+        } else if (doc.getClientEmail() != null && doc.getClientEmail().trim().equalsIgnoreCase(email)) {
+            return new RecipientInfo(ESignDocument.NotificationRole.SIGNATORY, doc.getClientName());
+        }
+
+        AppUser creator = doc.getCreatedBy() != null ? userRepo.findById(doc.getCreatedBy()).orElse(null) : null;
+        if (creator != null && creator.getEmail() != null && creator.getEmail().trim().equalsIgnoreCase(email)) {
+            String name = ((creator.getFirstName() != null ? creator.getFirstName() : "") + " "
+                         + (creator.getLastName()  != null ? creator.getLastName()  : "")).trim();
+            return new RecipientInfo(ESignDocument.NotificationRole.CREATOR, name.isBlank() ? null : name);
+        }
+
+        if (containsIgnoreCase(doc.getCompletionCcEmails(), email))
+            return new RecipientInfo(ESignDocument.NotificationRole.COMPLETION_CC, null);
+        if (containsIgnoreCase(doc.getCcEmails(), email))
+            return new RecipientInfo(ESignDocument.NotificationRole.INVITATION_CC, null);
+        return null;
+    }
+
+    private boolean containsIgnoreCase(List<String> list, String email) {
+        return list != null && list.stream().anyMatch(x -> x != null && x.trim().equalsIgnoreCase(email));
+    }
+
     /**
      * PDF access is limited to the people in the signing flow: the creator (initiator)
      * and the signatories (matched by email, incl. the legacy single-signer). Everyone
