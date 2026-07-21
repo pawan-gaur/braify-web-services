@@ -87,6 +87,10 @@ public class ESignCreatorController {
     @GetMapping
     public ResponseEntity<PageResponse<DocumentResponse>> list(
             @Parameter(description = "Filter by status (optional)") @RequestParam(required = false) String status,
+            @Parameter(description = "Free-text search: title, client/signatory name or email, or a document id (optional)")
+                @RequestParam(required = false) String search,
+            @Parameter(description = "Created on/after this date, yyyy-MM-dd (optional)") @RequestParam(required = false) String dateFrom,
+            @Parameter(description = "Created on/before this date, yyyy-MM-dd (optional)") @RequestParam(required = false) String dateTo,
             @Parameter(description = "Zero-based page index (default 0)")  @RequestParam(defaultValue = "0")  int page,
             @Parameter(description = "Page size (default 20, max 100)")    @RequestParam(defaultValue = "20") int size,
             @AuthenticationPrincipal UserDetailsImpl principal) {
@@ -96,9 +100,39 @@ public class ESignCreatorController {
             try { statusEnum = ESignDocument.Status.valueOf(status.toUpperCase()); }
             catch (IllegalArgumentException e) { /* ignore unknown — return all */ }
         }
-        log.debug("GET /api/esign/documents caller='{}' status={} page={} size={}",
-                principal.getUsername(), status, page, size);
-        return ResponseEntity.ok(documentService.listMyDocumentsPaged(principal, statusEnum, page, size));
+        // Dates arrive as absolute UTC instants (the frontend converts the user's local
+        // day-boundaries), or as plain yyyy-MM-dd (treated as UTC) for direct API callers.
+        java.time.LocalDateTime fromTs = parseFrom(dateFrom);
+        java.time.LocalDateTime toTs   = parseTo(dateTo);
+
+        log.debug("GET /api/esign/documents caller='{}' status={} search='{}' from={} to={} page={} size={}",
+                principal.getUsername(), status, search, dateFrom, dateTo, page, size);
+        return ResponseEntity.ok(documentService.listMyDocumentsPaged(
+                principal, statusEnum, search, fromTs, toTs, page, size));
+    }
+
+    /**
+     * Lower bound of the created-date range as a UTC {@link java.time.LocalDateTime}.
+     * Prefers an ISO-8601 instant (e.g. {@code 2026-07-02T18:30:00Z}); falls back to
+     * {@code yyyy-MM-dd} interpreted as the start of that day in UTC. Null on blank/invalid.
+     */
+    private java.time.LocalDateTime parseFrom(String v) {
+        if (v == null || v.isBlank()) return null;
+        String s = v.trim();
+        try { return java.time.LocalDateTime.ofInstant(java.time.Instant.parse(s), java.time.ZoneOffset.UTC); }
+        catch (Exception ignore) { /* not an instant — try a plain date */ }
+        try { return java.time.LocalDate.parse(s).atStartOfDay(); }
+        catch (Exception e) { return null; }
+    }
+
+    /** Upper bound; like {@link #parseFrom} but the {@code yyyy-MM-dd} fallback maps to end-of-day (UTC). */
+    private java.time.LocalDateTime parseTo(String v) {
+        if (v == null || v.isBlank()) return null;
+        String s = v.trim();
+        try { return java.time.LocalDateTime.ofInstant(java.time.Instant.parse(s), java.time.ZoneOffset.UTC); }
+        catch (Exception ignore) { /* not an instant — try a plain date */ }
+        try { return java.time.LocalDate.parse(s).atTime(java.time.LocalTime.MAX); }
+        catch (Exception e) { return null; }
     }
 
     @Operation(summary = "Get e-sign document detail",
