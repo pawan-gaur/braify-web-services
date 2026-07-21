@@ -26,8 +26,13 @@ import com.braify.security.UserDetailsImpl;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 
@@ -37,6 +42,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.regex.Pattern;
 import java.util.Map;
 
 @Slf4j
@@ -56,6 +62,7 @@ public class ESignDocumentService {
     private final ESignStorageService           esignStorage;
     private final OrgContactService             contactService;
     private final AppUserRepository             userRepo;
+    private final MongoTemplate                 mongoTemplate;
 
     // ── Create ──────────────────────────────────────────────────────────────
 
@@ -563,33 +570,70 @@ public class ESignDocumentService {
      *   <li>ADMIN / USER   — only documents they created</li>
      * </ul>
      *
-     * @param status optional status filter; null means all statuses
-     * @param page   zero-based page index
-     * @param size   page size (max 100)
+     * @param status   optional status filter; null means all statuses
+     * @param search   optional free-text search across title, client/signatory name &amp; email,
+     *                 and exact document id; null/blank means no text filter
+     * @param dateFrom optional lower bound (inclusive) on {@code createdAt}
+     * @param dateTo   optional upper bound (inclusive) on {@code createdAt}
+     * @param page     zero-based page index
+     * @param size     page size (max 100)
      */
     public PageResponse<DocumentResponse> listMyDocumentsPaged(
             UserDetailsImpl principal,
             ESignDocument.Status status,
+            String search,
+            LocalDateTime dateFrom,
+            LocalDateTime dateTo,
             int page, int size) {
 
-        Pageable pageable = PageRequest.of(page, Math.min(size, 100));
+        Pageable pageable = PageRequest.of(page, Math.min(size, 100),
+                Sort.by(Sort.Direction.DESC, "createdAt"));
         AppUser.Role role = principal.getAppUser().getRole();
 
-        Page<ESignDocument> pageResult = switch (role) {
-            case PLATFORM_ADMIN -> (status != null)
-                    ? docRepo.findByBulkBatchIdIsNullAndStatusOrderByCreatedAtDesc(status, pageable)
-                    : docRepo.findByBulkBatchIdIsNullOrderByCreatedAtDesc(pageable);
-            case ORG_ADMIN -> (status != null)
-                    ? docRepo.findByOrgIdAndBulkBatchIdIsNullAndStatusOrderByCreatedAtDesc(
-                            principal.getOrgId(), status, pageable)
-                    : docRepo.findByOrgIdAndBulkBatchIdIsNullOrderByCreatedAtDesc(
-                            principal.getOrgId(), pageable);
-            default -> (status != null)
-                    ? docRepo.findByCreatedByAndBulkBatchIdIsNullAndStatusOrderByCreatedAtDesc(
-                            principal.getId(), status, pageable)
-                    : docRepo.findByCreatedByAndBulkBatchIdIsNullOrderByCreatedAtDesc(
-                            principal.getId(), pageable);
-        };
+        List<Criteria> and = new ArrayList<>();
+
+        // Role scope — mirrors the previous per-role queries.
+        switch (role) {
+            case PLATFORM_ADMIN -> { /* no scope: all orgs */ }
+            case ORG_ADMIN      -> and.add(Criteria.where("orgId").is(principal.getOrgId()));
+            default             -> and.add(Criteria.where("createdBy").is(principal.getId()));
+        }
+        // Single-sign documents only (exclude bulk-batch children), as before.
+        and.add(Criteria.where("bulkBatchId").is(null));
+
+        if (status != null)   and.add(Criteria.where("status").is(status));
+        if (dateFrom != null || dateTo != null) {
+            Criteria created = Criteria.where("createdAt");
+            if (dateFrom != null) created = created.gte(dateFrom);
+            if (dateTo   != null) created = created.lte(dateTo);
+            and.add(created);
+        }
+
+        if (search != null && !search.isBlank()) {
+            String s  = search.trim();
+            String rx = Pattern.quote(s);   // treat the query literally (no regex injection)
+            List<Criteria> or = new ArrayList<>(List.of(
+                    Criteria.where("title").regex(rx, "i"),
+                    Criteria.where("clientName").regex(rx, "i"),
+                    Criteria.where("clientEmail").regex(rx, "i"),
+                    Criteria.where("signatories.name").regex(rx, "i"),
+                    Criteria.where("signatories.email").regex(rx, "i")
+            ));
+            // Also match an exact document id (24-char hex) so users can paste an ID.
+            if (s.matches("^[0-9a-fA-F]{24}$")) or.add(Criteria.where("_id").is(s));
+            and.add(new Criteria().orOperator(or.toArray(new Criteria[0])));
+        }
+
+        Criteria criteria = new Criteria().andOperator(and.toArray(new Criteria[0]));
+
+        long total = mongoTemplate.count(Query.query(criteria), ESignDocument.class);
+
+        Query q = Query.query(criteria).with(pageable);
+        // Never load the heavy embedded byte fields for the list view.
+        q.fields().exclude("sourcePdfData").exclude("signedPdfData").exclude("clientAttachments");
+        List<ESignDocument> docs = mongoTemplate.find(q, ESignDocument.class);
+
+        Page<ESignDocument> pageResult = new PageImpl<>(docs, pageable, total);
 
         List<DocumentResponse> content = pageResult.getContent().stream()
                 .map(d -> DocumentResponse.from(d, List.of(), false))
