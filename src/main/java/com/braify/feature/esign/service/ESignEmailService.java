@@ -249,33 +249,59 @@ public class ESignEmailService implements InternalTemplateProvider {
 
         // ── Invitation-CC recipients: view-only "document signed" notice (no attachment) ──
         if (doc.getCcEmails() != null) {
-            String viewLink = buildViewLink(doc);
-            Map<String, Object> ccVars = new java.util.HashMap<>(brandVars(doc.getOrgId(), orgName));
-            ccVars.put("documentName", doc.getTitle() != null ? doc.getTitle() : "");
-            ccVars.put("signedOn",     fmt(doc.getCompletedAt(), SIGNED_FMT));
-            ccVars.put("viewLink",     viewLink);
-            ResolvedEmail ccR = resolveInternal(
-                    InternalTemplateCodes.ESIGN_CC_COMPLETION,
-                    "Signed: {{documentName}}",
-                    this::buildCcCompletionHtml);
             for (String raw : doc.getCcEmails()) {
                 if (raw == null || raw.isBlank()) continue;
                 String to = raw.trim();
                 if (!sent.add(to.toLowerCase())) continue;   // skip anyone already emailed a copy
-                boolean ok;
-                try {
-                    emailDispatcher.sendHtmlEmail(to, ccR.subject(), ccR.html(), ccVars, orgName);
-                    log.info("Completion view-notice sent to CC {} for doc {}", to, doc.getId());
-                    ok = true;
-                } catch (Exception e) {
-                    log.error("Failed to send completion view-notice to {} for doc {}: {}", to, doc.getId(), e.getMessage());
-                    ok = false;
-                }
+                boolean ok = sendCcNotice(doc, to, orgName);
                 notifications.add(note(to, null, ESignDocument.NotificationRole.INVITATION_CC, ok, false));
             }
         }
 
         return notifications;
+    }
+
+    /** Sends the view-only "document signed" notice to one invitation-CC recipient. Returns true on success. */
+    private boolean sendCcNotice(ESignDocument doc, String to, String orgName) {
+        Map<String, Object> ccVars = new java.util.HashMap<>(brandVars(doc.getOrgId(), orgName));
+        ccVars.put("documentName", doc.getTitle() != null ? doc.getTitle() : "");
+        ccVars.put("signedOn",     fmt(doc.getCompletedAt(), SIGNED_FMT));
+        ccVars.put("viewLink",     buildViewLink(doc));
+        ResolvedEmail ccR = resolveInternal(
+                InternalTemplateCodes.ESIGN_CC_COMPLETION,
+                "Signed: {{documentName}}",
+                this::buildCcCompletionHtml);
+        try {
+            emailDispatcher.sendHtmlEmail(to, ccR.subject(), ccR.html(), ccVars, orgName);
+            log.info("Completion view-notice sent to CC {} for doc {}", to, doc.getId());
+            return true;
+        } catch (Exception e) {
+            log.error("Failed to send completion view-notice to {} for doc {}: {}", to, doc.getId(), e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Re-sends the completion email to a SINGLE recipient, using the same content as the bulk send
+     * (signed PDF for signatories/creator/copy-recipients; view-only notice for invitation-CC).
+     * Returns the recipient's refreshed notification record.
+     */
+    public ESignDocument.CompletionNotification sendCompletionToRecipient(ESignDocument doc,
+                                                                          String targetEmail,
+                                                                          String targetName,
+                                                                          ESignDocument.NotificationRole role,
+                                                                          byte[] signedPdfBytes) {
+        String orgName = resolveOrgName(doc.getOrgId());
+        if (role == ESignDocument.NotificationRole.INVITATION_CC) {
+            boolean ok = sendCcNotice(doc, targetEmail, orgName);
+            return note(targetEmail, targetName, role, ok, false);
+        }
+        String verifyLink = baseUrl + "/verify/" + doc.getId();
+        String subject    = "Signed document ready: " + doc.getTitle();
+        String filename   = sanitizeFilename(doc.getTitle()) + "-signed.pdf";
+        boolean ok = sendCompletionTo(targetEmail, targetName, subject, doc, verifyLink, orgName,
+                signedPdfBytes, filename);
+        return note(targetEmail, targetName, role, ok, true);
     }
 
     /** Builds a single completion-notification record. */

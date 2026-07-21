@@ -201,6 +201,23 @@ public class ESignCreatorController {
         return ResponseEntity.ok(doc);
     }
 
+    @Operation(summary = "Resend the final signed copy to one recipient",
+               description = "Re-sends the signed PDF (or the view-only notice, for invitation-CC recipients) to a single " +
+                             "recipient of the completed document, refreshing that recipient's notification record.")
+    @ApiResponse(responseCode = "200", description = "Final copy resent to the recipient")
+    @PostMapping("/{id}/resend-copy/recipient")
+    public ResponseEntity<DocumentResponse> resendCopyToRecipient(
+            @Parameter(description = "Document ID") @PathVariable String id,
+            @Parameter(description = "Recipient email") @RequestParam String email,
+            @AuthenticationPrincipal UserDetailsImpl principal,
+            HttpServletRequest http) {
+
+        log.info("POST /api/esign/documents/{}/resend-copy/recipient email='{}' by '{}'", id, email, principal.getUsername());
+        DocumentResponse doc = documentService.resendFinalCopyToRecipient(
+                id, email, principal, extractIp(http), http.getHeader("User-Agent"));
+        return ResponseEntity.ok(doc);
+    }
+
     @Operation(summary = "Cancel document",
                description = "Transitions the document to CANCELLED status. The signing link is invalidated. Cannot cancel a COMPLETED document.")
     @ApiResponse(responseCode = "200", description = "Document cancelled")
