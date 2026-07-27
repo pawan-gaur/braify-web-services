@@ -200,6 +200,24 @@ public class ESignCreatorController {
         return ResponseEntity.ok(doc);
     }
 
+    @Operation(summary = "Reactivate an expired document",
+               description = "Revives an EXPIRED document: issues fresh signing tokens, resets the expiry window, " +
+                             "and re-invites everyone who still needs to sign. Any signatures captured before expiry are kept.")
+    @ApiResponse(responseCode = "200", description = "Document reactivated")
+    @PostMapping("/{id}/reactivate")
+    public ResponseEntity<DocumentResponse> reactivate(
+            @Parameter(description = "Document ID") @PathVariable String id,
+            @Parameter(description = "New token validity in days (default 7)") @RequestParam(defaultValue = "7") int tokenValidDays,
+            @AuthenticationPrincipal UserDetailsImpl principal,
+            HttpServletRequest http) {
+
+        log.info("POST /api/esign/documents/{}/reactivate by '{}'", id, principal.getUsername());
+        DocumentResponse doc = documentService.reactivateDocument(
+                id, tokenValidDays, principal, extractIp(http), http.getHeader("User-Agent"));
+        log.info("E-sign document '{}' reactivated", id);
+        return ResponseEntity.ok(doc);
+    }
+
     @Operation(summary = "Resend invitation to one signatory",
                description = "Re-issues a fresh signing link and re-sends the invitation to a single signatory. " +
                              "In sequential mode only the current (first not-yet-signed) signatory can be re-invited.")
