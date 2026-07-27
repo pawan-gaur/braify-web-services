@@ -58,6 +58,30 @@ resend:
   api-key: "${RESEND_KEY}"
   from-email: "${RESEND_FROM_EMAIL}"
 
+# AI assist for the PDF & email template builders. Pluggable provider; the feature is
+# available only when enabled AND the active provider has an API key. Set keys via env.
+braify:
+  ai:
+    enabled: ${AI_ENABLED:false}
+    provider: ${AI_PROVIDER:anthropic}   # anthropic | openai | gemini | grok
+    max-output-tokens: ${AI_MAX_OUTPUT_TOKENS:8000}
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY:}
+      model: ${ANTHROPIC_MODEL:claude-opus-4-8}
+      base-url: https://api.anthropic.com/v1
+    openai:
+      api-key: ${OPENAI_API_KEY:}
+      model: ${OPENAI_MODEL:gpt-4o}
+      base-url: https://api.openai.com/v1
+    gemini:
+      api-key: ${GEMINI_API_KEY:}
+      model: ${GEMINI_MODEL:gemini-1.5-pro}
+      base-url: https://generativelanguage.googleapis.com/v1beta
+    grok:
+      api-key: ${GROK_API_KEY:}
+      model: ${GROK_MODEL:grok-2-latest}
+      base-url: https://api.x.ai/v1
+
 management:
   endpoints:
     web:
