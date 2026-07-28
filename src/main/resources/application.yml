@@ -60,6 +60,17 @@ app:
   base-url: http://localhost:5173
   cors:
     allowed-origins: "http://localhost:5173,http://localhost:3000"
+  # Bulk-email open/click/unsubscribe tracking. base-url MUST be an origin that email
+  # clients can reach and that routes /api/* to this backend (in prod that is the public
+  # site origin, which reverse-proxies /api to :8080). Defaults to app.base-url. The
+  # secret signs click/unsubscribe links (open-redirect protection) — defaults to the JWT
+  # secret so no extra env var is required; override with TRACKING_SECRET if desired.
+  tracking:
+    base-url: "${APP_TRACKING_BASE_URL:${APP_BASE_URL:http://localhost:5173}}"
+    secret: "${TRACKING_SECRET:${JWT_SECRET:}}"
+    open-enabled: ${TRACKING_OPEN_ENABLED:true}
+    click-enabled: ${TRACKING_CLICK_ENABLED:true}
+    unsubscribe-enabled: ${TRACKING_UNSUBSCRIBE_ENABLED:false}
 
 resend:
   api-key: "${RESEND_KEY}"
@@ -88,6 +99,14 @@ braify:
       api-key: ${GROK_API_KEY:}
       model: ${GROK_MODEL:grok-2-latest}
       base-url: https://api.x.ai/v1
+
+# Bulk-email sending reliability
+bulkemail:
+  # Combined sends/second across all workers & campaigns (keep under your Resend plan's limit).
+  # Set to 0 to disable throttling.
+  rate-limit-per-second: ${BULK_EMAIL_RATE_PER_SEC:8}
+  # Attempts per recipient before giving up — only transient errors (429/5xx/timeouts) are retried.
+  max-send-attempts: ${BULK_EMAIL_MAX_ATTEMPTS:3}
 
 management:
   endpoints:

@@ -19,6 +19,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.UnaryOperator;
 
 @Slf4j
 @Service
@@ -101,10 +102,28 @@ public class EmailDispatcher {
                                              String html,
                                              Map<String, Object> placeholders,
                                              String senderDisplayName) {
+        return sendHtmlEmail(email, ccEmails, subject, html, placeholders, senderDisplayName, null);
+    }
+
+    /**
+     * Full overload with an optional {@code htmlTransform} applied to the final HTML
+     * <em>after</em> placeholder substitution. Bulk email uses this to inject its
+     * open-tracking pixel and rewrite links (which may themselves contain placeholders,
+     * so the transform must run once the real URLs are resolved). Pass {@code null} for
+     * no transform.
+     */
+    public CreateEmailResponse sendHtmlEmail(String email,
+                                             List<String> ccEmails,
+                                             String subject,
+                                             String html,
+                                             Map<String, Object> placeholders,
+                                             String senderDisplayName,
+                                             UnaryOperator<String> htmlTransform) {
         String renderedSubject = replacePlaceholders(
                 isBlank(subject) ? DEFAULT_SUBJECT : subject,
                 safePlaceholders(placeholders));
-        String renderedHtml = replacePlaceholders(html, safePlaceholders(placeholders));
+        String renderedHtml = applyTransform(
+                replacePlaceholders(html, safePlaceholders(placeholders)), htmlTransform);
 
         return send(email, ccEmails, renderedSubject, renderedHtml, Collections.emptyList(), senderDisplayName);
     }
@@ -161,10 +180,24 @@ public class EmailDispatcher {
                                                             Map<String, Object> placeholders,
                                                             Map<String, byte[]> attachmentsMap,
                                                             String senderDisplayName) {
+        return sendHtmlEmailWithAttachments(
+                email, ccEmails, subject, html, placeholders, attachmentsMap, senderDisplayName, null);
+    }
+
+    /** As above, with an optional {@code htmlTransform} applied after placeholder substitution. */
+    public CreateEmailResponse sendHtmlEmailWithAttachments(String email,
+                                                            List<String> ccEmails,
+                                                            String subject,
+                                                            String html,
+                                                            Map<String, Object> placeholders,
+                                                            Map<String, byte[]> attachmentsMap,
+                                                            String senderDisplayName,
+                                                            UnaryOperator<String> htmlTransform) {
         String renderedSubject = replacePlaceholders(
                 isBlank(subject) ? DEFAULT_SUBJECT : subject,
                 safePlaceholders(placeholders));
-        String renderedHtml = replacePlaceholders(html, safePlaceholders(placeholders));
+        String renderedHtml = applyTransform(
+                replacePlaceholders(html, safePlaceholders(placeholders)), htmlTransform);
 
         List<Attachment> attachments = new ArrayList<>();
         if (attachmentsMap != null) {
@@ -172,6 +205,10 @@ public class EmailDispatcher {
                     buildAttachment(fileName, fileBytes).ifPresent(attachments::add));
         }
         return send(email, ccEmails, renderedSubject, renderedHtml, attachments, senderDisplayName);
+    }
+
+    private String applyTransform(String html, UnaryOperator<String> htmlTransform) {
+        return htmlTransform == null ? html : htmlTransform.apply(html);
     }
 
     /** Convenience overload with no CC recipients. */

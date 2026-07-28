@@ -13,6 +13,10 @@ public class BulkEmailJobRequest {
 
     private String label;                   // optional — auto-generated if blank
 
+    /** Optional ISO-8601 date-time to defer the send. If in the future the job waits in
+     *  SCHEDULED until a poller dispatches it; null/past = send immediately. */
+    private java.time.LocalDateTime scheduledAt;
+
     @NotBlank
     private String emailTemplateId;
 

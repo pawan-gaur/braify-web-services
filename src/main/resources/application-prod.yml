@@ -14,6 +14,10 @@ spring:
     mongodb:
       uri: "${MONGO_URI}"
       database: "${MONGO_DATABASE:braify}"
+      # Build @Document/@CompoundIndex-declared indexes on startup (background). Required so
+      # bulk-email tracking lookups (rows.trackingId, bulk_email_events, and the unique
+      # email_suppressions (orgId,email) index) are served from indexes rather than collection scans.
+      auto-index-creation: true
 
   # Upload limits
   servlet:
@@ -49,6 +53,16 @@ app:
   # CORS: comma-separated allowed origins for external API consumers
   cors:
     allowed-origins: "${APP_CORS_ALLOWED_ORIGINS:https://braify.com}"
+  # Bulk-email tracking. base-url must be the PUBLIC origin that email clients can reach
+  # and that reverse-proxies /api/* to this backend (i.e. the site origin). The signing
+  # secret defaults to JWT_SECRET; set TRACKING_SECRET in the systemd .env to rotate it
+  # independently. Disable a channel by setting its *_ENABLED var to false.
+  tracking:
+    base-url: "${APP_TRACKING_BASE_URL:${APP_BASE_URL:https://braify.com}}"
+    secret: "${TRACKING_SECRET:${JWT_SECRET}}"
+    open-enabled: ${TRACKING_OPEN_ENABLED:true}
+    click-enabled: ${TRACKING_CLICK_ENABLED:true}
+    unsubscribe-enabled: ${TRACKING_UNSUBSCRIBE_ENABLED:false}
 
 # Do NOT expose the API docs / Swagger UI in production.
 springdoc:
@@ -61,6 +75,11 @@ springdoc:
 resend:
   api-key: "${RESEND_API_KEY}"
   from-email: "${RESEND_FROM_EMAIL}"
+
+# Bulk-email sending reliability (see application.yml for docs)
+bulkemail:
+  rate-limit-per-second: ${BULK_EMAIL_RATE_PER_SEC:8}
+  max-send-attempts: ${BULK_EMAIL_MAX_ATTEMPTS:3}
 
 # Logging (quieter in prod)
 logging:

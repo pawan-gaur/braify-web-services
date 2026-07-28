@@ -50,6 +50,7 @@ public class SecurityConfig {
                 .requestMatchers("/api/esign/sign/**").permitAll()   // client signing (ESIGN token)
                 .requestMatchers("/api/esign/view/**").permitAll()   // read-only CC viewer (ESIGN_VIEW token)
                 .requestMatchers("/api/esign/verify/**").permitAll() // public verification
+                .requestMatchers("/api/track/**").permitAll()        // bulk-email open/click/unsubscribe (mail-client hits)
                 .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/public/**").permitAll() // public assets (org logo for emails)
                 .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/onboarding").permitAll() // public get-started form
                 // OpenAPI / Swagger UI — allow unauthenticated access so the frontend doc page can load the spec
