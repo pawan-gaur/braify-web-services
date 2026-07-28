@@ -126,21 +126,29 @@ public class ESignPdfService {
                 pdf, page, PDPageContentStream.AppendMode.APPEND, true, true)) {
 
             if (method == ESignSignatureField.SigningMethod.TYPE) {
-                // Typed text signature
+                // Typed text — Arial (Helvetica is metrically Arial), upright (not italic).
                 cs.beginText();
-                cs.setFont(PDType1Font.HELVETICA_OBLIQUE, 12);
+                cs.setFont(PDType1Font.HELVETICA, 12);
                 cs.newLineAtOffset(x + 2, y + 4);
                 cs.showText(field.getValue());
                 cs.endText();
 
             } else {
-                // DRAW or UPLOAD — value is a base64 data-URL or pure base64 PNG
+                // DRAW / UPLOAD / STAMP — value is a base64 data-URL or pure base64 PNG.
+                // Preserve the image's aspect ratio (fit within the box, centred) so uploaded
+                // signatures/stamps are never stretched/distorted.
                 byte[] imgBytes = decodeBase64Image(field.getValue());
                 PDImageXObject img = PDImageXObject.createFromByteArray(pdf, imgBytes, "sig");
-                cs.drawImage(img, x, y, width, height);
+                float iw = img.getWidth(), ih = img.getHeight();
+                float scale = Math.min(width / iw, height / ih);
+                float drawW = iw * scale, drawH = ih * scale;
+                float drawX = x + (width  - drawW) / 2f;
+                float drawY = y + (height - drawH) / 2f;
+                cs.drawImage(img, drawX, drawY, drawW, drawH);
             }
 
             // Adobe-style caption under signature/initials: an underline + "Name (timestamp)".
+            // Stamps are shown as-is (no caption).
             ESignSignatureField.FieldType type = field.getFieldType();
             if (type == ESignSignatureField.FieldType.SIGNATURE
                     || type == ESignSignatureField.FieldType.INITIALS) {

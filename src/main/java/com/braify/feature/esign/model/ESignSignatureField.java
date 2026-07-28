@@ -31,7 +31,7 @@ public class ESignSignatureField {
     private double height;  // field height as % of page height
 
     /* ── Field definition ──────────────────────────────────────────────── */
-    public enum FieldType { SIGNATURE, INITIALS, DATE, TEXT }
+    public enum FieldType { SIGNATURE, INITIALS, DATE, TEXT, STAMP }
     private FieldType fieldType;
     private String    label;
     @Builder.Default

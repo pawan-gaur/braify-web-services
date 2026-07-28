@@ -1,5 +1,12 @@
 server:
   port: ${SERVER_PORT:8080}
+  # Gzip API/JSON (and any static) responses ≥1KB. JSON compresses ~80–90%, which
+  # sharply cuts transfer time for users on high-latency / low-bandwidth links
+  # (e.g. Kenya, Rwanda). Applied by the embedded server regardless of hosting.
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/xml,text/html,text/css,text/plain,application/javascript,image/svg+xml
+    min-response-size: 1024
 
 spring:
   application:
