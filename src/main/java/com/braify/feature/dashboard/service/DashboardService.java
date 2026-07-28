@@ -31,7 +31,13 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.TextStyle;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
+import org.springframework.data.mongodb.core.aggregation.DateOperators;
+import org.springframework.data.mongodb.core.aggregation.Fields;
 
 @Slf4j
 @Service
@@ -48,77 +54,137 @@ public class DashboardService {
     private final OnboardingRequestRepository onboardingRepo;
     private final OrgFileRepository           fileRepo;
     private final MongoTemplate               mongoTemplate;
+    // Resolved by parameter name → the "dashboardExecutor" bean (bounded IO pool).
+    private final ExecutorService             dashboardExecutor;
 
     private static final int MONTHS = 6;
     private static final List<ESignDocument.Status> PENDING_STATUSES =
             List.of(ESignDocument.Status.PENDING, ESignDocument.Status.IN_REVIEW);
 
+    // ── Short-lived per-caller cache ────────────────────────────────────────────
+    // The dashboard is expensive and doesn't need real-time freshness, so results are
+    // cached briefly. Keyed by role+org+email because activity/top-users are scoped by
+    // role (avoids serving one caller's scoped view to another).
+    private static final long CACHE_TTL_MS = 45_000;   // 45s
+    private final Map<String, Cached> cache = new ConcurrentHashMap<>();
+    private record Cached(DashboardStats stats, long at) {}
+
     public DashboardStats stats(AppUser caller) {
+        String key = caller.getRole() + ":" + caller.getOrganizationId() + ":" + caller.getEmail();
+        long now = System.currentTimeMillis();
+        Cached hit = cache.get(key);
+        if (hit != null && now - hit.at() < CACHE_TTL_MS) return hit.stats();
+
+        DashboardStats fresh = computeStats(caller);
+        if (cache.size() > 2000) cache.clear();   // cheap bound; entries also expire by TTL
+        cache.put(key, new Cached(fresh, now));
+        return fresh;
+    }
+
+    private DashboardStats computeStats(AppUser caller) {
         log.debug("Building dashboard stats for user='{}' role={}", caller.getEmail(), caller.getRole());
-        boolean isPlatformAdmin = caller.getRole() == AppUser.Role.PLATFORM_ADMIN;
-        String  orgId           = caller.getOrganizationId();
+        final boolean isPlatformAdmin = caller.getRole() == AppUser.Role.PLATFORM_ADMIN;
+        final String  orgId           = caller.getOrganizationId();
 
         // Build the performer-email scope once — reused by recentActivity + topUsers.
-        // null means PLATFORM_ADMIN: no email filter (sees all activity globally).
-        List<String> scopeEmails = buildScopeEmails(caller);
+        final List<String> scopeEmails = buildScopeEmails(caller);
 
         // Fetch all non-deleted orgs once — shared by multiple PA computations.
-        // Using the existing findByDeletedFalseOrderByNameAsc() avoids issues with
-        // primitive boolean fields that may be absent in older MongoDB documents.
-        List<Organization> allOrgs = isPlatformAdmin
+        final List<Organization> allOrgs = isPlatformAdmin
                 ? orgRepo.findByDeletedFalseOrderByNameAsc()
                 : List.of();
+        final long activeOrgCount   = allOrgs.stream().filter(Organization::isActive).count();
+        final long inactiveOrgCount = allOrgs.stream().filter(o -> !o.isActive()).count();
 
-        long activeOrgCount   = allOrgs.stream().filter(Organization::isActive).count();
-        long inactiveOrgCount = allOrgs.stream().filter(o -> !o.isActive()).count();
+        // Fan every independent query out onto the pool so the request waits for the
+        // SLOWEST round-trip, not the SUM of ~60 sequential ones. Each async(...) starts
+        // immediately; the .join() calls in the builder below only collect the results.
+        var fUsers        = async(() -> kpiUsers(isPlatformAdmin, orgId));
+        var fPdf          = async(() -> kpiPdf(isPlatformAdmin, orgId));
+        var fEmail        = async(() -> kpiEmail(isPlatformAdmin, orgId));
+        var fInvites      = async(() -> kpiPendingInvites(isPlatformAdmin, orgId));
+
+        var fEmailsSent   = async(() -> sumLong("bulk_email_jobs", "sentCount",     "orgId",          isPlatformAdmin ? null : orgId));
+        var fBulkJobs     = async(() -> countDocs("bulk_email_jobs",                "orgId",          isPlatformAdmin ? null : orgId));
+        var fPdfsGen      = async(() -> sumLong("org_usage",        "docsGenerated", "organizationId", isPlatformAdmin ? null : orgId));
+        var fFiles        = async(() -> filesCount(isPlatformAdmin, orgId));
+        var fStorage      = async(() -> storageMb(isPlatformAdmin, orgId));
+
+        var fEsignTotal   = async(() -> esignTotal(isPlatformAdmin, orgId));
+        var fEsignDraft   = async(() -> esignByStatus(isPlatformAdmin, orgId, ESignDocument.Status.DRAFT));
+        var fEsignPending = async(() -> esignPending(isPlatformAdmin, orgId));
+        var fEsignDone    = async(() -> esignByStatus(isPlatformAdmin, orgId, ESignDocument.Status.COMPLETED));
+        var fEsignViewed  = async(() -> esignViewed(isPlatformAdmin, orgId));
+        var fEsignOverdue = async(() -> esignOverdue(isPlatformAdmin, orgId));
+        var fEsignCancel  = async(() -> esignByStatus(isPlatformAdmin, orgId, ESignDocument.Status.CANCELLED));
+        var fEsignExpired = async(() -> esignByStatus(isPlatformAdmin, orgId, ESignDocument.Status.EXPIRED));
+        var fEsignAvg     = async(() -> esignAvgHours(isPlatformAdmin, orgId));
+        var fEsignDecline = async(() -> esignDeclineRate(isPlatformAdmin, orgId));
+        var fEsignGrowth  = async(() -> esignMonthlyGrowth(isPlatformAdmin, orgId));
+
+        var fPdfGrowth    = async(() -> pdfMonthlyGrowth(isPlatformAdmin, orgId));
+        var fEmailGrowth  = async(() -> emailMonthlyGrowth(isPlatformAdmin, orgId));
+        var fUserGrowth   = async(() -> userMonthlyGrowth(isPlatformAdmin, orgId));
+
+        var fRecent       = async(() -> recentActivity(isPlatformAdmin, orgId));
+        var fTopUsers     = async(() -> topUsers(scopeEmails));
+
+        var fOrgBreakdown = async(() -> isPlatformAdmin ? orgBreakdown(allOrgs) : List.<DashboardStats.OrgSummary>of());
+        var fOnboarding   = async(() -> isPlatformAdmin ? onboardingRepo.countByStatus(OnboardingRequest.Status.PENDING) : 0L);
+        var fFeatureDist  = async(() -> isPlatformAdmin ? featureDistribution(allOrgs) : Map.<String, Long>of());
+        var fTenantGrowth = async(() -> isPlatformAdmin ? tenantMonthlyGrowth(allOrgs) : List.<DashboardStats.MonthStat>of());
 
         return DashboardStats.builder()
                 // ── KPIs ──────────────────────────────────────────────────────
                 .totalOrganizations (isPlatformAdmin ? activeOrgCount : 1L)
-                .totalUsers         (kpiUsers(isPlatformAdmin, orgId))
-                .totalPdfTemplates  (kpiPdf(isPlatformAdmin, orgId))
-                .totalEmailTemplates(kpiEmail(isPlatformAdmin, orgId))
-                .pendingInvites     (kpiPendingInvites(isPlatformAdmin, orgId))
+                .totalUsers         (fUsers.join())
+                .totalPdfTemplates  (fPdf.join())
+                .totalEmailTemplates(fEmail.join())
+                .pendingInvites     (fInvites.join())
 
                 // ── Service usage ──────────────────────────────────────────────
-                .totalEmailsSent    (sumLong("bulk_email_jobs", "sentCount",     "orgId",          isPlatformAdmin ? null : orgId))
-                .totalBulkEmailJobs (countDocs("bulk_email_jobs",                "orgId",          isPlatformAdmin ? null : orgId))
-                .totalPdfsGenerated (sumLong("org_usage",        "docsGenerated", "organizationId", isPlatformAdmin ? null : orgId))
-                .totalFiles         (filesCount(isPlatformAdmin, orgId))
-                .totalStorageMb     (storageMb(isPlatformAdmin, orgId))
+                .totalEmailsSent    (fEmailsSent.join())
+                .totalBulkEmailJobs (fBulkJobs.join())
+                .totalPdfsGenerated (fPdfsGen.join())
+                .totalFiles         (fFiles.join())
+                .totalStorageMb     (fStorage.join())
 
                 // ── E-Sign analytics ───────────────────────────────────────────
-                .esignTotal         (esignTotal(isPlatformAdmin, orgId))
-                .esignDraft         (esignByStatus(isPlatformAdmin, orgId, ESignDocument.Status.DRAFT))
-                .esignPending       (esignPending(isPlatformAdmin, orgId))
-                .esignCompleted     (esignByStatus(isPlatformAdmin, orgId, ESignDocument.Status.COMPLETED))
-                .esignViewed        (esignViewed(isPlatformAdmin, orgId))
-                .esignOverdue       (esignOverdue(isPlatformAdmin, orgId))
-                .esignCancelled     (esignByStatus(isPlatformAdmin, orgId, ESignDocument.Status.CANCELLED))
-                .esignExpired       (esignByStatus(isPlatformAdmin, orgId, ESignDocument.Status.EXPIRED))
-                .esignAvgSigningHours(esignAvgHours(isPlatformAdmin, orgId))
-                .esignDeclineRate   (esignDeclineRate(isPlatformAdmin, orgId))
-                .esignGrowth        (esignMonthlyGrowth(isPlatformAdmin, orgId))
+                .esignTotal         (fEsignTotal.join())
+                .esignDraft         (fEsignDraft.join())
+                .esignPending       (fEsignPending.join())
+                .esignCompleted     (fEsignDone.join())
+                .esignViewed        (fEsignViewed.join())
+                .esignOverdue       (fEsignOverdue.join())
+                .esignCancelled     (fEsignCancel.join())
+                .esignExpired       (fEsignExpired.join())
+                .esignAvgSigningHours(fEsignAvg.join())
+                .esignDeclineRate   (fEsignDecline.join())
+                .esignGrowth        (fEsignGrowth.join())
 
                 // ── Monthly trends ────────────────────────────────────────────
-                .pdfGrowth  (pdfMonthlyGrowth(isPlatformAdmin, orgId))
-                .emailGrowth(emailMonthlyGrowth(isPlatformAdmin, orgId))
-                .userGrowth (userMonthlyGrowth(isPlatformAdmin, orgId))
+                .pdfGrowth  (fPdfGrowth.join())
+                .emailGrowth(fEmailGrowth.join())
+                .userGrowth (fUserGrowth.join())
 
                 // ── Activity (org-scoped — no cross-org data leakage) ────────
-                .recentActivity(recentActivity(isPlatformAdmin, orgId))
-                .topUsers      (topUsers(scopeEmails))
+                .recentActivity(fRecent.join())
+                .topUsers      (fTopUsers.join())
 
                 // ── Platform Admin extras ─────────────────────────────────────
-                .orgBreakdown          (isPlatformAdmin ? orgBreakdown(allOrgs)   : List.of())
+                .orgBreakdown          (fOrgBreakdown.join())
                 .activeOrganizations   (activeOrgCount)
                 .inactiveOrganizations (inactiveOrgCount)
-                .pendingOnboarding     (isPlatformAdmin ? onboardingRepo.countByStatus(
-                        OnboardingRequest.Status.PENDING) : 0)
-                .featureDistribution   (isPlatformAdmin ? featureDistribution(allOrgs) : Map.of())
-                .tenantGrowth          (isPlatformAdmin ? tenantMonthlyGrowth(allOrgs) : List.of())
+                .pendingOnboarding     (fOnboarding.join())
+                .featureDistribution   (fFeatureDist.join())
+                .tenantGrowth          (fTenantGrowth.join())
 
                 .build();
+    }
+
+    /** Submit an independent computation to the dashboard pool. */
+    private <T> CompletableFuture<T> async(Supplier<T> task) {
+        return CompletableFuture.supplyAsync(task, dashboardExecutor);
     }
 
     // ── KPI helpers ───────────────────────────────────────────────────────────
@@ -246,42 +312,70 @@ public class DashboardService {
 
     // ── Monthly growth helpers ────────────────────────────────────────────────
 
-    private List<DashboardStats.MonthStat> monthlyStats(java.util.function.BiFunction<LocalDateTime, LocalDateTime, Long> counter) {
-        List<DashboardStats.MonthStat> result = new ArrayList<>();
-        LocalDate today = LocalDate.now();
-        for (int i = MONTHS - 1; i >= 0; i--) {
-            LocalDate     month = today.minusMonths(i);
-            LocalDateTime from  = month.withDayOfMonth(1).atStartOfDay();
-            LocalDateTime to    = month.withDayOfMonth(month.lengthOfMonth()).atTime(23, 59, 59);
-            String        label = month.getMonth().getDisplayName(TextStyle.SHORT, java.util.Locale.ENGLISH)
-                                  + " '" + String.format("%02d", month.getYear() % 100);
-            result.add(new DashboardStats.MonthStat(label, counter.apply(from, to)));
+    /**
+     * Monthly counts for the last {@code MONTHS} months in ONE aggregation (group by
+     * year+month of {@code dateField}) instead of one count query per month. Missing
+     * months are filled with 0.
+     */
+    private List<DashboardStats.MonthStat> monthlyGrowth(String collection, String dateField, Criteria... filters) {
+        LocalDate     today       = LocalDate.now();
+        LocalDateTime windowStart = today.minusMonths(MONTHS - 1L).withDayOfMonth(1).atStartOfDay();
+
+        List<Criteria> crit = new ArrayList<>(Arrays.asList(filters));
+        crit.add(Criteria.where(dateField).gte(windowStart));
+
+        Aggregation agg = Aggregation.newAggregation(
+                Aggregation.match(new Criteria().andOperator(crit.toArray(Criteria[]::new))),
+                Aggregation.project()
+                        .and(DateOperators.Year.yearOf(dateField)).as("y")
+                        .and(DateOperators.Month.monthOf(dateField)).as("m"),
+                Aggregation.group(Fields.fields("y", "m")).count().as("count"));
+
+        Map<String, Long> byMonth = new HashMap<>();
+        for (org.bson.Document d : mongoTemplate.aggregate(agg, collection, org.bson.Document.class).getMappedResults()) {
+            if (!(d.get("_id") instanceof org.bson.Document id)) continue;
+            if (id.get("y") instanceof Number ny && id.get("m") instanceof Number nm
+                    && d.get("count") instanceof Number nc) {
+                byMonth.put(ny.intValue() + "-" + nm.intValue(), nc.longValue());
+            }
         }
-        return result;
+
+        List<DashboardStats.MonthStat> out = new ArrayList<>();
+        for (int i = MONTHS - 1; i >= 0; i--) {
+            LocalDate month = today.minusMonths(i);
+            String label = month.getMonth().getDisplayName(TextStyle.SHORT, java.util.Locale.ENGLISH)
+                         + " '" + String.format("%02d", month.getYear() % 100);
+            out.add(new DashboardStats.MonthStat(label,
+                    byMonth.getOrDefault(month.getYear() + "-" + month.getMonthValue(), 0L)));
+        }
+        return out;
     }
 
     private List<DashboardStats.MonthStat> pdfMonthlyGrowth(boolean admin, String orgId) {
-        return monthlyStats((from, to) -> admin
-                ? templateRepo.countByDeletedFalseAndCreatedAtBetween(from, to)
-                : templateRepo.countByOrganizationIdAndDeletedFalseAndCreatedAtBetween(orgId, from, to));
+        return admin
+                ? monthlyGrowth("templates", "createdAt", Criteria.where("deleted").is(false))
+                : monthlyGrowth("templates", "createdAt", Criteria.where("deleted").is(false),
+                                Criteria.where("organizationId").is(orgId));
     }
 
     private List<DashboardStats.MonthStat> emailMonthlyGrowth(boolean admin, String orgId) {
-        return monthlyStats((from, to) -> admin
-                ? emailTemplateRepo.countByDeletedFalseAndCreatedAtBetween(from, to)
-                : emailTemplateRepo.countByOrganizationIdAndDeletedFalseAndCreatedAtBetween(orgId, from, to));
+        return admin
+                ? monthlyGrowth("email_templates", "createdAt", Criteria.where("deleted").is(false))
+                : monthlyGrowth("email_templates", "createdAt", Criteria.where("deleted").is(false),
+                                Criteria.where("organizationId").is(orgId));
     }
 
     private List<DashboardStats.MonthStat> userMonthlyGrowth(boolean admin, String orgId) {
-        return monthlyStats((from, to) -> admin
-                ? userRepo.countByActiveTrueAndCreatedAtBetween(from, to)
-                : userRepo.countByOrganizationIdAndActiveTrueAndCreatedAtBetween(orgId, from, to));
+        return admin
+                ? monthlyGrowth("users", "createdAt", Criteria.where("active").is(true))
+                : monthlyGrowth("users", "createdAt", Criteria.where("active").is(true),
+                                Criteria.where("organizationId").is(orgId));
     }
 
     private List<DashboardStats.MonthStat> esignMonthlyGrowth(boolean admin, String orgId) {
-        return monthlyStats((from, to) -> admin
-                ? esignRepo.countBySentAtBetween(from, to)
-                : esignRepo.countByOrgIdAndSentAtBetween(orgId, from, to));
+        return admin
+                ? monthlyGrowth("esign_documents", "sentAt")
+                : monthlyGrowth("esign_documents", "sentAt", Criteria.where("orgId").is(orgId));
     }
 
     private List<DashboardStats.MonthStat> tenantMonthlyGrowth(List<Organization> allOrgs) {
