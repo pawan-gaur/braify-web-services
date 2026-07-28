@@ -62,9 +62,15 @@ public class ESignPdfService {
             for (ESignSignatureField field : fields) {
                 if (field.getValue() == null || field.getValue().isBlank()) continue;
 
-                String signerName = field.getSignatoryId() != null && signatoryNames.containsKey(field.getSignatoryId())
-                        ? signatoryNames.get(field.getSignatoryId())
-                        : doc.getClientName();
+                // Creator pre-filled/signed fields are attributed to the sender, not a signatory.
+                String signerName;
+                if (field.getFilledBy() == ESignSignatureField.FilledBy.CREATOR) {
+                    signerName = creatorName;
+                } else if (field.getSignatoryId() != null && signatoryNames.containsKey(field.getSignatoryId())) {
+                    signerName = signatoryNames.get(field.getSignatoryId());
+                } else {
+                    signerName = doc.getClientName();
+                }
 
                 // page 0 → stamp every page; otherwise stamp 1-based page index
                 int startPage = field.getPage() == 0 ? 0 : field.getPage() - 1;
@@ -121,15 +127,25 @@ public class ESignPdfService {
         float y = pageH - (float) (field.getY() / 100.0 * pageH) - height;
 
         ESignSignatureField.SigningMethod method = field.getSigningMethod();
+        ESignSignatureField.FieldType type = field.getFieldType();
 
         try (PDPageContentStream cs = new PDPageContentStream(
                 pdf, page, PDPageContentStream.AppendMode.APPEND, true, true)) {
 
+            if (type == ESignSignatureField.FieldType.CHECKBOX) {
+                // Value is "true"/"false"; draw a checkmark only when checked (no caption).
+                if (isChecked(field.getValue())) drawCheckmark(cs, x, y, width, height);
+                return;
+            }
+
             if (method == ESignSignatureField.SigningMethod.TYPE) {
                 // Typed text — Arial (Helvetica is metrically Arial), upright (not italic).
+                // Font size is the field's chosen size (points), default 12; vertically centred in the box.
+                int fontPt = field.getFontSize() != null && field.getFontSize() > 0 ? field.getFontSize() : 12;
+                float baseline = y + (height - fontPt) / 2f + fontPt * 0.16f;   // roughly vertically centred
                 cs.beginText();
-                cs.setFont(PDType1Font.HELVETICA, 12);
-                cs.newLineAtOffset(x + 2, y + 4);
+                cs.setFont(PDType1Font.HELVETICA, fontPt);
+                cs.newLineAtOffset(x + 2, Math.max(y + 1, baseline));
                 cs.showText(field.getValue());
                 cs.endText();
 
@@ -149,7 +165,6 @@ public class ESignPdfService {
 
             // Adobe-style caption under signature/initials: an underline + "Name (timestamp)".
             // Stamps are shown as-is (no caption).
-            ESignSignatureField.FieldType type = field.getFieldType();
             if (type == ESignSignatureField.FieldType.SIGNATURE
                     || type == ESignSignatureField.FieldType.INITIALS) {
                 // Render the timestamp in the SIGNER's timezone (with GMT offset), not the server's.
@@ -157,6 +172,30 @@ public class ESignPdfService {
                 drawSignatureCaption(cs, x, y, width, signerName, ts);
             }
         }
+    }
+
+    /** A checkbox is "checked" when its value is a truthy string. */
+    private boolean isChecked(String value) {
+        if (value == null) return false;
+        String v = value.trim().toLowerCase();
+        return v.equals("true") || v.equals("checked") || v.equals("yes") || v.equals("1") || v.equals("x");
+    }
+
+    /**
+     * Draws a checkmark (two vector strokes) fitted inside the field box. Font-independent, so it
+     * never trips PDFBox's WinAnsi glyph limits the way a "✓" character would.
+     */
+    private void drawCheckmark(PDPageContentStream cs, float x, float y, float w, float h) throws IOException {
+        float pad = Math.min(w, h) * 0.15f;
+        float bx = x + pad, by = y + pad, bw = w - 2 * pad, bh = h - 2 * pad;
+        cs.setStrokingColor(0.10f, 0.10f, 0.10f);
+        cs.setLineWidth(Math.max(1.2f, Math.min(bw, bh) * 0.14f));
+        cs.setLineCapStyle(1);   // round caps for a cleaner tick
+        cs.moveTo(bx + bw * 0.15f, by + bh * 0.48f);
+        cs.lineTo(bx + bw * 0.40f, by + bh * 0.18f);
+        cs.lineTo(bx + bw * 0.85f, by + bh * 0.82f);
+        cs.stroke();
+        cs.setStrokingColor(0f, 0f, 0f);
     }
 
     /**

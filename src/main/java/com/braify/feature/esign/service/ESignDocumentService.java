@@ -337,18 +337,39 @@ public class ESignDocumentService {
         fieldRepo.deleteByDocumentId(docId);
 
         List<ESignSignatureField> fields = requests.stream()
-                .map(r -> ESignSignatureField.builder()
-                        .documentId(docId)
-                        .createdBy(principal.getId())
-                        .signatoryId(r.getSignatoryId() != null && !r.getSignatoryId().isBlank()
-                                ? r.getSignatoryId() : defaultSignatoryId)
-                        .page(r.getPage())
-                        .x(r.getX()).y(r.getY())
-                        .width(r.getWidth()).height(r.getHeight())
-                        .fieldType(ESignSignatureField.FieldType.valueOf(r.getFieldType().toUpperCase()))
-                        .label(r.getLabel())
-                        .required(r.isRequired())
-                        .build())
+                .map(r -> {
+                    boolean isCreator = "CREATOR".equalsIgnoreCase(r.getFilledBy());
+                    ESignSignatureField.ESignSignatureFieldBuilder b = ESignSignatureField.builder()
+                            .documentId(docId)
+                            .createdBy(principal.getId())
+                            // CREATOR fields belong to nobody's signing queue → never defaulted to a signatory.
+                            .signatoryId(isCreator ? null
+                                    : (r.getSignatoryId() != null && !r.getSignatoryId().isBlank()
+                                        ? r.getSignatoryId() : defaultSignatoryId))
+                            .page(r.getPage())
+                            .x(r.getX()).y(r.getY())
+                            .width(r.getWidth()).height(r.getHeight())
+                            .fieldType(ESignSignatureField.FieldType.valueOf(r.getFieldType().toUpperCase()))
+                            .label(r.getLabel())
+                            .required(r.isRequired())
+                            .fontSize(r.getFontSize())
+                            .filledBy(isCreator ? ESignSignatureField.FilledBy.CREATOR
+                                                : ESignSignatureField.FilledBy.SIGNER);
+                    // Author-supplied value is baked in now (stamped at finalize alongside signatures).
+                    if (isCreator && r.getValue() != null && !r.getValue().isBlank()) {
+                        ESignSignatureField.SigningMethod method;
+                        try {
+                            method = ESignSignatureField.SigningMethod.valueOf(
+                                    r.getSigningMethod() != null ? r.getSigningMethod().toUpperCase() : "TYPE");
+                        } catch (IllegalArgumentException ex) {
+                            method = ESignSignatureField.SigningMethod.TYPE;
+                        }
+                        b.value(r.getValue())
+                         .signingMethod(method)
+                         .signedAt(LocalDateTime.now());
+                    }
+                    return b.build();
+                })
                 .toList();
 
         List<ESignSignatureField> saved = fieldRepo.saveAll(fields);
