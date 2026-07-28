@@ -482,6 +482,63 @@ public class ESignDocumentService {
     }
 
     /**
+     * Reactivates an EXPIRED document. The creator can revive a document that lapsed because it
+     * wasn't signed within its validity window: a fresh signing token + expiry window are issued,
+     * everyone who still needs to sign is re-invited, and the document returns to an active status.
+     * Signatures captured before expiry are preserved (→ PARTIALLY_SIGNED); otherwise → PENDING.
+     */
+    public DocumentResponse reactivateDocument(String docId,
+                                               int tokenValidDays,
+                                               UserDetailsImpl principal,
+                                               String ip, String ua) {
+        ESignDocument doc = getAccessibleDoc(docId, principal);
+
+        if (doc.getStatus() != ESignDocument.Status.EXPIRED) {
+            throw new IllegalStateException(
+                    "Only expired documents can be reactivated (current status: " + doc.getStatus()
+                    + "). Use resend for documents that are still active.");
+        }
+
+        // Fresh validity window.
+        doc.setSentAt(java.time.LocalDateTime.now());
+        doc.setTokenExpiresAt(java.time.LocalDateTime.now().plusDays(tokenValidDays));
+
+        // Keep any pre-expiry signatures: some signed → PARTIALLY_SIGNED, otherwise back to PENDING.
+        boolean anySigned = effectiveSignatories(doc).stream()
+                .anyMatch(s -> s.getStatus() == ESignDocument.SignatoryStatus.SIGNED);
+        doc.setStatus(anySigned ? ESignDocument.Status.PARTIALLY_SIGNED : ESignDocument.Status.PENDING);
+
+        // Re-invite whoever still needs to sign (SEQUENTIAL → the current one only; PARALLEL → all).
+        List<ESignDocument.Signatory> pending = effectiveSignatories(doc).stream()
+                .filter(s -> s.getStatus() != ESignDocument.SignatoryStatus.SIGNED)
+                .toList();
+        boolean first = true;
+        for (ESignDocument.Signatory s : pending) {
+            String token = tokenService.issueSigningToken(doc, s, tokenValidDays);
+            if (s.getInvitedAt() == null) s.setInvitedAt(LocalDateTime.now());
+            emailService.sendSigningInvitation(doc, s.getName(), s.getEmail(), first, token);
+            first = false;
+            if (doc.getSigningMode() == ESignDocument.SigningMode.SEQUENTIAL) break; // only the active one
+        }
+        doc = docRepo.save(doc);
+
+        auditService.log(docId, principal.getUsername(),
+                ESignAuditEvent.ActorType.CREATOR,
+                ESignAuditEvent.EventType.DOCUMENT_SENT, ip, ua,
+                Map.of("clientEmail", doc.getClientEmail(), "action", "REACTIVATE",
+                       "tokenValidDays", tokenValidDays));
+
+        auditLogService.log(
+                doc.getId(), doc.getTitle(),
+                AuditLog.Action.SENT, AuditLog.ResourceType.E_SIGN,
+                0, Map.of("clientEmail", doc.getClientEmail(), "action", "REACTIVATE"),
+                principal.getUsername(), principal.getOrgId());
+
+        List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(docId);
+        return DocumentResponse.from(doc, fields, false);
+    }
+
+    /**
      * Resends the signing invitation to a single signatory (fresh token, revoking their previous one).
      * In SEQUENTIAL mode only the current (first not-yet-signed) signatory can be re-invited.
      */
