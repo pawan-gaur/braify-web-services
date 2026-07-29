@@ -167,6 +167,8 @@ public class ESignDocument {
         private LocalDateTime invitedAt; // when this signatory was first emailed their signing link
         private LocalDateTime viewedAt;
         private LocalDateTime signedAt;
+        /** When this signatory affirmatively consented to use electronic records & signatures (ESIGN/UETA). */
+        private LocalDateTime consentedAt;
     }
 
     @Data @Builder @NoArgsConstructor @AllArgsConstructor

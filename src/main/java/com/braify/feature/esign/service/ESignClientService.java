@@ -74,6 +74,38 @@ public class ESignClientService {
         return resp;
     }
 
+    // ── Electronic-records-&-signatures consent (ESIGN Act §101(c) / UETA §5) ──
+
+    /**
+     * Records the signer's affirmative consent to use electronic records and signatures
+     * BEFORE they sign. This is the legal prerequisite under the U.S. ESIGN Act / UETA
+     * (and good practice for eIDAS): an immutable {@code CONSENT_ACCEPTED} audit event
+     * (with IP / user-agent / timestamp) plus a {@code consentedAt} stamp on the signatory
+     * so the consent is part of the tamper-evident record and can be reproduced.
+     */
+    public DocumentResponse recordConsent(String rawJwt, String ip, String ua) {
+        ESignSigningToken token = validateToken(rawJwt);
+        ESignDocument doc = fetchDoc(token.getDocumentId());
+        ESignDocument.Signatory signatory = resolveSignatory(doc, token);
+
+        LocalDateTime now = LocalDateTime.now();
+        if (signatory != null && signatory.getConsentedAt() == null) {
+            signatory.setConsentedAt(now);
+            docRepo.save(doc);
+        }
+        auditService.log(doc.getId(), token.getClientEmail(),
+                ESignAuditEvent.ActorType.CLIENT,
+                ESignAuditEvent.EventType.CONSENT_ACCEPTED, ip, ua,
+                Map.of("consent", "Agreed to use electronic records and signatures",
+                       "signatory", signatory != null ? signatory.getEmail() : doc.getClientEmail()));
+
+        List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(doc.getId());
+        DocumentResponse resp = DocumentResponse.from(doc, fields, true);
+        resp.setCurrentSignatoryId(signatory != null ? signatory.getId() : null);
+        resp.setSourcePdfUrl(esignStorage.sourcePresignedUrl(doc));
+        return resp;
+    }
+
     // ── Source PDF bytes (same-origin, token-authorized) ─────────────────────
 
     /**

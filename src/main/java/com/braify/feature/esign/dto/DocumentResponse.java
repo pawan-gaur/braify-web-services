@@ -118,6 +118,7 @@ public class DocumentResponse {
         private String  status;
         private LocalDateTime viewedAt;
         private LocalDateTime signedAt;
+        private LocalDateTime consentedAt;   // electronic-records-&-signatures consent (ESIGN/UETA)
 
         public static SignatoryResponse from(ESignDocument.Signatory s) {
             return SignatoryResponse.builder()
@@ -128,6 +129,7 @@ public class DocumentResponse {
                     .status(s.getStatus() != null ? s.getStatus().name() : null)
                     .viewedAt(s.getViewedAt())
                     .signedAt(s.getSignedAt())
+                    .consentedAt(s.getConsentedAt())
                     .build();
         }
     }

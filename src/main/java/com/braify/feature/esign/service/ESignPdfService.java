@@ -451,6 +451,9 @@ public class ESignPdfService {
             if (s.getViewedAt() != null)
                 events.add(new AuditEvent(s.getViewedAt(), 0.90f, 0.45f, 0.10f,
                         "Email viewed by " + who, null));
+            if (s.getConsentedAt() != null)
+                events.add(new AuditEvent(s.getConsentedAt(), 0.55f, 0.35f, 0.85f,
+                        "Consent to use electronic records & signatures accepted by " + who, null));
             if (s.getSignedAt() != null) {
                 String sub = "Signature Date: " + ESignTimeFormat.audit(s.getSignedAt())
                         + " - Time Source: server - Signature Appearance: " + methodForSignatory(doc, fields, s);
