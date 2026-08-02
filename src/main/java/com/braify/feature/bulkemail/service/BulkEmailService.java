@@ -187,10 +187,12 @@ public class BulkEmailService {
                 throw new IllegalArgumentException("Main sheet ID column is required for EXCEL_SHEET attachment type");
         }
 
-        // Resolve organisation display name (used as email "From:" sender)
-        String orgName = orgRepo.findById(principal.getOrgId())
-                .map(org -> org.getName())
-                .orElse(null);
+        // Resolve organisation display name (used as email "From:" sender).
+        // Guard against a null orgId (e.g. a platform-admin account with no org) so the
+        // repository doesn't throw "The given id must not be null".
+        String orgName = principal.getOrgId() != null
+                ? orgRepo.findById(principal.getOrgId()).map(org -> org.getName()).orElse(null)
+                : null;
 
         // Generate a default label if not provided
         String label = (req.getLabel() != null && !req.getLabel().isBlank())
