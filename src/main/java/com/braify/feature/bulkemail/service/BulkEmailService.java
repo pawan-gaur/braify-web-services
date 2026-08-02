@@ -22,6 +22,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 
@@ -460,6 +461,17 @@ public class BulkEmailService {
                 com.braify.feature.bulkemail.model.BulkEmailEvent.Type.OPEN);
         long totalClicks = eventRepo.countByJobIdAndType(jobId,
                 com.braify.feature.bulkemail.model.BulkEmailEvent.Type.CLICK);
+
+        // Self-heal: rewrite the campaign's denormalised summary counters (used by the list view
+        // and header chips) from the authoritative event log, so they can never drift from reality.
+        mongoTemplate.updateFirst(
+                Query.query(Criteria.where("_id").is(jobId)),
+                new Update()
+                        .set("openedCount",  openedRecipients)
+                        .set("clickedCount", clickedRecipients)
+                        .set("totalOpens",   (int) totalOpens)
+                        .set("totalClicks",  (int) totalClicks),
+                BulkEmailJob.class);
 
         return com.braify.feature.bulkemail.dto.BulkEmailAnalyticsResponse.builder()
                 .jobId(jobId)
