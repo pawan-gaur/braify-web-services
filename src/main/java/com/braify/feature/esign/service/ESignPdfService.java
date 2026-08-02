@@ -143,10 +143,13 @@ public class ESignPdfService {
                 // Font size is the field's chosen size (points), default 12; vertically centred in the box.
                 int fontPt = field.getFontSize() != null && field.getFontSize() > 0 ? field.getFontSize() : 12;
                 float baseline = y + (height - fontPt) / 2f + fontPt * 0.16f;   // roughly vertically centred
+                // DATE values are stored ISO (yyyy-MM-dd); render them as dd/MM/yyyy.
+                String text = type == ESignSignatureField.FieldType.DATE
+                        ? formatDateDmy(field.getValue()) : field.getValue();
                 cs.beginText();
                 cs.setFont(PDType1Font.HELVETICA, fontPt);
                 cs.newLineAtOffset(x + 2, Math.max(y + 1, baseline));
-                cs.showText(field.getValue());
+                cs.showText(text == null ? "" : text);
                 cs.endText();
 
             } else {
@@ -172,6 +175,14 @@ public class ESignPdfService {
                 drawSignatureCaption(cs, x, y, width, signerName, ts);
             }
         }
+    }
+
+    /** Reformats a stored ISO date value (yyyy-MM-dd) as dd/MM/yyyy; returns other input unchanged. */
+    private String formatDateDmy(String v) {
+        if (v == null) return "";
+        java.util.regex.Matcher m = java.util.regex.Pattern
+                .compile("^(\\d{4})-(\\d{2})-(\\d{2})$").matcher(v.trim());
+        return m.matches() ? m.group(3) + "/" + m.group(2) + "/" + m.group(1) : v;
     }
 
     /** A checkbox is "checked" when its value is a truthy string. */
