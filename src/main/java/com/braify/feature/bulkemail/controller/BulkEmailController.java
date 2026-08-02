@@ -144,4 +144,36 @@ public class BulkEmailController {
 
         return ResponseEntity.ok(bulkEmailService.getJobStatus(id, principal));
     }
+
+    @Operation(summary = "Send a follow-up to non-openers / non-clickers",
+               description = "Creates a NEW campaign re-sending to recipients of this campaign who were sent " +
+                             "successfully but did not open (segment=UNOPENED) or did not click (segment=UNCLICKED). " +
+                             "The original campaign is untouched; unsubscribed/suppressed addresses are excluded. " +
+                             "Requires the source campaign to be COMPLETED or PARTIAL.")
+    @ApiResponse(responseCode = "200", description = "Follow-up campaign created and started")
+    @ApiResponse(responseCode = "400", description = "No matching recipients, or source not finished")
+    @PostMapping("/{id}/resend-segment")
+    public ResponseEntity<BulkEmailJobResponse> resendSegment(
+            @Parameter(description = "Source campaign ID") @PathVariable String id,
+            @Parameter(description = "UNOPENED or UNCLICKED") @RequestParam BulkEmailService.ResendSegment segment,
+            @Parameter(description = "Optional label for the follow-up campaign") @RequestParam(required = false) String label,
+            @AuthenticationPrincipal UserDetailsImpl principal) {
+
+        log.info("POST /api/bulk-email/jobs/{}/resend-segment segment={} by '{}'", id, segment, principal.getUsername());
+        return ResponseEntity.ok(bulkEmailService.resendToSegment(id, segment, label, principal));
+    }
+
+    @Operation(summary = "Get campaign engagement analytics",
+               description = "Open/click/unsubscribe rates, an hourly opens-and-clicks timeline, and the " +
+                             "most-clicked destination links for a campaign. Distinct-recipient counts are " +
+                             "computed exactly from the tracking event log.")
+    @ApiResponse(responseCode = "200", description = "Campaign analytics")
+    @ApiResponse(responseCode = "404", description = "Job not found or not owned by caller")
+    @GetMapping("/{id}/analytics")
+    public ResponseEntity<com.braify.feature.bulkemail.dto.BulkEmailAnalyticsResponse> getAnalytics(
+            @Parameter(description = "Job ID") @PathVariable String id,
+            @AuthenticationPrincipal UserDetailsImpl principal) {
+
+        return ResponseEntity.ok(bulkEmailService.getAnalytics(id, principal));
+    }
 }

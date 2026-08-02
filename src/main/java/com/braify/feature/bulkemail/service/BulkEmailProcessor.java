@@ -73,9 +73,18 @@ public class BulkEmailProcessor {
     private final BulkEmailJobRepository jobRepo;
     private final TemplateRepository     pdfTemplateRepo;
     private final EmailDispatcher        emailDispatcher;
+    private final EmailTrackingService   emailTrackingService;
+    private final EmailRateLimiter       rateLimiter;
     private final PdfGenerationService   pdfGenerationService;
     private final MongoTemplate          mongoTemplate;
     private final com.braify.feature.placeholder.service.GlobalPlaceholderService globalPlaceholderService;
+
+    /** Max send attempts per recipient before giving up (transient failures only). */
+    @org.springframework.beans.factory.annotation.Value("${bulkemail.max-send-attempts:3}")
+    private int maxSendAttempts;
+
+    /** Base backoff between retries; grows exponentially with jitter. */
+    private static final long BASE_BACKOFF_MS = 500;
 
     /** Shared RestTemplate — thread-safe; reused across all jobs. */
     private final RestTemplate restTemplate = new RestTemplate();
@@ -245,18 +254,32 @@ public class BulkEmailProcessor {
                 if (ccEmails.isEmpty()) ccEmails = null;
             }
 
-            // 5. Send
+            // 5. Send — inject open pixel / rewrite links / append unsubscribe for this
+            //    recipient's opaque token. Runs on the FINAL html (post-placeholder), so
+            //    links that contained {{placeholders}} are signed with their real URLs.
             String senderName = (job.getOrgName() != null && !job.getOrgName().isBlank())
                     ? job.getOrgName() : job.getEmailTemplateName();
 
-            var response = attachments.isEmpty()
-                    ? emailDispatcher.sendHtmlEmail(
-                            row.getRecipientEmail(), ccEmails, subject,
-                            job.getEmailTemplateHtml(), emailPlaceholders, senderName)
-                    : emailDispatcher.sendHtmlEmailWithAttachments(
-                            row.getRecipientEmail(), ccEmails, subject,
-                            job.getEmailTemplateHtml(), emailPlaceholders,
-                            attachments, senderName);
+            final String trackingId = row.getTrackingId();
+            java.util.function.UnaryOperator<String> tracking =
+                    (trackingId != null && !trackingId.isBlank())
+                            ? html -> emailTrackingService.applyTracking(html, trackingId)
+                            : null;
+
+            final List<String> ccFinal = ccEmails;
+            final String subjectFinal = subject;
+            final Map<String, byte[]> attachmentsFinal = attachments;
+            java.util.concurrent.Callable<com.resend.services.emails.model.CreateEmailResponse> sendOnce =
+                    () -> attachmentsFinal.isEmpty()
+                        ? emailDispatcher.sendHtmlEmail(
+                                row.getRecipientEmail(), ccFinal, subjectFinal,
+                                job.getEmailTemplateHtml(), emailPlaceholders, senderName, tracking)
+                        : emailDispatcher.sendHtmlEmailWithAttachments(
+                                row.getRecipientEmail(), ccFinal, subjectFinal,
+                                job.getEmailTemplateHtml(), emailPlaceholders,
+                                attachmentsFinal, senderName, tracking);
+
+            var response = sendWithRetry(sendOnce, row, job.getId());
 
             row.setStatus(BulkEmailJob.BulkEmailRow.RowStatus.SENT);
             row.setSentAt(LocalDateTime.now());
@@ -357,6 +380,52 @@ public class BulkEmailProcessor {
                 .description(description)
                 .timestamp(LocalDateTime.now())
                 .build());
+    }
+
+    /**
+     * Sends one email, respecting the shared rate limit, and retries transient failures
+     * (429 / 5xx / timeouts / connection resets) with exponential backoff + jitter.
+     * Permanent failures (e.g. a rejected address) fail fast without retry.
+     */
+    private com.resend.services.emails.model.CreateEmailResponse sendWithRetry(
+            java.util.concurrent.Callable<com.resend.services.emails.model.CreateEmailResponse> send,
+            BulkEmailJob.BulkEmailRow row, String jobId) throws Exception {
+
+        int attempts = Math.max(1, maxSendAttempts);
+        Exception last = null;
+        for (int attempt = 1; attempt <= attempts; attempt++) {
+            rateLimiter.acquire();
+            try {
+                return send.call();
+            } catch (Exception e) {
+                last = e;
+                if (attempt >= attempts || !isTransient(e)) throw e;
+                long backoff = (long) (BASE_BACKOFF_MS * Math.pow(2, attempt - 1))
+                        + java.util.concurrent.ThreadLocalRandom.current().nextLong(250);
+                log.warn("Transient send failure row {} job {} (attempt {}/{}): {} — retrying in {}ms",
+                        row.getRowIndex(), jobId, attempt, attempts, e.getMessage(), backoff);
+                Thread.sleep(backoff);
+            }
+        }
+        throw last;   // unreachable — loop either returns or throws
+    }
+
+    /** Heuristic: is this failure worth retrying, or is it a permanent rejection? */
+    private static boolean isTransient(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            if (c instanceof java.io.IOException) return true;
+            String m = c.getMessage();
+            if (m != null) {
+                String s = m.toLowerCase();
+                if (s.contains("429") || s.contains("rate limit") || s.contains("too many")
+                        || s.contains("timeout") || s.contains("timed out") || s.contains("temporarily")
+                        || s.contains("500") || s.contains("502") || s.contains("503") || s.contains("504")
+                        || s.contains("connection reset") || s.contains("connection refused")
+                        || s.contains("unavailable"))
+                    return true;
+            }
+        }
+        return false;
     }
 
     private String substituteVars(String template, Map<String, String> data) {

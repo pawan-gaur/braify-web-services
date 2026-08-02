@@ -74,6 +74,38 @@ public class ESignClientService {
         return resp;
     }
 
+    // ── Electronic-records-&-signatures consent (ESIGN Act §101(c) / UETA §5) ──
+
+    /**
+     * Records the signer's affirmative consent to use electronic records and signatures
+     * BEFORE they sign. This is the legal prerequisite under the U.S. ESIGN Act / UETA
+     * (and good practice for eIDAS): an immutable {@code CONSENT_ACCEPTED} audit event
+     * (with IP / user-agent / timestamp) plus a {@code consentedAt} stamp on the signatory
+     * so the consent is part of the tamper-evident record and can be reproduced.
+     */
+    public DocumentResponse recordConsent(String rawJwt, String ip, String ua) {
+        ESignSigningToken token = validateToken(rawJwt);
+        ESignDocument doc = fetchDoc(token.getDocumentId());
+        ESignDocument.Signatory signatory = resolveSignatory(doc, token);
+
+        LocalDateTime now = LocalDateTime.now();
+        if (signatory != null && signatory.getConsentedAt() == null) {
+            signatory.setConsentedAt(now);
+            docRepo.save(doc);
+        }
+        auditService.log(doc.getId(), token.getClientEmail(),
+                ESignAuditEvent.ActorType.CLIENT,
+                ESignAuditEvent.EventType.CONSENT_ACCEPTED, ip, ua,
+                Map.of("consent", "Agreed to use electronic records and signatures",
+                       "signatory", signatory != null ? signatory.getEmail() : doc.getClientEmail()));
+
+        List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(doc.getId());
+        DocumentResponse resp = DocumentResponse.from(doc, fields, true);
+        resp.setCurrentSignatoryId(signatory != null ? signatory.getId() : null);
+        resp.setSourcePdfUrl(esignStorage.sourcePresignedUrl(doc));
+        return resp;
+    }
+
     // ── Source PDF bytes (same-origin, token-authorized) ─────────────────────
 
     /**
@@ -128,6 +160,10 @@ public class ESignClientService {
         if (!field.getDocumentId().equals(token.getDocumentId()))
             throw new SecurityException("Field does not belong to the document in this token");
 
+        // Creator pre-filled fields are read-only to signers.
+        if (field.getFilledBy() == ESignSignatureField.FilledBy.CREATOR)
+            throw new SecurityException("This field is pre-filled by the sender and cannot be signed");
+
         // A signatory may only sign fields assigned to them (legacy tokens / unassigned fields are unrestricted).
         if (token.getSignatoryId() != null && field.getSignatoryId() != null
                 && !token.getSignatoryId().equals(field.getSignatoryId()))
@@ -138,6 +174,8 @@ public class ESignClientService {
                 req.getSigningMethod().toUpperCase()));
         field.setSignedAt(LocalDateTime.now());
         field.setSignedTimeZone(req.getTimeZone());   // signer's browser timezone, for display
+        if (req.getFontSize() != null && req.getFontSize() > 0)
+            field.setFontSize(req.getFontSize());     // signer's font-size override for TEXT/DATE
         fieldRepo.save(field);
 
         auditService.logAsync(token.getDocumentId(), token.getClientEmail(),
@@ -447,12 +485,16 @@ public class ESignClientService {
     private List<ESignSignatureField> fieldsForSignatory(ESignDocument doc,
                                                          List<ESignSignatureField> allFields,
                                                          ESignDocument.Signatory signatory) {
+        // Creator pre-filled fields are never a signer's responsibility.
+        List<ESignSignatureField> signerFields = allFields.stream()
+                .filter(f -> f.getFilledBy() != ESignSignatureField.FilledBy.CREATOR)
+                .toList();
         if (signatory == null || signatory.getId() == null
                 || doc.getSignatories() == null || doc.getSignatories().isEmpty()) {
-            return allFields;
+            return signerFields;
         }
         String firstId = doc.getSignatories().get(0).getId();
-        return allFields.stream()
+        return signerFields.stream()
                 .filter(f -> {
                     String owner = f.getSignatoryId() != null ? f.getSignatoryId() : firstId;
                     return signatory.getId().equals(owner);

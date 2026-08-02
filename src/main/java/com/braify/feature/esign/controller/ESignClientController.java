@@ -102,6 +102,21 @@ public class ESignClientController {
         return ResponseEntity.ok(doc);
     }
 
+    @Operation(summary = "Record consent to use electronic records & signatures",
+               description = "Captures the signer's affirmative ESIGN Act / UETA consent before signing. " +
+                             "Recorded as an immutable audit event plus a consent timestamp on the signatory.")
+    @ApiResponse(responseCode = "200", description = "Consent recorded")
+    @PostMapping("/{token}/consent")
+    public ResponseEntity<DocumentResponse> recordConsent(
+            @Parameter(description = "ESIGN signing token") @PathVariable String token,
+            HttpServletRequest http) {
+
+        log.info("POST /api/esign/sign/{token}/consent (client accepting electronic-signature consent)");
+        DocumentResponse doc = clientService.recordConsent(
+                token, extractIp(http), http.getHeader("User-Agent"));
+        return ResponseEntity.ok(doc);
+    }
+
     @Operation(summary = "Upload supporting document after signing",
                description = "Allows the client to optionally attach a supporting document (e.g. ID copy) " +
                              "after submitting their signature. Requires the original signing JWT (still within " +

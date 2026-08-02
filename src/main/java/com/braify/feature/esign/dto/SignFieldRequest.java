@@ -8,4 +8,6 @@ public class SignFieldRequest {
     private String value;           // base64 PNG data-URL or plain text
     /** Signer's IANA timezone (e.g. "Africa/Kigali") captured from their browser at signing time. */
     private String timeZone;
+    /** Optional font-size override (points) for TEXT/DATE values, if the signer adjusts it. */
+    private Integer fontSize;
 }

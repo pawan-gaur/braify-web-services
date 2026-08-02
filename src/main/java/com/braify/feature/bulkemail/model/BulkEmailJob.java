@@ -36,6 +36,9 @@ import java.util.Map;
     @CompoundIndex(name = "idx_orgId_createdAt",     def = "{'orgId': 1,     'createdAt': -1}"),
     // PLATFORM_ADMIN full-scan, still benefits from a createdAt index for the sort
     @CompoundIndex(name = "idx_createdAt_desc",      def = "{'createdAt': -1}"),
+    // Open/click/unsubscribe tracking hits look a recipient up by its opaque token —
+    // index the embedded rows.trackingId so each tracking pixel/redirect is an O(1) find.
+    @CompoundIndex(name = "idx_rows_trackingId",     def = "{'rows.trackingId': 1}"),
 })
 public class BulkEmailJob {
 
@@ -99,12 +102,35 @@ public class BulkEmailJob {
     @Builder.Default private boolean includeExcelSheet = false;
 
     /* ── Progress ────────────────────────────────────────────────────────── */
-    public enum JobStatus { PENDING, PROCESSING, COMPLETED, PARTIAL, FAILED, CANCELLED }
+    public enum JobStatus { SCHEDULED, PENDING, PROCESSING, COMPLETED, PARTIAL, FAILED, CANCELLED }
     @Builder.Default private JobStatus status       = JobStatus.PENDING;
     @Builder.Default private int        totalCount   = 0;
     @Builder.Default private int        sentCount    = 0;
     @Builder.Default private int        failedCount  = 0;
     @Builder.Default private int        pendingCount = 0;
+
+    /** When set and in the future at creation, the job waits in {@code SCHEDULED} until a
+     *  poller dispatches it. Null = send immediately. */
+    private LocalDateTime scheduledAt;
+
+    /** Recipients dropped at build time for bad address format / being duplicates within the list. */
+    @Builder.Default private int invalidSkippedCount   = 0;
+    @Builder.Default private int duplicateSkippedCount = 0;
+
+    /* ── Engagement tracking (denormalised counters) ─────────────────────────
+     * Maintained incrementally by the tracking endpoints so the list view can show
+     * engagement without loading every row. {@code openedCount}/{@code clickedCount}
+     * are distinct-recipient counters (best-effort; the analytics endpoint recomputes
+     * them exactly from the event log). {@code totalOpens}/{@code totalClicks} are raw
+     * hit counts (opens are inflated by mail-client prefetch — clicks are the reliable
+     * engagement signal). */
+    @Builder.Default private int totalOpens        = 0;
+    @Builder.Default private int totalClicks       = 0;
+    @Builder.Default private int openedCount       = 0;   // distinct recipients who opened ≥1
+    @Builder.Default private int clickedCount      = 0;   // distinct recipients who clicked ≥1
+    @Builder.Default private int unsubscribedCount = 0;
+    /** Recipients dropped at build time because their address is on the org suppression list. */
+    @Builder.Default private int suppressedCount   = 0;
 
     @CreatedDate private LocalDateTime createdAt;
     private LocalDateTime startedAt;
@@ -125,6 +151,20 @@ public class BulkEmailJob {
         private String error;
         private String messageId;           // Resend API message ID on success
         private LocalDateTime sentAt;
+
+        /* ── Engagement tracking ─────────────────────────────────────────────
+         * {@code trackingId} is an opaque, unguessable per-recipient token embedded in
+         * the open pixel and click/unsubscribe links. It is the join key the public
+         * /api/track endpoints use to attribute a hit back to this recipient. */
+        private String trackingId;
+        @Builder.Default private int openCount  = 0;
+        private LocalDateTime firstOpenedAt;
+        private LocalDateTime lastOpenedAt;
+        @Builder.Default private int clickCount = 0;
+        private LocalDateTime firstClickedAt;
+        private LocalDateTime lastClickedAt;
+        @Builder.Default private boolean unsubscribed = false;
+        private LocalDateTime unsubscribedAt;
     }
 
     /* ── Audit trail ─────────────────────────────────────────────────────── */
@@ -134,9 +174,9 @@ public class BulkEmailJob {
     @Data @Builder @NoArgsConstructor @AllArgsConstructor
     public static class BulkEmailAuditEvent {
         public enum EventType {
-            JOB_CREATED, PROCESSING_STARTED,
+            JOB_CREATED, JOB_SCHEDULED, PROCESSING_STARTED,
             JOB_COMPLETED, JOB_PARTIAL, JOB_FAILED, JOB_CANCELLED,
-            RESEND_CREATED, RETRY_PENDING
+            RESEND_CREATED, RESEND_SEGMENT, RETRY_PENDING, RESUMED
         }
         private EventType     type;
         private String        description;

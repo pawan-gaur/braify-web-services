@@ -70,11 +70,13 @@ public class DocumentResponse {
     public static class FieldResponse {
         private String  id;
         private String  signatoryId;   // which signatory fills this field (null = legacy single-signer)
+        private String  filledBy;      // SIGNER | CREATOR — CREATOR fields are pre-filled by the author
         private int     page;
         private double  x, y, width, height;
         private String  fieldType;
         private String  label;
         private boolean required;
+        private Integer fontSize;      // points for TEXT/DATE values (null = default)
         private boolean signed;
         private String  signingMethod;
         private String  value;         // signed value (signature image / typed text) — for showing prior signatures
@@ -86,12 +88,14 @@ public class DocumentResponse {
             return FieldResponse.builder()
                     .id(f.getId())
                     .signatoryId(f.getSignatoryId())
+                    .filledBy(f.getFilledBy() != null ? f.getFilledBy().name() : "SIGNER")
                     .page(f.getPage())
                     .x(f.getX()).y(f.getY())
                     .width(f.getWidth()).height(f.getHeight())
                     .fieldType(f.getFieldType().name())
                     .label(f.getLabel())
                     .required(f.isRequired())
+                    .fontSize(f.getFontSize())
                     .signed(f.getValue() != null && !f.getValue().isBlank())
                     .signingMethod(f.getSigningMethod() != null ? f.getSigningMethod().name() : null)
                     .value(f.getValue())
@@ -114,6 +118,7 @@ public class DocumentResponse {
         private String  status;
         private LocalDateTime viewedAt;
         private LocalDateTime signedAt;
+        private LocalDateTime consentedAt;   // electronic-records-&-signatures consent (ESIGN/UETA)
 
         public static SignatoryResponse from(ESignDocument.Signatory s) {
             return SignatoryResponse.builder()
@@ -124,6 +129,7 @@ public class DocumentResponse {
                     .status(s.getStatus() != null ? s.getStatus().name() : null)
                     .viewedAt(s.getViewedAt())
                     .signedAt(s.getSignedAt())
+                    .consentedAt(s.getConsentedAt())
                     .build();
         }
     }

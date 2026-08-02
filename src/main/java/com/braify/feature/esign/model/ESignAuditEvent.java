@@ -37,6 +37,7 @@ public class ESignAuditEvent {
         DOCUMENT_SENT,
         LINK_OPENED,            // client clicked email link
         DOCUMENT_VIEWED,        // client scrolled to end / confirmed review
+        CONSENT_ACCEPTED,       // client affirmatively consented to use electronic records & signatures (ESIGN/UETA)
         SIGNING_STARTED,
         FIELD_SIGNED,           // one field completed
         DOCUMENT_SUBMITTED,
