@@ -4,6 +4,7 @@ import com.braify.config.EncryptionService;
 import com.braify.feature.audit.model.AuditLog;
 import com.braify.feature.audit.service.AuditLogService;
 import com.braify.feature.cloudconfig.model.OrgCloudConfig;
+import com.braify.feature.cloudconfig.service.CloudConfigResolver;
 import com.braify.feature.fileupload.cloud.CloudDownloadRequest;
 import com.braify.feature.fileupload.cloud.CloudUploadRequest;
 import com.braify.feature.fileupload.cloud.CloudUploadResult;
@@ -73,6 +74,7 @@ public class FileService {
     private final OrgFileRepository      fileRepository;
     private final CloudUploaderFactory   uploaderFactory;
     private final EncryptionService      encryptionService;
+    private final CloudConfigResolver    cloudConfigResolver;
     private final QuotaService           quotaService;
     private final AuditLogService        auditLogService;
     private final FileIdGenerator        fileIdGenerator;
@@ -456,11 +458,8 @@ public class FileService {
     }
 
     private OrgCloudConfig requireCloudConfig(Organization org) {
-        OrgCloudConfig cfg = org.getCloudConfig();
-        if (cfg == null || cfg.getCloud() == null) {
-            throw new RuntimeException(CLOUD_NOT_CONFIGURED);
-        }
-        return cfg;
+        // Falls back to the platform-admin default when the org has no usable config.
+        return cloudConfigResolver.resolve(org);
     }
 
     private OrgFile requireFile(String orgId, String fileId) {

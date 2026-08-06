@@ -179,7 +179,7 @@ public class ExternalApiController {
 
         try {
             var resendResponse = emailDispatcher.sendHtmlEmail(
-                    to, resolvedSubject, template.getHtmlContent(), data);
+                    orgId, to, resolvedSubject, template.getHtmlContent(), data);
 
             return ResponseEntity.ok(Map.of(
                     "success",   true,

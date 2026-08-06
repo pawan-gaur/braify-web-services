@@ -108,6 +108,7 @@ public class ESignEmailService implements InternalTemplateProvider {
             // the signatory — never CC it, or CC recipients could open the link and sign the
             // document themselves. CC recipients are notified separately, without the link.
             emailDispatcher.sendHtmlEmail(
+                    doc.getOrgId(),
                     recipientEmail,
                     subject,
                     html,
@@ -141,7 +142,7 @@ public class ESignEmailService implements InternalTemplateProvider {
                     this::buildCcNotificationHtml);
             for (String cc : ccList) {
                 try {
-                    emailDispatcher.sendHtmlEmail(cc, ccR.subject(), ccR.html(), ccVars, orgName);
+                    emailDispatcher.sendHtmlEmail(doc.getOrgId(), cc, ccR.subject(), ccR.html(), ccVars, orgName);
                     log.info("CC notification sent to {} for doc {}", cc, doc.getId());
                 } catch (Exception e) {
                     log.error("Failed to send CC notification to {} for doc {}: {}", cc, doc.getId(), e.getMessage());
@@ -272,7 +273,7 @@ public class ESignEmailService implements InternalTemplateProvider {
                 "Signed: {{documentName}}",
                 this::buildCcCompletionHtml);
         try {
-            emailDispatcher.sendHtmlEmail(to, ccR.subject(), ccR.html(), ccVars, orgName);
+            emailDispatcher.sendHtmlEmail(doc.getOrgId(), to, ccR.subject(), ccR.html(), ccVars, orgName);
             log.info("Completion view-notice sent to CC {} for doc {}", to, doc.getId());
             return true;
         } catch (Exception e) {
@@ -337,7 +338,7 @@ public class ESignEmailService implements InternalTemplateProvider {
                     InternalTemplateCodes.ESIGN_COMPLETION_SIGNER,
                     subject, // built-in subject supplied by caller ("Signed document ready: <title>")
                     this::buildCompletionHtml);
-            sendHtmlWithAttachment(to, r.subject(), r.html(), vars, signedPdfBytes, filename, orgName);
+            sendHtmlWithAttachment(doc.getOrgId(), to, r.subject(), r.html(), vars, signedPdfBytes, filename, orgName);
             log.info("Completion email sent to {} for doc {}", to, doc.getId());
             return true;
         } catch (Exception e) {
@@ -350,10 +351,10 @@ public class ESignEmailService implements InternalTemplateProvider {
      * Sends an HTML email with a single PDF attachment.
      * Uses sendHtmlEmailWithAttachment so no S3 template bucket is needed.
      */
-    private void sendHtmlWithAttachment(String to, String subject, String html, Map<String, Object> vars,
+    private void sendHtmlWithAttachment(String orgId, String to, String subject, String html, Map<String, Object> vars,
                                         byte[] pdfBytes, String filename, String senderDisplayName) {
         emailDispatcher.sendHtmlEmailWithAttachment(
-                to, subject, html, vars, pdfBytes, filename, senderDisplayName);
+                orgId, to, subject, html, vars, pdfBytes, filename, senderDisplayName);
     }
 
     // ── HTML builders (canonical tokenised bodies; see ESignEmailTemplates) ──

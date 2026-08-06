@@ -2,6 +2,7 @@ package com.braify.feature.branding.service;
 
 import com.braify.config.EncryptionService;
 import com.braify.feature.cloudconfig.model.OrgCloudConfig;
+import com.braify.feature.cloudconfig.service.CloudConfigResolver;
 import com.braify.feature.fileupload.cloud.CloudDownloadRequest;
 import com.braify.feature.fileupload.cloud.CloudUploadRequest;
 import com.braify.feature.fileupload.cloud.CloudUploaderFactory;
@@ -24,6 +25,7 @@ public class BrandingLogoStorage {
     private final OrganizationRepository orgRepository;
     private final CloudUploaderFactory   uploaderFactory;
     private final EncryptionService      encryptionService;
+    private final CloudConfigResolver    cloudConfigResolver;
 
     /** Cloud reference for a stored logo. */
     public record StoredLogo(String bucket, String key, String provider, String contentType) {}
@@ -99,12 +101,7 @@ public class BrandingLogoStorage {
     }
 
     private OrgCloudConfig requireConfig(String orgId) {
-        Organization org = orgRepository.findById(orgId)
-                .orElseThrow(() -> new RuntimeException("Organisation not found: " + orgId));
-        OrgCloudConfig cfg = org.getCloudConfig();
-        if (cfg == null || cfg.getCloud() == null || cfg.getBucket() == null) {
-            throw new RuntimeException("Cloud storage is not configured for this organisation.");
-        }
-        return cfg;
+        // Falls back to the platform-admin default when the org has no usable config.
+        return cloudConfigResolver.resolveByOrgId(orgId);
     }
 }

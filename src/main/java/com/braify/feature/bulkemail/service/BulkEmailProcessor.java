@@ -266,20 +266,14 @@ public class BulkEmailProcessor {
                             ? html -> emailTrackingService.applyTracking(html, trackingId)
                             : null;
 
-            final List<String> ccFinal = ccEmails;
-            final String subjectFinal = subject;
-            final Map<String, byte[]> attachmentsFinal = attachments;
-            java.util.concurrent.Callable<com.resend.services.emails.model.CreateEmailResponse> sendOnce =
-                    () -> attachmentsFinal.isEmpty()
-                        ? emailDispatcher.sendHtmlEmail(
-                                row.getRecipientEmail(), ccFinal, subjectFinal,
-                                job.getEmailTemplateHtml(), emailPlaceholders, senderName, tracking)
-                        : emailDispatcher.sendHtmlEmailWithAttachments(
-                                row.getRecipientEmail(), ccFinal, subjectFinal,
-                                job.getEmailTemplateHtml(), emailPlaceholders,
-                                attachmentsFinal, senderName, tracking);
-
-            var response = sendWithRetry(sendOnce, row, job.getId());
+            var response = attachments.isEmpty()
+                    ? emailDispatcher.sendHtmlEmail(
+                            job.getOrgId(), row.getRecipientEmail(), ccEmails, subject,
+                            job.getEmailTemplateHtml(), emailPlaceholders, senderName, tracking)
+                    : emailDispatcher.sendHtmlEmailWithAttachments(
+                            job.getOrgId(), row.getRecipientEmail(), ccEmails, subject,
+                            job.getEmailTemplateHtml(), emailPlaceholders,
+                            attachments, senderName, tracking);
 
             row.setStatus(BulkEmailJob.BulkEmailRow.RowStatus.SENT);
             row.setSentAt(LocalDateTime.now());

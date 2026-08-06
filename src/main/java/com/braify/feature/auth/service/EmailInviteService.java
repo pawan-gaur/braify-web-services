@@ -106,7 +106,7 @@ public class EmailInviteService implements InternalTemplateProvider {
         String body = tpl.map(EmailTemplate::getHtmlContent).filter(h -> h != null && !h.isBlank())
                 .orElseGet(this::buildInviteEmail);
 
-        trySend(user.getEmail(), subject, body, vars);
+        trySend(user.getOrganizationId(), user.getEmail(), subject, body, vars);
         // DEBUG only — invite tokens grant password-setting capability and must not
         // appear in production log aggregators (Splunk, CloudWatch, Datadog, etc.)
         log.debug("Invite link generated for {} (also sent by email): {}", user.getEmail(), link);
@@ -161,21 +161,22 @@ public class EmailInviteService implements InternalTemplateProvider {
         String body = tpl.map(EmailTemplate::getHtmlContent).filter(h -> h != null && !h.isBlank())
                 .orElseGet(this::buildResetEmail);
 
-        trySend(user.getEmail(), subject, body, vars);
+        trySend(user.getOrganizationId(), user.getEmail(), subject, body, vars);
         // DEBUG only — reset tokens grant unauthenticated password-change capability
         log.debug("Password-reset link generated for {} (also sent by email): {}", user.getEmail(), link);
     }
 
     /* ── Private helpers ─────────────────────────────────────────────────── */
 
-    private void trySend(String to, String subject, String htmlBody, Map<String, Object> vars) {
+    private void trySend(String orgId, String to, String subject, String htmlBody, Map<String, Object> vars) {
         try {
-            // EmailDispatcher substitutes {{tokens}} in subject + html using vars.
-            emailDispatcher.sendHtmlEmail(to, subject, htmlBody, vars);
-            log.info("Email sent via Resend → {}", to);
+            // EmailDispatcher substitutes {{tokens}} in subject + html using vars,
+            // and resolves the provider from the org's config (or platform default).
+            emailDispatcher.sendHtmlEmail(orgId, to, subject, htmlBody, vars);
+            log.info("Email sent → {}", to);
         } catch (Exception e) {
             // Don't let email failure break the user-creation / reset flow
-            log.warn("Could not send email to {} via Resend: {}", to, e.getMessage());
+            log.warn("Could not send email to {}: {}", to, e.getMessage());
         }
     }
 

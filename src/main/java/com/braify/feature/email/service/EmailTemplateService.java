@@ -11,7 +11,7 @@ import com.braify.feature.email.model.EmailTemplate;
 import com.braify.feature.email.model.EmailTemplateVersion;
 import com.braify.feature.email.repository.EmailTemplateRepository;
 import com.braify.feature.pdf.service.PlaceholderService;
-import com.resend.services.emails.model.CreateEmailResponse;
+import com.braify.config.infra.email.EmailSendResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -227,9 +227,9 @@ public class EmailTemplateService {
         Map<String, Object> placeholders =
                 globalPlaceholderService.mergeForOrg(template.getOrganizationId(), overrides);
 
-        CreateEmailResponse resendResponse =
+        EmailSendResult resendResponse =
                 emailDispatcher.sendHtmlEmail(
-                        req.getTo(), subject,
+                        template.getOrganizationId(), req.getTo(), subject,
                         cssInliner.inline(template.getHtmlContent(), template.getCssContent()),
                         placeholders);
 

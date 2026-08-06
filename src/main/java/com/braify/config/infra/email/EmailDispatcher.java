@@ -1,10 +1,6 @@
 package com.braify.config.infra.email;
 
-import com.resend.Resend;
-import com.resend.core.exception.ResendException;
-import com.resend.services.emails.model.Attachment;
-import com.resend.services.emails.model.CreateEmailOptions;
-import com.resend.services.emails.model.CreateEmailResponse;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -14,251 +10,189 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.function.UnaryOperator;
 
+/**
+ * Central outbound-email entry point.
+ *
+ * <p>The provider (Resend / SendGrid / Mailgun / SMTP) and credentials are resolved
+ * per-organisation by {@link EmailConfigResolver}: the org's own config, else the
+ * platform-admin default, else the built-in Resend credentials from
+ * {@code application.yml}. Every public method therefore takes an {@code orgId}
+ * (nullable — {@code null} skips the org layer and uses the platform/global default).
+ *
+ * <p>Overloads that accept an {@code htmlTransform} apply it to the final HTML
+ * <em>after</em> placeholder substitution. Bulk email uses this to inject its
+ * open-tracking pixel and rewrite links (which may themselves contain placeholders,
+ * so the transform must run once the real URLs are resolved). Pass {@code null} for none.
+ */
 @Slf4j
 @Service
+@RequiredArgsConstructor
 public class EmailDispatcher {
 
-    private static final String DEFAULT_SUBJECT = "Eden Care Email";
+    private static final String DEFAULT_SUBJECT = "Braify Email";
 
-    @Value("${resend.api-key:}")
-    private String apiKey;
-
-    @Value("${resend.from-email:}")
-    private String fromEmail;
+    private final EmailConfigResolver  configResolver;
+    private final EmailSenderFactory   senderFactory;
 
     @Value("${emailDispatcher.template-bucket-url:}")
     private String templateBucketUrl;
 
-    public CreateEmailResponse sendEmail(String email, String templateName, Map<String, Object> placeholders) {
-        return sendTemplatedEmail(email, templateName, DEFAULT_SUBJECT, placeholders, Collections.emptyList());
+    // ── S3-template sends ──────────────────────────────────────────────────────
+
+    public EmailSendResult sendEmail(String orgId, String email, String templateName,
+                                     Map<String, Object> placeholders) {
+        return sendTemplatedEmail(orgId, email, templateName, DEFAULT_SUBJECT, placeholders, Collections.emptyList());
     }
 
-    public CreateEmailResponse sendEmail(String email,
-                                         String templateName,
-                                         Map<String, Object> placeholders,
-                                         byte[] attachmentData,
-                                         String attachmentFileName) {
-        List<Attachment> attachments = new ArrayList<>();
+    public EmailSendResult sendEmail(String orgId, String email, String templateName,
+                                     Map<String, Object> placeholders,
+                                     byte[] attachmentData, String attachmentFileName) {
+        List<OutboundEmail.Attachment> attachments = new ArrayList<>();
         buildAttachment(attachmentFileName, attachmentData).ifPresent(attachments::add);
-        return sendTemplatedEmail(email, templateName, DEFAULT_SUBJECT, placeholders, attachments);
+        return sendTemplatedEmail(orgId, email, templateName, DEFAULT_SUBJECT, placeholders, attachments);
     }
 
-    public CreateEmailResponse sendMultipleAttachmentEmail(String email,
-                                                          String templateName,
-                                                          Map<String, Object> placeholders,
-                                                          Map<String, byte[]> attachmentsData) {
-        List<Attachment> attachments = new ArrayList<>();
+    public EmailSendResult sendMultipleAttachmentEmail(String orgId, String email, String templateName,
+                                                       Map<String, Object> placeholders,
+                                                       Map<String, byte[]> attachmentsData) {
+        List<OutboundEmail.Attachment> attachments = new ArrayList<>();
         if (attachmentsData != null) {
             attachmentsData.forEach((fileName, fileBytes) ->
                     buildAttachment(fileName, fileBytes).ifPresent(attachments::add));
         }
-        return sendTemplatedEmail(email, templateName, DEFAULT_SUBJECT, placeholders, attachments);
+        return sendTemplatedEmail(orgId, email, templateName, DEFAULT_SUBJECT, placeholders, attachments);
     }
 
-    public CreateEmailResponse sendCareEmail(String email, String templateName, Map<String, Object> placeholders) {
-        return sendTemplatedEmail(email, templateName, DEFAULT_SUBJECT, placeholders, Collections.emptyList());
+    public EmailSendResult sendCareEmail(String orgId, String email, String templateName,
+                                         Map<String, Object> placeholders) {
+        return sendTemplatedEmail(orgId, email, templateName, DEFAULT_SUBJECT, placeholders, Collections.emptyList());
     }
 
-    public CreateEmailResponse sendHtmlEmail(String email,
-                                             String subject,
-                                             String html,
-                                             Map<String, Object> placeholders) {
-        return sendHtmlEmail(email, subject, html, placeholders, null);
+    // ── Inline HTML sends ──────────────────────────────────────────────────────
+
+    public EmailSendResult sendHtmlEmail(String orgId, String email, String subject,
+                                         String html, Map<String, Object> placeholders) {
+        return sendHtmlEmail(orgId, email, subject, html, placeholders, null);
     }
 
     /**
      * Sends an HTML email with an optional sender display-name override.
-     * The email address portion of {@code resend.from-email} is preserved;
-     * only the "Display Name" part is replaced with {@code senderDisplayName}.
+     * The address of the resolved config is preserved; only the display name is swapped.
      *
-     * @param senderDisplayName  display name shown in the "From:" field (e.g. the org name).
-     *                           Pass {@code null} to use the value from {@code resend.from-email} unchanged.
+     * @param senderDisplayName display name for the "From:" field (e.g. the org name);
+     *                          {@code null} uses the resolved config's own name.
      */
-    public CreateEmailResponse sendHtmlEmail(String email,
-                                             String subject,
-                                             String html,
-                                             Map<String, Object> placeholders,
-                                             String senderDisplayName) {
-        return sendHtmlEmail(email, null, subject, html, placeholders, senderDisplayName);
+    public EmailSendResult sendHtmlEmail(String orgId, String email, String subject,
+                                         String html, Map<String, Object> placeholders,
+                                         String senderDisplayName) {
+        return sendHtmlEmail(orgId, email, null, subject, html, placeholders, senderDisplayName);
+    }
+
+    /** Sends an HTML email with optional CC recipients and a display-name override. */
+    public EmailSendResult sendHtmlEmail(String orgId, String email, List<String> ccEmails,
+                                         String subject, String html, Map<String, Object> placeholders,
+                                         String senderDisplayName) {
+        return sendHtmlEmail(orgId, email, ccEmails, subject, html, placeholders, senderDisplayName, null);
     }
 
     /**
-     * Sends an HTML email with optional CC recipients and an optional sender display-name override.
-     *
-     * @param email              primary To recipient
-     * @param ccEmails           optional CC recipients (null or empty = no CC)
-     * @param senderDisplayName  display name shown in the "From:" field. {@code null} keeps the configured default.
+     * Full inline-HTML overload with an optional {@code htmlTransform} applied to the
+     * final HTML after placeholder substitution (e.g. bulk-email open-pixel + link rewrite).
      */
-    public CreateEmailResponse sendHtmlEmail(String email,
-                                             List<String> ccEmails,
-                                             String subject,
-                                             String html,
-                                             Map<String, Object> placeholders,
-                                             String senderDisplayName) {
-        return sendHtmlEmail(email, ccEmails, subject, html, placeholders, senderDisplayName, null);
-    }
-
-    /**
-     * Full overload with an optional {@code htmlTransform} applied to the final HTML
-     * <em>after</em> placeholder substitution. Bulk email uses this to inject its
-     * open-tracking pixel and rewrite links (which may themselves contain placeholders,
-     * so the transform must run once the real URLs are resolved). Pass {@code null} for
-     * no transform.
-     */
-    public CreateEmailResponse sendHtmlEmail(String email,
-                                             List<String> ccEmails,
-                                             String subject,
-                                             String html,
-                                             Map<String, Object> placeholders,
-                                             String senderDisplayName,
-                                             UnaryOperator<String> htmlTransform) {
+    public EmailSendResult sendHtmlEmail(String orgId, String email, List<String> ccEmails,
+                                         String subject, String html, Map<String, Object> placeholders,
+                                         String senderDisplayName, UnaryOperator<String> htmlTransform) {
         String renderedSubject = replacePlaceholders(
-                isBlank(subject) ? DEFAULT_SUBJECT : subject,
-                safePlaceholders(placeholders));
+                isBlank(subject) ? DEFAULT_SUBJECT : subject, safePlaceholders(placeholders));
         String renderedHtml = applyTransform(
                 replacePlaceholders(html, safePlaceholders(placeholders)), htmlTransform);
-
-        return send(email, ccEmails, renderedSubject, renderedHtml, Collections.emptyList(), senderDisplayName);
+        return send(orgId, email, ccEmails, renderedSubject, renderedHtml, Collections.emptyList(), senderDisplayName);
     }
 
-    /**
-     * Sends an HTML email (no S3 template) with a single binary attachment.
-     * Use this when the HTML is already built inline and you also need to attach a file.
-     */
-    public CreateEmailResponse sendHtmlEmailWithAttachment(String email,
-                                                           String subject,
-                                                           String html,
-                                                           Map<String, Object> placeholders,
-                                                           byte[] attachmentData,
-                                                           String attachmentFileName) {
-        return sendHtmlEmailWithAttachment(
-                email, subject, html, placeholders, attachmentData, attachmentFileName, null);
+    // ── Inline HTML sends with attachments ─────────────────────────────────────
+
+    public EmailSendResult sendHtmlEmailWithAttachment(String orgId, String email, String subject,
+                                                       String html, Map<String, Object> placeholders,
+                                                       byte[] attachmentData, String attachmentFileName) {
+        return sendHtmlEmailWithAttachment(orgId, email, subject, html, placeholders,
+                attachmentData, attachmentFileName, null);
     }
 
-    /**
-     * Sends an HTML email with a single binary attachment and an optional sender display-name override.
-     *
-     * @param senderDisplayName  display name shown in the "From:" field (e.g. the org name).
-     *                           Pass {@code null} to use the value from {@code resend.from-email} unchanged.
-     */
-    public CreateEmailResponse sendHtmlEmailWithAttachment(String email,
-                                                           String subject,
-                                                           String html,
-                                                           Map<String, Object> placeholders,
-                                                           byte[] attachmentData,
-                                                           String attachmentFileName,
-                                                           String senderDisplayName) {
+    public EmailSendResult sendHtmlEmailWithAttachment(String orgId, String email, String subject,
+                                                       String html, Map<String, Object> placeholders,
+                                                       byte[] attachmentData, String attachmentFileName,
+                                                       String senderDisplayName) {
         String renderedSubject = replacePlaceholders(
-                isBlank(subject) ? DEFAULT_SUBJECT : subject,
-                safePlaceholders(placeholders));
+                isBlank(subject) ? DEFAULT_SUBJECT : subject, safePlaceholders(placeholders));
         String renderedHtml = replacePlaceholders(html, safePlaceholders(placeholders));
 
-        List<Attachment> attachments = new ArrayList<>();
+        List<OutboundEmail.Attachment> attachments = new ArrayList<>();
         buildAttachment(attachmentFileName, attachmentData).ifPresent(attachments::add);
 
-        return send(email, renderedSubject, renderedHtml, attachments, senderDisplayName);
+        return send(orgId, email, null, renderedSubject, renderedHtml, attachments, senderDisplayName);
     }
 
-    /**
-     * Sends an HTML email with multiple binary attachments and optional CC recipients.
-     *
-     * @param ccEmails        optional CC list; null or empty = no CC
-     * @param attachmentsMap  filename → file bytes; null/empty-byte entries are silently skipped
-     * @param senderDisplayName  display name for the "From:" field; null = configured default
-     */
-    public CreateEmailResponse sendHtmlEmailWithAttachments(String email,
-                                                            List<String> ccEmails,
-                                                            String subject,
-                                                            String html,
-                                                            Map<String, Object> placeholders,
-                                                            Map<String, byte[]> attachmentsMap,
-                                                            String senderDisplayName) {
-        return sendHtmlEmailWithAttachments(
-                email, ccEmails, subject, html, placeholders, attachmentsMap, senderDisplayName, null);
+    /** Sends an HTML email with multiple binary attachments and optional CC recipients. */
+    public EmailSendResult sendHtmlEmailWithAttachments(String orgId, String email, List<String> ccEmails,
+                                                        String subject, String html, Map<String, Object> placeholders,
+                                                        Map<String, byte[]> attachmentsMap, String senderDisplayName) {
+        return sendHtmlEmailWithAttachments(orgId, email, ccEmails, subject, html, placeholders,
+                attachmentsMap, senderDisplayName, null);
     }
 
     /** As above, with an optional {@code htmlTransform} applied after placeholder substitution. */
-    public CreateEmailResponse sendHtmlEmailWithAttachments(String email,
-                                                            List<String> ccEmails,
-                                                            String subject,
-                                                            String html,
-                                                            Map<String, Object> placeholders,
-                                                            Map<String, byte[]> attachmentsMap,
-                                                            String senderDisplayName,
-                                                            UnaryOperator<String> htmlTransform) {
+    public EmailSendResult sendHtmlEmailWithAttachments(String orgId, String email, List<String> ccEmails,
+                                                        String subject, String html, Map<String, Object> placeholders,
+                                                        Map<String, byte[]> attachmentsMap, String senderDisplayName,
+                                                        UnaryOperator<String> htmlTransform) {
         String renderedSubject = replacePlaceholders(
-                isBlank(subject) ? DEFAULT_SUBJECT : subject,
-                safePlaceholders(placeholders));
+                isBlank(subject) ? DEFAULT_SUBJECT : subject, safePlaceholders(placeholders));
         String renderedHtml = applyTransform(
                 replacePlaceholders(html, safePlaceholders(placeholders)), htmlTransform);
 
-        List<Attachment> attachments = new ArrayList<>();
+        List<OutboundEmail.Attachment> attachments = new ArrayList<>();
         if (attachmentsMap != null) {
             attachmentsMap.forEach((fileName, fileBytes) ->
                     buildAttachment(fileName, fileBytes).ifPresent(attachments::add));
         }
-        return send(email, ccEmails, renderedSubject, renderedHtml, attachments, senderDisplayName);
+        return send(orgId, email, ccEmails, renderedSubject, renderedHtml, attachments, senderDisplayName);
+    }
+
+    /** Convenience overload with no CC recipients. */
+    public EmailSendResult sendHtmlEmailWithAttachments(String orgId, String email, String subject,
+                                                        String html, Map<String, Object> placeholders,
+                                                        Map<String, byte[]> attachmentsMap, String senderDisplayName) {
+        return sendHtmlEmailWithAttachments(orgId, email, null, subject, html, placeholders,
+                attachmentsMap, senderDisplayName);
     }
 
     private String applyTransform(String html, UnaryOperator<String> htmlTransform) {
         return htmlTransform == null ? html : htmlTransform.apply(html);
     }
 
-    /** Convenience overload with no CC recipients. */
-    public CreateEmailResponse sendHtmlEmailWithAttachments(String email,
-                                                            String subject,
-                                                            String html,
-                                                            Map<String, Object> placeholders,
-                                                            Map<String, byte[]> attachmentsMap,
-                                                            String senderDisplayName) {
-        return sendHtmlEmailWithAttachments(
-                email, null, subject, html, placeholders, attachmentsMap, senderDisplayName);
-    }
+    // ── Internal ───────────────────────────────────────────────────────────────
 
-    private CreateEmailResponse sendTemplatedEmail(String email,
-                                                   String templateName,
-                                                   String subject,
-                                                   Map<String, Object> placeholders,
-                                                   List<Attachment> attachments) {
+    private EmailSendResult sendTemplatedEmail(String orgId, String email, String templateName,
+                                               String subject, Map<String, Object> placeholders,
+                                               List<OutboundEmail.Attachment> attachments) {
         String htmlTemplateContent = loadHtmlContentFromS3(templateName);
         String renderedHtml = replacePlaceholders(htmlTemplateContent, safePlaceholders(placeholders));
         String renderedSubject = replacePlaceholders(
-                isBlank(subject) ? DEFAULT_SUBJECT : subject,
-                safePlaceholders(placeholders));
-
-        return send(email, renderedSubject, renderedHtml, attachments);
+                isBlank(subject) ? DEFAULT_SUBJECT : subject, safePlaceholders(placeholders));
+        return send(orgId, email, null, renderedSubject, renderedHtml, attachments, null);
     }
 
-    private CreateEmailResponse send(String email,
-                                     String subject,
-                                     String html,
-                                     List<Attachment> attachments) {
-        return send(email, null, subject, html, attachments, null);
-    }
-
-    private CreateEmailResponse send(String email,
-                                     String subject,
-                                     String html,
-                                     List<Attachment> attachments,
-                                     String senderDisplayName) {
-        return send(email, null, subject, html, attachments, senderDisplayName);
-    }
-
-    private CreateEmailResponse send(String email,
-                                     List<String> ccEmails,
-                                     String subject,
-                                     String html,
-                                     List<Attachment> attachments,
-                                     String senderDisplayName) {
-        validateEmailSettings();
-
+    /** The single choke point: resolve config, build the message, dispatch to the provider adapter. */
+    private EmailSendResult send(String orgId, String email, List<String> ccEmails,
+                                 String subject, String html,
+                                 List<OutboundEmail.Attachment> attachments, String senderDisplayName) {
         if (isBlank(email)) {
             throw new IllegalArgumentException("Recipient email is required");
         }
@@ -266,30 +200,17 @@ public class EmailDispatcher {
             throw new IllegalArgumentException("Email HTML content is required");
         }
 
-        CreateEmailOptions.Builder builder = CreateEmailOptions.builder()
-                .from(buildFrom(senderDisplayName))
-                .to(email)
-                .subject(subject)
-                .html(html);
+        ResolvedEmailConfig cfg = configResolver.resolve(orgId);
 
-        if (ccEmails != null && !ccEmails.isEmpty()) {
-            builder.cc(ccEmails);
-        }
-        if (attachments != null && !attachments.isEmpty()) {
-            builder.attachments(attachments);
-        }
+        String fromName = !isBlank(senderDisplayName) ? senderDisplayName.trim() : cfg.fromName();
 
-        try {
-            CreateEmailResponse response = new Resend(apiKey).emails().send(builder.build());
-            log.info("Email sent to {} (cc: {}) with Resend id {}",
-                    email,
-                    ccEmails != null && !ccEmails.isEmpty() ? String.join(", ", ccEmails) : "none",
-                    response != null ? response.getId() : null);
-            return response;
-        } catch (ResendException e) {
-            log.error("Email sent failed to {} with Resend error :  {}", email, e.getMessage());
-            throw new IllegalStateException("Could not send email to " + email + ": " + e.getMessage(), e);
-        }
+        OutboundEmail message = new OutboundEmail(
+                cfg.fromEmail(), fromName, cfg.replyTo(),
+                email, ccEmails, subject, html, attachments);
+
+        EmailSendResult result = senderFactory.get(cfg.provider()).send(cfg, message);
+        log.debug("Email dispatched via {} (source={}) to {}", cfg.provider(), cfg.source(), email);
+        return result;
     }
 
     private String loadHtmlContentFromS3(String templateName) {
@@ -314,15 +235,11 @@ public class EmailDispatcher {
         }
     }
 
-    private java.util.Optional<Attachment> buildAttachment(String fileName, byte[] fileBytes) {
+    private Optional<OutboundEmail.Attachment> buildAttachment(String fileName, byte[] fileBytes) {
         if (isBlank(fileName) || fileBytes == null || fileBytes.length == 0) {
-            return java.util.Optional.empty();
+            return Optional.empty();
         }
-
-        return java.util.Optional.of(Attachment.builder()
-                .fileName(fileName)
-                .content(Base64.getEncoder().encodeToString(fileBytes))
-                .build());
+        return Optional.of(new OutboundEmail.Attachment(fileName, fileBytes));
     }
 
     private String replacePlaceholders(String template, Map<String, Object> values) {
@@ -335,39 +252,6 @@ public class EmailDispatcher {
 
     private Map<String, Object> safePlaceholders(Map<String, Object> placeholders) {
         return placeholders != null ? placeholders : Collections.emptyMap();
-    }
-
-    /**
-     * Builds the "From" string by keeping the email address from {@code resend.from-email}
-     * and replacing the display name portion with {@code displayName}.
-     *
-     * <p>Examples:
-     * <pre>
-     *   fromEmail = "Braify &lt;no-reply@example.com&gt;"
-     *   displayName = "Acme Corp"  →  "Acme Corp &lt;no-reply@example.com&gt;"
-     *   displayName = null          →  "Braify &lt;no-reply@example.com&gt;"  (unchanged)
-     * </pre>
-     */
-    private String buildFrom(String displayName) {
-        if (isBlank(displayName)) return fromEmail;
-
-        // Extract the bare email address from "Display Name <addr>" or "addr"
-        String address;
-        if (fromEmail.contains("<") && fromEmail.contains(">")) {
-            address = fromEmail.substring(fromEmail.indexOf('<') + 1, fromEmail.lastIndexOf('>')).trim();
-        } else {
-            address = fromEmail.trim();
-        }
-        return displayName.trim() + " <" + address + ">";
-    }
-
-    private void validateEmailSettings() {
-        if (isBlank(apiKey)) {
-            throw new IllegalStateException("resend.api-key is not configured");
-        }
-        if (isBlank(fromEmail)) {
-            throw new IllegalStateException("resend.from-email is not configured");
-        }
     }
 
     private boolean isBlank(String value) {
