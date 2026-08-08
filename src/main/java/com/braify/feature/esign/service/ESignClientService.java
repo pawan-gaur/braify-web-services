@@ -2,6 +2,7 @@ package com.braify.feature.esign.service;
 
 import com.braify.feature.esign.dto.DocumentResponse;
 import com.braify.feature.esign.dto.SignFieldRequest;
+import com.braify.feature.esign.exception.SigningLinkException;
 import com.braify.feature.esign.model.ESignAuditEvent;
 import com.braify.feature.esign.model.ESignDocument;
 import com.braify.feature.esign.model.ESignSignatureField;
@@ -465,7 +466,48 @@ public class ESignClientService {
 
     private ESignSigningToken validateToken(String rawJwt) {
         return tokenService.validateSigningToken(rawJwt)
-                .orElseThrow(() -> new SecurityException("Invalid or expired signing token"));
+                .orElseThrow(() -> classifySigningFailure(rawJwt));
+    }
+
+    /**
+     * Turns a failed token validation into a specific, user-facing reason by decoding the
+     * document from the (possibly expired) token and inspecting its state — so the signing
+     * page can say "expired", "already signed", "cancelled" or "invalid" with a clear next step.
+     */
+    private SigningLinkException classifySigningFailure(String rawJwt) {
+        var peek = tokenService.peekSigningToken(rawJwt).orElse(null);
+        if (peek == null || peek.documentId() == null) {
+            return new SigningLinkException(SigningLinkException.Reason.INVALID,
+                    "This signing link isn't valid.");
+        }
+        ESignDocument doc = docRepo.findById(peek.documentId()).orElse(null);
+        if (doc == null) {
+            return new SigningLinkException(SigningLinkException.Reason.INVALID,
+                    "This signing link isn't valid.");
+        }
+
+        switch (doc.getStatus()) {
+            case CANCELLED:
+                return new SigningLinkException(SigningLinkException.Reason.CANCELLED,
+                        "This document was cancelled by the sender.");
+            case SIGNED:
+            case COMPLETED:
+                return new SigningLinkException(SigningLinkException.Reason.ALREADY_SIGNED,
+                        "This document has already been signed.");
+            default:
+                // Document is still awaiting signatures — did THIS signer already sign,
+                // or did their link simply expire / get superseded?
+                boolean alreadySigned = doc.getSignatories() != null && peek.email() != null
+                        && doc.getSignatories().stream().anyMatch(s ->
+                                peek.email().equalsIgnoreCase(s.getEmail())
+                                && s.getStatus() == ESignDocument.SignatoryStatus.SIGNED);
+                if (alreadySigned) {
+                    return new SigningLinkException(SigningLinkException.Reason.ALREADY_SIGNED,
+                            "You have already signed this document.");
+                }
+                return new SigningLinkException(SigningLinkException.Reason.EXPIRED,
+                        "This signing link has expired.");
+        }
     }
 
     /** Resolves the signatory a token belongs to. Returns null for legacy single-signer tokens. */

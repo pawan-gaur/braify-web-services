@@ -118,6 +118,21 @@ public class JwtUtil {
                 .getPayload();
     }
 
+    /**
+     * Returns the claims of a token whose signature is valid even if it has expired.
+     * The signature is still verified (an expired token is rejected only for its expiry,
+     * after the signature check), so the claims are trustworthy. Throws for a bad
+     * signature / malformed token. Used to identify which document an expired signing
+     * link referred to, so the UI can explain what happened.
+     */
+    public Claims parseTokenIgnoringExpiry(String token) {
+        try {
+            return parseToken(token);
+        } catch (io.jsonwebtoken.ExpiredJwtException e) {
+            return e.getClaims();
+        }
+    }
+
     public String extractJti(String token) {
         return parseToken(token).getId();
     }

@@ -88,6 +88,24 @@ public class ESignTokenService {
         }
     }
 
+    /** Minimal decoded view of a signing token (valid signature, expiry ignored). */
+    public record TokenPeek(String documentId, String email) {}
+
+    /**
+     * Decodes a signing token's {@code documentId} and signer email even if it has expired,
+     * so a failed open can be classified (expired vs already-signed vs cancelled). Returns
+     * empty for a bad signature, wrong token type, or malformed token.
+     */
+    public Optional<TokenPeek> peekSigningToken(String jwt) {
+        try {
+            var claims = jwtUtil.parseTokenIgnoringExpiry(jwt);
+            if (!"ESIGN".equals(claims.get("type", String.class))) return Optional.empty();
+            return Optional.of(new TokenPeek(claims.get("documentId", String.class), claims.getSubject()));
+        } catch (Exception e) {
+            return Optional.empty();
+        }
+    }
+
     /**
      * Mints a read-only view token for a document (no DB record — stateless, validated by signature).
      * Used for the view-only links emailed to CC recipients.
