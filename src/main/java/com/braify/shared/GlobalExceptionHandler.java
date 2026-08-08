@@ -2,6 +2,7 @@ package com.braify.shared;
 
 import com.braify.feature.audit.model.AuditLog;
 import com.braify.feature.audit.service.AuditLogService;
+import com.braify.feature.esign.exception.SigningLinkException;
 import com.braify.feature.quota.exception.QuotaExceededException;
 import com.braify.security.UserDetailsImpl;
 import jakarta.validation.ConstraintViolationException;
@@ -152,6 +153,27 @@ public class GlobalExceptionHandler {
         log.warn("Illegal state: {}", ex.getMessage());
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(errorBody(HttpStatus.CONFLICT, ex.getMessage()));
+    }
+
+    /**
+     * Signing-link open failure — returns a classified {@code reason} so the signing
+     * page can show a specific message. Uses non-401 statuses so the frontend's
+     * silent-refresh flow is never triggered on this public page.
+     */
+    @ExceptionHandler(SigningLinkException.class)
+    public ResponseEntity<Map<String, Object>> handleSigningLink(SigningLinkException ex) {
+        HttpStatus status = switch (ex.getReason()) {
+            case ALREADY_SIGNED -> HttpStatus.CONFLICT;   // 409
+            case INVALID        -> HttpStatus.NOT_FOUND;  // 404
+            default             -> HttpStatus.GONE;       // 410 — EXPIRED / CANCELLED
+        };
+        log.warn("Signing link {}: {}", ex.getReason(), ex.getMessage());
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("status",    status.value());
+        body.put("reason",    ex.getReason().name());
+        body.put("message",   ex.getMessage());
+        body.put("timestamp", Instant.now().toString());
+        return ResponseEntity.status(status).body(body);
     }
 
     /** Resource not found — RuntimeException thrown by services. */
