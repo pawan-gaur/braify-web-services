@@ -462,6 +462,43 @@ public class ESignClientService {
         return new VerificationResult(dr, storedHash, computedHash, integrityVerified, pdfAvailable);
     }
 
+    // ── Reminder subscription (signer-facing opt-out from the email) ───────────
+
+    /** Result of an unsubscribe/resubscribe action, for the confirmation page. */
+    public record ReminderSubscription(String documentTitle, String email, boolean optedOut) {}
+
+    /**
+     * Turns reminder emails on/off for the signer identified by the signing token (works even if the
+     * token has expired or was already used — decoded via a signature-only peek). Affects only this
+     * signer on this document; they can still open and sign, and can re-enable from the same link.
+     */
+    public ReminderSubscription setReminderSubscription(String rawJwt, boolean optOut, String ip, String ua) {
+        var peek = tokenService.peekSigningToken(rawJwt)
+                .orElseThrow(() -> new SigningLinkException(SigningLinkException.Reason.INVALID,
+                        "This link isn't valid."));
+        ESignDocument doc = docRepo.findById(peek.documentId())
+                .orElseThrow(() -> new SigningLinkException(SigningLinkException.Reason.INVALID,
+                        "This link isn't valid."));
+
+        ESignDocument.Signatory sig = doc.getSignatories() == null ? null
+                : doc.getSignatories().stream()
+                      .filter(s -> s.getEmail() != null && s.getEmail().equalsIgnoreCase(peek.email()))
+                      .findFirst().orElse(null);
+        if (sig == null)
+            throw new SigningLinkException(SigningLinkException.Reason.INVALID, "This link isn't valid.");
+
+        if (sig.isRemindersOptedOut() != optOut) {
+            sig.setRemindersOptedOut(optOut);
+            docRepo.save(doc);
+            auditService.log(doc.getId(), sig.getEmail(),
+                    ESignAuditEvent.ActorType.CLIENT,
+                    ESignAuditEvent.EventType.DOCUMENT_SENT, ip, ua,
+                    Map.of("action", optOut ? "REMINDERS_UNSUBSCRIBED" : "REMINDERS_RESUBSCRIBED",
+                           "signatory", sig.getEmail()));
+        }
+        return new ReminderSubscription(doc.getTitle(), sig.getEmail(), optOut);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
 
     private ESignSigningToken validateToken(String rawJwt) {

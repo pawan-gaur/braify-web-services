@@ -684,8 +684,16 @@ public class ESignDocumentService {
         if (pending.isEmpty())
             throw new IllegalStateException("Everyone has already signed — there is no one to remind.");
 
+        // Honor per-signer unsubscribe even for manual sends.
+        List<ESignDocument.Signatory> recipients = pending.stream()
+                .filter(s -> !s.isRemindersOptedOut())
+                .toList();
+        if (recipients.isEmpty())
+            throw new IllegalStateException(
+                    "Everyone still to sign has unsubscribed from reminders for this document.");
+
         int sent = 0;
-        for (ESignDocument.Signatory s : pending) {
+        for (ESignDocument.Signatory s : recipients) {
             if (dispatchReminder(doc, s)) sent++;
         }
         doc = docRepo.save(doc);
@@ -766,6 +774,7 @@ public class ESignDocumentService {
     /** Whether {@code s} is due for an automatic reminder now, per the org policy and its history. */
     private boolean reminderDue(ESignDocument doc, ESignDocument.Signatory s,
                                 EsignReminderPolicy policy, LocalDateTime now) {
+        if (s.isRemindersOptedOut()) return false;   // signer unsubscribed from reminders
         if (s.getReminderCount() >= policy.getMaxReminders()) return false;
 
         LocalDateTime base;

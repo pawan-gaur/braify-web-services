@@ -125,6 +125,7 @@ public class DocumentResponse {
         private LocalDateTime consentedAt;   // electronic-records-&-signatures consent (ESIGN/UETA)
         private LocalDateTime lastReminderAt; // when the most recent reminder was emailed (null = none)
         private int           reminderCount;  // how many reminders this signatory has received
+        private boolean       remindersOptedOut; // signer unsubscribed from reminders for this doc
 
         public static SignatoryResponse from(ESignDocument.Signatory s) {
             return SignatoryResponse.builder()
@@ -138,6 +139,7 @@ public class DocumentResponse {
                     .consentedAt(s.getConsentedAt())
                     .lastReminderAt(s.getLastReminderAt())
                     .reminderCount(s.getReminderCount())
+                    .remindersOptedOut(s.isRemindersOptedOut())
                     .build();
         }
     }

@@ -141,7 +141,9 @@ final class ESignEmailTemplates {
               <p style="margin:0 auto 30px;text-align:center;font-size:12.5px;line-height:1.5;color:#94A3B8;max-width:360px;">This is a secure, single-use link unique to you. Please don't forward this email.</p>
             </div>
             """
-        + footer("If you've already signed, no further action is needed — you can safely ignore this reminder.")
+        + footer("If you've already signed, no further action is needed — you can safely ignore this reminder."
+                 + "<br><span style=\"color:#CBD5E1;\">Don't want reminders for this document? "
+                 + "<a href=\"{{unsubscribeLink}}\" style=\"color:#94A3B8;font-weight:600;text-decoration:underline;\">Unsubscribe</a>.</span>")
         + TAIL;
 
     // ── Template 02 — Signed document completed ───────────────────────────────

@@ -117,6 +117,32 @@ public class ESignClientController {
         return ResponseEntity.ok(doc);
     }
 
+    @Operation(summary = "Unsubscribe from reminder emails for this document",
+               description = "Stops reminder emails for the signer identified by the token (this document only). " +
+                             "They can still open and sign, and can re-enable reminders via /resubscribe. " +
+                             "Works even if the token has expired.")
+    @ApiResponse(responseCode = "200", description = "Reminders turned off for this signer")
+    @PostMapping("/{token}/unsubscribe")
+    public ResponseEntity<ESignClientService.ReminderSubscription> unsubscribeReminders(
+            @Parameter(description = "ESIGN signing token from the emailed link") @PathVariable String token,
+            HttpServletRequest http) {
+        log.info("POST /api/esign/sign/{token}/unsubscribe (signer opting out of reminders)");
+        return ResponseEntity.ok(clientService.setReminderSubscription(
+                token, true, extractIp(http), http.getHeader("User-Agent")));
+    }
+
+    @Operation(summary = "Re-enable reminder emails for this document",
+               description = "Reverses an earlier unsubscribe for the signer identified by the token.")
+    @ApiResponse(responseCode = "200", description = "Reminders turned back on for this signer")
+    @PostMapping("/{token}/resubscribe")
+    public ResponseEntity<ESignClientService.ReminderSubscription> resubscribeReminders(
+            @Parameter(description = "ESIGN signing token from the emailed link") @PathVariable String token,
+            HttpServletRequest http) {
+        log.info("POST /api/esign/sign/{token}/resubscribe (signer re-enabling reminders)");
+        return ResponseEntity.ok(clientService.setReminderSubscription(
+                token, false, extractIp(http), http.getHeader("User-Agent")));
+    }
+
     @Operation(summary = "Upload supporting document after signing",
                description = "Allows the client to optionally attach a supporting document (e.g. ID copy) " +
                              "after submitting their signature. Requires the original signing JWT (still within " +

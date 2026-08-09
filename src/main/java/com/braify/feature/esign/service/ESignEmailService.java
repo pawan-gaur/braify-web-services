@@ -198,6 +198,7 @@ public class ESignEmailService implements InternalTemplateProvider {
         vars.put("expiryDate",    fmt(doc.getTokenExpiresAt(), EXPIRY_FMT));
         vars.put("expiresIn",     expiresInPhrase(doc.getTokenExpiresAt()));
         vars.put("signingLink",   signingLink);
+        vars.put("unsubscribeLink", baseUrl + "/esign/unsubscribe/" + token);
         // legacy aliases
         vars.put("clientName",    notBlank(signatory.getName()) ? signatory.getName() : "");
         vars.put("documentTitle", doc.getTitle() != null ? doc.getTitle() : "");
@@ -576,7 +577,7 @@ public class ESignEmailService implements InternalTemplateProvider {
                         buildReminderHtml(),
                         List.of("organizationName", "brandMark", "accent", "accentSoft", "accentBorder",
                                 "signerName", "signerEmail", "documentName", "expiryDate", "expiresIn",
-                                "signingLink", "footerContact")),
+                                "signingLink", "unsubscribeLink", "footerContact")),
                 new InternalTemplateSeed(
                         InternalTemplateCodes.ESIGN_COMPLETION_SIGNER,
                         "System — E-Sign: Document Signed",
