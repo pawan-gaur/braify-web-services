@@ -32,6 +32,7 @@ public class EmailTemplateService {
     private final EmailTemplateVersionService  versionService;
     private final AuditLogService              auditLogService;
     private final EmailDispatcher              emailDispatcher;
+    private final com.braify.feature.emaillog.service.EmailLogService emailLogService;
     private final CssInliner                   cssInliner;
     private final com.braify.feature.placeholder.service.GlobalPlaceholderService globalPlaceholderService;
 
@@ -227,11 +228,22 @@ public class EmailTemplateService {
         Map<String, Object> placeholders =
                 globalPlaceholderService.mergeForOrg(template.getOrganizationId(), overrides);
 
+        final String finalSubject = subject;
+        final String finalHtml = cssInliner.inline(template.getHtmlContent(), template.getCssContent());
         CreateEmailResponse resendResponse =
-                emailDispatcher.sendHtmlEmail(
-                        req.getTo(), subject,
-                        cssInliner.inline(template.getHtmlContent(), template.getCssContent()),
-                        placeholders);
+                emailLogService.recorded(
+                        com.braify.feature.emaillog.model.EmailLog.builder()
+                                .orgId(template.getOrganizationId())
+                                .category(com.braify.feature.emaillog.model.EmailLog.Category.TEMPLATE_SEND)
+                                .recipient(req.getTo())
+                                .subject(finalSubject)
+                                .senderName(template.getFromName())
+                                .relatedType(com.braify.feature.emaillog.model.EmailLog.RelatedType.EMAIL_TEMPLATE)
+                                .relatedId(template.getId())
+                                .createdBy(caller.getId())
+                                .build(),
+                        () -> emailDispatcher.sendHtmlEmail(
+                                req.getTo(), finalSubject, finalHtml, placeholders));
 
         // Audit the send event
         auditLogService.log(

@@ -96,6 +96,15 @@ public interface ESignDocumentRepository extends MongoRepository<ESignDocument, 
             List<ESignDocument.Status> statuses,
             java.time.LocalDateTime cutoff);
 
+    /**
+     * Candidates for the reminder scheduler: still-open documents whose signing window has
+     * NOT yet closed (token expires in the future). The scheduler further filters these by
+     * per-document {@code remindersEnabled} and per-signatory timing/cap in memory.
+     */
+    List<ESignDocument> findByStatusInAndTokenExpiresAtAfter(
+            List<ESignDocument.Status> statuses,
+            java.time.LocalDateTime cutoff);
+
     // ── Completed documents (for avg signing time calculation) ────────────────
 
     List<ESignDocument> findByOrgIdAndStatus(String orgId, ESignDocument.Status status);

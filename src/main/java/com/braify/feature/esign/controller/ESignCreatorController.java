@@ -236,6 +236,40 @@ public class ESignCreatorController {
         return ResponseEntity.ok(doc);
     }
 
+    @Operation(summary = "Send a signing reminder now",
+               description = "Immediately emails a reminder to every signatory who still needs to sign. Ignores the " +
+                             "automatic schedule and the per-document opt-out (a person explicitly asked), but only works " +
+                             "while the document is still awaiting signatures and its signing window has not expired.")
+    @ApiResponse(responseCode = "200", description = "Reminder(s) sent")
+    @PostMapping("/{id}/remind")
+    public ResponseEntity<DocumentResponse> remind(
+            @Parameter(description = "Document ID") @PathVariable String id,
+            @AuthenticationPrincipal UserDetailsImpl principal,
+            HttpServletRequest http) {
+
+        log.info("POST /api/esign/documents/{}/remind by '{}'", id, principal.getUsername());
+        DocumentResponse doc = documentService.sendRemindersNow(
+                id, principal, extractIp(http), http.getHeader("User-Agent"));
+        return ResponseEntity.ok(doc);
+    }
+
+    @Operation(summary = "Toggle automatic reminders for a document",
+               description = "Turns the automatic reminder schedule on or off for this document. Manual 'send reminder now' " +
+                             "still works when off.")
+    @ApiResponse(responseCode = "200", description = "Automatic-reminder setting updated")
+    @PutMapping("/{id}/reminders")
+    public ResponseEntity<DocumentResponse> setReminders(
+            @Parameter(description = "Document ID") @PathVariable String id,
+            @Parameter(description = "Whether automatic reminders are enabled") @RequestParam boolean enabled,
+            @AuthenticationPrincipal UserDetailsImpl principal,
+            HttpServletRequest http) {
+
+        log.info("PUT /api/esign/documents/{}/reminders enabled={} by '{}'", id, enabled, principal.getUsername());
+        DocumentResponse doc = documentService.setRemindersEnabled(
+                id, enabled, principal, extractIp(http), http.getHeader("User-Agent"));
+        return ResponseEntity.ok(doc);
+    }
+
     @Operation(summary = "Resend the final signed copy",
                description = "Re-sends the signed PDF to all signatories, the creator, and the 'send a copy' recipients " +
                              "(and the view-only notice to invitation-CC recipients), refreshing the per-recipient " +

@@ -51,6 +51,7 @@ public class ExternalApiController {
     private final OrgApiKeyService        orgApiKeyService;
     private final QuotaService            quotaService;
     private final EmailDispatcher         emailDispatcher;
+    private final com.braify.feature.emaillog.service.EmailLogService emailLogService;
 
     // ── Principal helper ──────────────────────────────────────────────────────
 
@@ -178,8 +179,18 @@ public class ExternalApiController {
                         : "Message from " + (template.getFromName() != null ? template.getFromName() : "Braify");
 
         try {
-            var resendResponse = emailDispatcher.sendHtmlEmail(
-                    to, resolvedSubject, template.getHtmlContent(), data);
+            var resendResponse = emailLogService.recorded(
+                    com.braify.feature.emaillog.model.EmailLog.builder()
+                            .orgId(orgId)
+                            .category(com.braify.feature.emaillog.model.EmailLog.Category.API_EMAIL)
+                            .recipient(to)
+                            .subject(resolvedSubject)
+                            .senderName(template.getFromName())
+                            .relatedType(com.braify.feature.emaillog.model.EmailLog.RelatedType.EMAIL_TEMPLATE)
+                            .relatedId(template.getId())
+                            .build(),
+                    () -> emailDispatcher.sendHtmlEmail(
+                            to, resolvedSubject, template.getHtmlContent(), data));
 
             return ResponseEntity.ok(Map.of(
                     "success",   true,

@@ -20,6 +20,7 @@ public final class InternalTemplateCodes {
 
     // E-Sign
     public static final String ESIGN_SIGNING_INVITATION = "ESIGN_SIGNING_INVITATION";
+    public static final String ESIGN_SIGNING_REMINDER   = "ESIGN_SIGNING_REMINDER";
     public static final String ESIGN_COMPLETION_SIGNER  = "ESIGN_COMPLETION_SIGNER";
     public static final String ESIGN_CC_NOTIFICATION    = "ESIGN_CC_NOTIFICATION";
     public static final String ESIGN_CC_COMPLETION      = "ESIGN_CC_COMPLETION";

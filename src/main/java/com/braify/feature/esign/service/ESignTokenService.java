@@ -67,6 +67,55 @@ public class ESignTokenService {
     }
 
     /**
+     * Produces a valid signing link for a reminder <em>without</em> invalidating the original
+     * invitation email. If the signatory still has an active (unused, un-revoked, un-expired)
+     * token, that same token is reused — a fresh JWT string is minted for the <em>existing</em>
+     * {@code jti} and deadline, so both the original and the reminder emails keep working.
+     * Only when there is no usable token (e.g. it truly expired) is a new one issued, preserving
+     * the document's existing deadline rather than extending it.
+     */
+    public String reissueSigningToken(ESignDocument doc, ESignDocument.Signatory signatory) {
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime expiresAt = doc.getTokenExpiresAt() != null
+                ? doc.getTokenExpiresAt()
+                : now.plusDays(7);
+
+        // Reuse the signatory's existing active token when it is still valid — this is the common
+        // reminder case and keeps the ORIGINAL invitation link alive alongside the reminder link.
+        var active = tokenRepo.findByDocumentIdAndSignatoryIdAndUsedFalseAndRevokedAtIsNull(
+                doc.getId(), signatory.getId());
+        if (active.isPresent() && active.get().getExpiresAt() != null
+                && active.get().getExpiresAt().isAfter(now)) {
+            ESignSigningToken t = active.get();
+            Date expiryDate = Date.from(t.getExpiresAt().atZone(ZoneId.systemDefault()).toInstant());
+            signatory.setTokenJti(t.getJti());
+            log.info("Signing token reused for reminder jti='{}' doc='{}' signatory='{}' expires={}",
+                    t.getJti(), doc.getId(), signatory.getId(), t.getExpiresAt());
+            return jwtUtil.generateSigningToken(t.getJti(), signatory.getEmail(), doc.getId(), expiryDate);
+        }
+
+        // No usable token — mint a fresh one against the document's existing deadline.
+        String jti = java.util.UUID.randomUUID().toString();
+        Date expiryDate = Date.from(expiresAt.atZone(ZoneId.systemDefault()).toInstant());
+        String jwt = jwtUtil.generateSigningToken(jti, signatory.getEmail(), doc.getId(), expiryDate);
+
+        tokenRepo.save(ESignSigningToken.builder()
+                .jti(jti)
+                .documentId(doc.getId())
+                .signatoryId(signatory.getId())
+                .clientEmail(signatory.getEmail())
+                .createdBy(doc.getCreatedBy())
+                .issuedAt(now)
+                .expiresAt(expiresAt)
+                .build());
+
+        signatory.setTokenJti(jti);
+        log.info("Signing token re-issued (reminder, fresh) jti='{}' doc='{}' signatory='{}' expires={}",
+                jti, doc.getId(), signatory.getId(), expiresAt);
+        return jwt;
+    }
+
+    /**
      * Validates a signing JWT:
      * 1. Signature / expiry check via JwtUtil
      * 2. Token record exists, not used, not revoked

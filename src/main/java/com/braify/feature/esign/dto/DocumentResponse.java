@@ -40,6 +40,10 @@ public class DocumentResponse {
     private LocalDateTime completedAt;
     private LocalDateTime tokenExpiresAt;
     private LocalDateTime createdAt;
+
+    /** Whether automatic signing reminders are enabled for this document. */
+    private boolean remindersEnabled;
+
     private List<FieldResponse> fields;
 
     /** Who was emailed the final signed document (populated once completed). */
@@ -119,6 +123,8 @@ public class DocumentResponse {
         private LocalDateTime viewedAt;
         private LocalDateTime signedAt;
         private LocalDateTime consentedAt;   // electronic-records-&-signatures consent (ESIGN/UETA)
+        private LocalDateTime lastReminderAt; // when the most recent reminder was emailed (null = none)
+        private int           reminderCount;  // how many reminders this signatory has received
 
         public static SignatoryResponse from(ESignDocument.Signatory s) {
             return SignatoryResponse.builder()
@@ -130,6 +136,8 @@ public class DocumentResponse {
                     .viewedAt(s.getViewedAt())
                     .signedAt(s.getSignedAt())
                     .consentedAt(s.getConsentedAt())
+                    .lastReminderAt(s.getLastReminderAt())
+                    .reminderCount(s.getReminderCount())
                     .build();
         }
     }
@@ -170,6 +178,7 @@ public class DocumentResponse {
                 .completedAt(doc.getCompletedAt())
                 .tokenExpiresAt(doc.getTokenExpiresAt())
                 .createdAt(doc.getCreatedAt())
+                .remindersEnabled(doc.isRemindersEnabled())
                 .fields(fields.stream().map(f -> FieldResponse.from(f, nameFor.apply(f))).toList())
                 .completionNotifications(doc.getCompletionNotifications() == null ? List.of()
                         : doc.getCompletionNotifications().stream()

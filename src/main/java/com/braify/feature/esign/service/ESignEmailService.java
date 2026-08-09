@@ -1,6 +1,8 @@
 package com.braify.feature.esign.service;
 
 import com.braify.config.infra.email.EmailDispatcher;
+import com.braify.feature.emaillog.model.EmailLog;
+import com.braify.feature.emaillog.service.EmailLogService;
 import com.braify.feature.email.model.EmailTemplate;
 import com.braify.feature.email.repository.EmailTemplateRepository;
 import com.braify.feature.esign.model.ESignDocument;
@@ -25,9 +27,26 @@ import java.util.function.Supplier;
 public class ESignEmailService implements InternalTemplateProvider {
 
     private final EmailDispatcher          emailDispatcher;
+    private final EmailLogService          emailLogService;
     private final OrganizationRepository   orgRepo;
     private final EmailTemplateRepository  emailTemplateRepo;
     private final ESignTokenService        tokenService;
+
+    /** Builds an {@link EmailLog} spec pre-filled with this document's identity, for {@code recorded(...)}. */
+    private EmailLog esignLog(ESignDocument doc, EmailLog.Category category,
+                              String recipient, List<String> cc, String subject, String orgName) {
+        return EmailLog.builder()
+                .orgId(doc.getOrgId())
+                .category(category)
+                .recipient(recipient)
+                .ccEmails(cc)
+                .subject(subject)
+                .senderName(orgName)
+                .relatedType(EmailLog.RelatedType.E_SIGN_DOCUMENT)
+                .relatedId(doc.getId())
+                .createdBy(doc.getCreatedBy())
+                .build();
+    }
 
     /** Validity window for the read-only view links emailed to CC recipients. */
     private static final int VIEW_TOKEN_VALID_DAYS = 90;
@@ -107,13 +126,15 @@ public class ESignEmailService implements InternalTemplateProvider {
             // IMPORTANT: the invitation (which contains the one-time signing link) goes ONLY to
             // the signatory — never CC it, or CC recipients could open the link and sign the
             // document themselves. CC recipients are notified separately, without the link.
-            emailDispatcher.sendHtmlEmail(
-                    recipientEmail,
-                    subject,
-                    html,
-                    vars,
-                    orgName
-            );
+            emailLogService.recorded(
+                    esignLog(doc, EmailLog.Category.ESIGN_INVITATION, recipientEmail, null, subject, orgName),
+                    () -> emailDispatcher.sendHtmlEmail(
+                            recipientEmail,
+                            subject,
+                            html,
+                            vars,
+                            orgName
+                    ));
             sent = true;
             log.info("Signing invitation sent to {} for doc {}", recipientEmail, doc.getId());
         } catch (Exception e) {
@@ -141,7 +162,9 @@ public class ESignEmailService implements InternalTemplateProvider {
                     this::buildCcNotificationHtml);
             for (String cc : ccList) {
                 try {
-                    emailDispatcher.sendHtmlEmail(cc, ccR.subject(), ccR.html(), ccVars, orgName);
+                    emailLogService.recorded(
+                            esignLog(doc, EmailLog.Category.ESIGN_CC, cc, null, ccR.subject(), orgName),
+                            () -> emailDispatcher.sendHtmlEmail(cc, ccR.subject(), ccR.html(), ccVars, orgName));
                     log.info("CC notification sent to {} for doc {}", cc, doc.getId());
                 } catch (Exception e) {
                     log.error("Failed to send CC notification to {} for doc {}: {}", cc, doc.getId(), e.getMessage());
@@ -151,6 +174,48 @@ public class ESignEmailService implements InternalTemplateProvider {
 
         return sent;
     }
+
+    /**
+     * Sends a signing reminder to one not-yet-signed signatory. Re-issues a fresh signing
+     * link (preserving the document's existing deadline) and shows the time left before expiry.
+     *
+     * @return true if the reminder email was accepted by the provider.
+     */
+    public boolean sendReminder(ESignDocument doc, ESignDocument.Signatory signatory) {
+        String token       = tokenService.reissueSigningToken(doc, signatory);
+        String signingLink = baseUrl + "/sign/" + token;
+        String orgName     = resolveOrgName(doc.getOrgId());
+
+        ResolvedEmail r = resolveInternal(
+                InternalTemplateCodes.ESIGN_SIGNING_REMINDER,
+                "Reminder: your signature is needed — {{documentName}}",
+                this::buildReminderHtml);
+
+        Map<String, Object> vars = new java.util.HashMap<>(brandVars(doc.getOrgId(), orgName));
+        vars.put("signerName",    notBlank(signatory.getName()) ? signatory.getName() : "");
+        vars.put("signerEmail",   signatory.getEmail() != null ? signatory.getEmail() : "");
+        vars.put("documentName",  doc.getTitle() != null ? doc.getTitle() : "");
+        vars.put("expiryDate",    fmt(doc.getTokenExpiresAt(), EXPIRY_FMT));
+        vars.put("expiresIn",     expiresInPhrase(doc.getTokenExpiresAt()));
+        vars.put("signingLink",   signingLink);
+        // legacy aliases
+        vars.put("clientName",    notBlank(signatory.getName()) ? signatory.getName() : "");
+        vars.put("documentTitle", doc.getTitle() != null ? doc.getTitle() : "");
+
+        try {
+            emailLogService.recorded(
+                    esignLog(doc, EmailLog.Category.ESIGN_REMINDER, signatory.getEmail(), null, r.subject(), orgName),
+                    () -> emailDispatcher.sendHtmlEmail(signatory.getEmail(), r.subject(), r.html(), vars, orgName));
+            log.info("Signing reminder sent to {} for doc {}", signatory.getEmail(), doc.getId());
+            return true;
+        } catch (Exception e) {
+            log.error("Failed to send reminder to {} for doc {}: {}",
+                    signatory.getEmail(), doc.getId(), e.getMessage());
+            return false;
+        }
+    }
+
+    private String buildReminderHtml() { return ESignEmailTemplates.REMINDER; }
 
     /** CC ("keep in the loop") notice when a document is sent — view-only, Template-01 design. */
     private String buildCcNotificationHtml() { return ESignEmailTemplates.CC_NOTIFICATION; }
@@ -272,7 +337,9 @@ public class ESignEmailService implements InternalTemplateProvider {
                 "Signed: {{documentName}}",
                 this::buildCcCompletionHtml);
         try {
-            emailDispatcher.sendHtmlEmail(to, ccR.subject(), ccR.html(), ccVars, orgName);
+            emailLogService.recorded(
+                    esignLog(doc, EmailLog.Category.ESIGN_COMPLETION, to, null, ccR.subject(), orgName),
+                    () -> emailDispatcher.sendHtmlEmail(to, ccR.subject(), ccR.html(), ccVars, orgName));
             log.info("Completion view-notice sent to CC {} for doc {}", to, doc.getId());
             return true;
         } catch (Exception e) {
@@ -337,23 +404,16 @@ public class ESignEmailService implements InternalTemplateProvider {
                     InternalTemplateCodes.ESIGN_COMPLETION_SIGNER,
                     subject, // built-in subject supplied by caller ("Signed document ready: <title>")
                     this::buildCompletionHtml);
-            sendHtmlWithAttachment(to, r.subject(), r.html(), vars, signedPdfBytes, filename, orgName);
+            emailLogService.recorded(
+                    esignLog(doc, EmailLog.Category.ESIGN_COMPLETION, to, null, r.subject(), orgName),
+                    () -> emailDispatcher.sendHtmlEmailWithAttachment(
+                            to, r.subject(), r.html(), vars, signedPdfBytes, filename, orgName));
             log.info("Completion email sent to {} for doc {}", to, doc.getId());
             return true;
         } catch (Exception e) {
             log.error("Failed to send completion email to {} for doc {}: {}", to, doc.getId(), e.getMessage());
             return false;
         }
-    }
-
-    /**
-     * Sends an HTML email with a single PDF attachment.
-     * Uses sendHtmlEmailWithAttachment so no S3 template bucket is needed.
-     */
-    private void sendHtmlWithAttachment(String to, String subject, String html, Map<String, Object> vars,
-                                        byte[] pdfBytes, String filename, String senderDisplayName) {
-        emailDispatcher.sendHtmlEmailWithAttachment(
-                to, subject, html, vars, pdfBytes, filename, senderDisplayName);
     }
 
     // ── HTML builders (canonical tokenised bodies; see ESignEmailTemplates) ──
@@ -506,6 +566,14 @@ public class ESignEmailService implements InternalTemplateProvider {
                         "System — E-Sign: Signing Invitation",
                         "You have a document to sign — {{documentName}}",
                         buildInvitationHtml(),
+                        List.of("organizationName", "brandMark", "accent", "accentSoft", "accentBorder",
+                                "signerName", "signerEmail", "documentName", "expiryDate", "expiresIn",
+                                "signingLink", "footerContact")),
+                new InternalTemplateSeed(
+                        InternalTemplateCodes.ESIGN_SIGNING_REMINDER,
+                        "System — E-Sign: Signing Reminder",
+                        "Reminder: your signature is needed — {{documentName}}",
+                        buildReminderHtml(),
                         List.of("organizationName", "brandMark", "accent", "accentSoft", "accentBorder",
                                 "signerName", "signerEmail", "documentName", "expiryDate", "expiresIn",
                                 "signingLink", "footerContact")),

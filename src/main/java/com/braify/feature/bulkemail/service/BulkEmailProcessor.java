@@ -73,6 +73,7 @@ public class BulkEmailProcessor {
     private final BulkEmailJobRepository jobRepo;
     private final TemplateRepository     pdfTemplateRepo;
     private final EmailDispatcher        emailDispatcher;
+    private final com.braify.feature.emaillog.service.EmailLogService emailLogService;
     private final EmailTrackingService   emailTrackingService;
     private final EmailRateLimiter       rateLimiter;
     private final PdfGenerationService   pdfGenerationService;
@@ -178,6 +179,9 @@ public class BulkEmailProcessor {
 
         if (Thread.currentThread().isInterrupted()) return;
 
+        // Hoisted so the email-log block after the try/catch can record CC recipients too.
+        List<String> ccRecipients = null;
+
         try {
             // 1. Build email placeholder map — seed with org globals, then let
             //    per-row column values / recipient fields override them.
@@ -244,15 +248,15 @@ public class BulkEmailProcessor {
             }
 
             // 4. Resolve CC recipients from configured columns
-            List<String> ccEmails = null;
             if (job.getCcColumns() != null && !job.getCcColumns().isEmpty()) {
-                ccEmails = job.getCcColumns().stream()
+                ccRecipients = job.getCcColumns().stream()
                         .map(col -> row.getData().getOrDefault(col, "").trim())
                         .filter(addr -> !addr.isBlank() && addr.contains("@"))
                         .distinct()
                         .toList();
-                if (ccEmails.isEmpty()) ccEmails = null;
+                if (ccRecipients.isEmpty()) ccRecipients = null;
             }
+            final List<String> ccEmails = ccRecipients;
 
             // 5. Send — inject open pixel / rewrite links / append unsubscribe for this
             //    recipient's opaque token. Runs on the FINAL html (post-placeholder), so
@@ -291,6 +295,47 @@ public class BulkEmailProcessor {
             row.setStatus(BulkEmailJob.BulkEmailRow.RowStatus.FAILED);
             row.setError(truncate(ex.getMessage(), 200));
             failedCount.incrementAndGet();
+        }
+
+        // ── Email audit log: the primary To recipient, plus one entry per CC recipient ─────
+        com.braify.feature.emaillog.model.EmailLog.Status logStatus =
+                row.getStatus() == BulkEmailJob.BulkEmailRow.RowStatus.SENT
+                        ? com.braify.feature.emaillog.model.EmailLog.Status.SENT
+                        : com.braify.feature.emaillog.model.EmailLog.Status.FAILED;
+
+        emailLogService.record(com.braify.feature.emaillog.model.EmailLog.builder()
+                .orgId(job.getOrgId())
+                .category(com.braify.feature.emaillog.model.EmailLog.Category.BULK_EMAIL)
+                .status(logStatus)
+                .recipient(row.getRecipientEmail())
+                .ccEmails(ccRecipients)
+                .subject(job.getEmailTemplateSubject())
+                .senderName(job.getOrgName())
+                .providerMessageId(row.getMessageId())
+                .errorMessage(row.getError())
+                .relatedType(com.braify.feature.emaillog.model.EmailLog.RelatedType.BULK_EMAIL_JOB)
+                .relatedId(job.getId())
+                .createdBy(job.getCreatedBy())
+                .build());
+
+        // Each CC recipient gets its own trackable entry (same send, so same status/message id).
+        if (ccRecipients != null) {
+            for (String ccAddr : ccRecipients) {
+                emailLogService.record(com.braify.feature.emaillog.model.EmailLog.builder()
+                        .orgId(job.getOrgId())
+                        .category(com.braify.feature.emaillog.model.EmailLog.Category.BULK_EMAIL)
+                        .status(logStatus)
+                        .recipient(ccAddr)
+                        .cc(true)
+                        .subject(job.getEmailTemplateSubject())
+                        .senderName(job.getOrgName())
+                        .providerMessageId(row.getMessageId())
+                        .errorMessage(row.getError())
+                        .relatedType(com.braify.feature.emaillog.model.EmailLog.RelatedType.BULK_EMAIL_JOB)
+                        .relatedId(job.getId())
+                        .createdBy(job.getCreatedBy())
+                        .build());
+            }
         }
 
         // ── Tiered progress persistence ───────────────────────────────────────
