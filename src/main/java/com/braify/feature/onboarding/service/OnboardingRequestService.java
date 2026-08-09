@@ -40,6 +40,7 @@ public class OnboardingRequestService implements InternalTemplateProvider {
     private final AppUserRepository           userRepository;
     private final EmailInviteService          emailInviteService;
     private final EmailDispatcher             emailDispatcher;
+    private final com.braify.feature.emaillog.service.EmailLogService emailLogService;
     private final PasswordEncoder             passwordEncoder;
     private final AuditLogService             auditLogService;
     private final InternalEmailTemplateService internalEmailTemplateService;
@@ -228,7 +229,7 @@ public class OnboardingRequestService implements InternalTemplateProvider {
                 .orElse("We've received your application — {{organizationName}}");
         String body = tpl.map(EmailTemplate::getHtmlContent).filter(this::notBlank)
                 .orElseGet(this::buildConfirmationEmail);
-        trySend(req.getApplicantEmail(), subject, body, vars);
+        trySend(req, subject, body, vars);
     }
 
     private void sendRejectionEmail(OnboardingRequest req) {
@@ -239,7 +240,7 @@ public class OnboardingRequestService implements InternalTemplateProvider {
                 .orElse("Update on your {{platformName}} application");
         String body = tpl.map(EmailTemplate::getHtmlContent).filter(this::notBlank)
                 .orElseGet(this::buildRejectionEmail);
-        trySend(req.getApplicantEmail(), subject, body, vars);
+        trySend(req, subject, body, vars);
     }
 
     private void sendInfoRequiredEmail(OnboardingRequest req) {
@@ -250,13 +251,27 @@ public class OnboardingRequestService implements InternalTemplateProvider {
                 .orElse("Additional information needed — {{platformName}}");
         String body = tpl.map(EmailTemplate::getHtmlContent).filter(this::notBlank)
                 .orElseGet(this::buildInfoRequiredEmail);
-        trySend(req.getApplicantEmail(), subject, body, vars);
+        trySend(req, subject, body, vars);
     }
 
-    private void trySend(String to, String subject, String html, Map<String, Object> vars) {
+    private void trySend(OnboardingRequest req, String subject, String html, Map<String, Object> vars) {
+        String to = req.getApplicantEmail();
+        String renderedSubject = subject;
+        for (Map.Entry<String, Object> e : vars.entrySet())
+            renderedSubject = renderedSubject == null ? null
+                    : renderedSubject.replace("{{" + e.getKey() + "}}", java.util.Objects.toString(e.getValue(), ""));
+        com.braify.feature.emaillog.model.EmailLog spec = com.braify.feature.emaillog.model.EmailLog.builder()
+                .orgId(req.getCreatedOrganizationId())
+                .category(com.braify.feature.emaillog.model.EmailLog.Category.ONBOARDING)
+                .recipient(to)
+                .subject(renderedSubject)
+                .relatedType(com.braify.feature.emaillog.model.EmailLog.RelatedType.ONBOARDING_REQUEST)
+                .relatedId(req.getId())
+                .createdBy(req.getReviewedBy())
+                .build();
         try {
             // EmailDispatcher substitutes {{tokens}} in subject + html using vars.
-            emailDispatcher.sendHtmlEmail(to, subject, html, vars);
+            emailLogService.recorded(spec, () -> emailDispatcher.sendHtmlEmail(to, subject, html, vars));
             log.info("Email sent → {}", to);
         } catch (Exception e) {
             log.warn("Could not send email to {}: {}", to, e.getMessage());

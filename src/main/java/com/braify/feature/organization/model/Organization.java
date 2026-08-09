@@ -2,6 +2,7 @@ package com.braify.feature.organization.model;
 
 import com.braify.feature.branding.model.OrgBranding;
 import com.braify.feature.cloudconfig.model.OrgCloudConfig;
+import com.braify.feature.esign.model.EsignReminderPolicy;
 import com.braify.shared.SubscriptionPlan;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -97,6 +98,19 @@ public class Organization {
      * Sensitive credential fields are masked in all API responses.
      */
     private OrgCloudConfig cloudConfig;
+
+    // ── E-Sign reminders ───────────────────────────────────────────────────────
+
+    /**
+     * Org-level policy for automatic e-sign signing reminders. Null = built-in defaults
+     * (first reminder 24h after sending, then every 24h). Resolve via {@link #effectiveReminderPolicy()}.
+     */
+    private EsignReminderPolicy esignReminderPolicy;
+
+    /** Returns the org's reminder policy, or the built-in defaults when unset. */
+    public EsignReminderPolicy effectiveReminderPolicy() {
+        return esignReminderPolicy != null ? esignReminderPolicy : EsignReminderPolicy.defaults();
+    }
 
     // ── Status ────────────────────────────────────────────────────────────────
 

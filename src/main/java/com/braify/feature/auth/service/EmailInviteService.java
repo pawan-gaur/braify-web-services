@@ -2,6 +2,8 @@ package com.braify.feature.auth.service;
 
 import com.braify.config.infra.email.EmailBrandVars;
 import com.braify.config.infra.email.EmailDispatcher;
+import com.braify.feature.emaillog.model.EmailLog;
+import com.braify.feature.emaillog.service.EmailLogService;
 import com.braify.feature.email.model.EmailTemplate;
 import com.braify.feature.internaltemplate.InternalEmailTemplateService;
 import com.braify.feature.internaltemplate.InternalTemplateCodes;
@@ -42,6 +44,7 @@ public class EmailInviteService implements InternalTemplateProvider {
 
     private final InvitationTokenRepository tokenRepository;
     private final EmailDispatcher           emailDispatcher;
+    private final EmailLogService           emailLogService;
     private final InternalEmailTemplateService internalEmailTemplateService;
     private final OrganizationRepository    organizationRepository;
     private final AppUserRepository         appUserRepository;
@@ -106,7 +109,16 @@ public class EmailInviteService implements InternalTemplateProvider {
         String body = tpl.map(EmailTemplate::getHtmlContent).filter(h -> h != null && !h.isBlank())
                 .orElseGet(this::buildInviteEmail);
 
-        trySend(user.getEmail(), subject, body, vars);
+        trySend(EmailLog.builder()
+                        .orgId(user.getOrganizationId())
+                        .category(EmailLog.Category.USER_INVITE)
+                        .recipient(user.getEmail())
+                        .senderName(orgName)
+                        .relatedType(EmailLog.RelatedType.USER)
+                        .relatedId(user.getId())
+                        .createdBy(createdById)
+                        .build(),
+                subject, body, vars);
         // DEBUG only — invite tokens grant password-setting capability and must not
         // appear in production log aggregators (Splunk, CloudWatch, Datadog, etc.)
         log.debug("Invite link generated for {} (also sent by email): {}", user.getEmail(), link);
@@ -161,22 +173,45 @@ public class EmailInviteService implements InternalTemplateProvider {
         String body = tpl.map(EmailTemplate::getHtmlContent).filter(h -> h != null && !h.isBlank())
                 .orElseGet(this::buildResetEmail);
 
-        trySend(user.getEmail(), subject, body, vars);
+        trySend(EmailLog.builder()
+                        .orgId(user.getOrganizationId())
+                        .category(EmailLog.Category.PASSWORD_RESET)
+                        .recipient(user.getEmail())
+                        .senderName(orgName)
+                        .relatedType(EmailLog.RelatedType.USER)
+                        .relatedId(user.getId())
+                        .createdBy(user.getId())
+                        .build(),
+                subject, body, vars);
         // DEBUG only — reset tokens grant unauthenticated password-change capability
         log.debug("Password-reset link generated for {} (also sent by email): {}", user.getEmail(), link);
     }
 
     /* ── Private helpers ─────────────────────────────────────────────────── */
 
-    private void trySend(String to, String subject, String htmlBody, Map<String, Object> vars) {
+    private void trySend(EmailLog logSpec, String subject, String htmlBody, Map<String, Object> vars) {
+        String to = logSpec.getRecipient();
+        // Subject is a template with {{tokens}} until the dispatcher renders it — store a readable copy.
+        logSpec.setSubject(renderForLog(subject, vars));
         try {
             // EmailDispatcher substitutes {{tokens}} in subject + html using vars.
-            emailDispatcher.sendHtmlEmail(to, subject, htmlBody, vars);
+            emailLogService.recorded(logSpec,
+                    () -> emailDispatcher.sendHtmlEmail(to, subject, htmlBody, vars));
             log.info("Email sent via Resend → {}", to);
         } catch (Exception e) {
             // Don't let email failure break the user-creation / reset flow
             log.warn("Could not send email to {} via Resend: {}", to, e.getMessage());
         }
+    }
+
+    /** Best-effort placeholder substitution so the logged subject is human-readable (not "{{platformName}}"). */
+    private String renderForLog(String subject, Map<String, Object> vars) {
+        if (subject == null) return null;
+        String s = subject;
+        for (Map.Entry<String, Object> e : vars.entrySet()) {
+            s = s.replace("{{" + e.getKey() + "}}", java.util.Objects.toString(e.getValue(), ""));
+        }
+        return s;
     }
 
     private String fullName(AppUser u) {

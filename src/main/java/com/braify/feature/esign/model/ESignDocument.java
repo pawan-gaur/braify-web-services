@@ -110,6 +110,14 @@ public class ESignDocument {
     private String        signingTokenJti;
     private LocalDateTime tokenExpiresAt;
 
+    /**
+     * Whether automatic signing reminders are sent for this document.
+     * Defaults to on; the sender can opt this document out. Manual "send reminder now"
+     * still works regardless of this flag.
+     */
+    @Builder.Default
+    private boolean remindersEnabled = true;
+
     /* ── Key timestamps ─────────────────────────────────────────────────── */
     private LocalDateTime sentAt;
     private LocalDateTime viewedAt;
@@ -169,6 +177,11 @@ public class ESignDocument {
         private LocalDateTime signedAt;
         /** When this signatory affirmatively consented to use electronic records & signatures (ESIGN/UETA). */
         private LocalDateTime consentedAt;
+        /** When the most recent reminder was emailed to this signatory (null = none yet). */
+        private LocalDateTime lastReminderAt;
+        /** How many reminders have been sent to this signatory. */
+        @Builder.Default
+        private int reminderCount = 0;
     }
 
     @Data @Builder @NoArgsConstructor @AllArgsConstructor

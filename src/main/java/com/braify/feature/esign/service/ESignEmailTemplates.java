@@ -121,6 +121,29 @@ final class ESignEmailTemplates {
         + footer("If you weren't expecting this request, you can safely ignore this email — no signature will be recorded and no further action is required.")
         + TAIL;
 
+    // ── Template 01b — Signing reminder ───────────────────────────────────────
+    static final String REMINDER =
+        head("{{accent}}") + brandBar() + """
+            <div style="padding:36px 32px 8px;">
+              <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;color:#B45309;margin-bottom:14px;">REMINDER · ACTION NEEDED</div>
+              <h1 style="margin:0 0 14px;font-size:26px;line-height:1.25;font-weight:700;color:#0F172A;letter-spacing:-0.02em;">Your signature is still needed</h1>
+              <p style="margin:0 0 26px;font-size:15px;line-height:1.6;color:#475569;">Hi <strong style="color:#0F172A;">{{signerName}}</strong>, a friendly reminder that <strong style="color:#0F172A;">{{organizationName}}</strong> is still waiting for your electronic signature on the document below.</p>
+            """
+        + docShellOpen()
+        + docHeader("Awaiting your signature", "")
+        + metaGrid("SIGNER",
+                   "<div style=\"font-size:13.5px;font-weight:600;color:#0F172A;\">{{signerName}}</div><div style=\"font-size:12px;color:#64748B;margin-top:1px;\">{{signerEmail}}</div>",
+                   "EXPIRES",
+                   "<div style=\"font-size:13.5px;font-weight:600;color:#0F172A;\">{{expiryDate}}</div><div style=\"display:inline-block;margin-top:5px;font-size:11px;font-weight:700;color:#B45309;background:#FEF3C7;border-radius:6px;padding:2px 8px;\">{{expiresIn}}</div>")
+        + """
+              </div>
+              <div style="text-align:center;margin:30px 0 8px;"><a href="{{signingLink}}" style="display:inline-block;background:{{accent}};color:#fff;font-size:15px;font-weight:700;padding:15px 40px;border-radius:10px;text-decoration:none;">Review &amp; Sign Document</a></div>
+              <p style="margin:0 auto 30px;text-align:center;font-size:12.5px;line-height:1.5;color:#94A3B8;max-width:360px;">This is a secure, single-use link unique to you. Please don't forward this email.</p>
+            </div>
+            """
+        + footer("If you've already signed, no further action is needed — you can safely ignore this reminder.")
+        + TAIL;
+
     // ── Template 02 — Signed document completed ───────────────────────────────
     static final String COMPLETION =
         head("#16A34A") + brandBar() + """

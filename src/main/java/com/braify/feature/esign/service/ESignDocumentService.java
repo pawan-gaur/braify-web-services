@@ -19,6 +19,9 @@ import com.braify.feature.pdf.model.Template;
 import com.braify.feature.esign.repository.ESignBulkBatchRepository;
 import com.braify.feature.esign.repository.ESignDocumentRepository;
 import com.braify.feature.esign.repository.ESignSignatureFieldRepository;
+import com.braify.feature.esign.model.EsignReminderPolicy;
+import com.braify.feature.organization.model.Organization;
+import com.braify.feature.organization.repository.OrganizationRepository;
 import com.braify.feature.pdf.repository.TemplateRepository;
 import com.braify.feature.user.model.AppUser;
 import com.braify.feature.user.repository.AppUserRepository;
@@ -62,6 +65,7 @@ public class ESignDocumentService {
     private final ESignStorageService           esignStorage;
     private final OrgContactService             contactService;
     private final AppUserRepository             userRepo;
+    private final OrganizationRepository        orgRepo;
     private final MongoTemplate                 mongoTemplate;
 
     // ── Create ──────────────────────────────────────────────────────────────
@@ -628,6 +632,170 @@ public class ESignDocumentService {
 
         List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(docId);
         return DocumentResponse.from(doc, fields, false);
+    }
+
+    // ── Reminders ─────────────────────────────────────────────────────────────
+
+    /** Documents whose signing window is still open (a reminder can meaningfully be sent). */
+    static final List<ESignDocument.Status> REMINDABLE_STATUSES = List.of(
+            ESignDocument.Status.PENDING,
+            ESignDocument.Status.IN_REVIEW,
+            ESignDocument.Status.PARTIALLY_SIGNED);
+
+    /**
+     * Turns automatic reminders on/off for a single document. Manual "send reminder now"
+     * still works when this is off — it only governs the scheduler.
+     */
+    public DocumentResponse setRemindersEnabled(String docId, boolean enabled,
+                                                UserDetailsImpl principal, String ip, String ua) {
+        ESignDocument doc = getAccessibleDoc(docId, principal);
+        doc.setRemindersEnabled(enabled);
+        doc = docRepo.save(doc);
+
+        auditService.log(docId, principal.getUsername(),
+                ESignAuditEvent.ActorType.CREATOR,
+                ESignAuditEvent.EventType.DOCUMENT_SENT, ip, ua,
+                Map.of("action", enabled ? "AUTO_REMINDERS_ENABLED" : "AUTO_REMINDERS_DISABLED"));
+
+        List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(docId);
+        return DocumentResponse.from(doc, fields, false);
+    }
+
+    /**
+     * Manually sends a reminder to every signatory who still needs to sign, right now.
+     * Ignores the automatic schedule and the per-document opt-out (a human explicitly asked),
+     * but refuses once the document is completed/cancelled or its signing window has closed.
+     *
+     * @return the updated document (per-signatory {@code reminderCount}/{@code lastReminderAt} advanced)
+     */
+    public DocumentResponse sendRemindersNow(String docId, UserDetailsImpl principal,
+                                             String ip, String ua) {
+        ESignDocument doc = getAccessibleDoc(docId, principal);
+
+        if (!REMINDABLE_STATUSES.contains(doc.getStatus()))
+            throw new IllegalStateException(
+                    "Reminders can only be sent for documents still awaiting signatures (this one is "
+                    + doc.getStatus() + ").");
+        if (doc.getTokenExpiresAt() != null && doc.getTokenExpiresAt().isBefore(LocalDateTime.now()))
+            throw new IllegalStateException(
+                    "This document's signing window has expired — reactivate it before reminding.");
+
+        List<ESignDocument.Signatory> pending = pendingSignatories(doc);
+        if (pending.isEmpty())
+            throw new IllegalStateException("Everyone has already signed — there is no one to remind.");
+
+        int sent = 0;
+        for (ESignDocument.Signatory s : pending) {
+            if (dispatchReminder(doc, s)) sent++;
+        }
+        doc = docRepo.save(doc);
+
+        auditService.log(docId, principal.getUsername(),
+                ESignAuditEvent.ActorType.CREATOR,
+                ESignAuditEvent.EventType.DOCUMENT_SENT, ip, ua,
+                Map.of("action", "REMINDER_SENT", "trigger", "MANUAL", "recipients", sent));
+        auditLogService.log(
+                doc.getId(), doc.getTitle(),
+                AuditLog.Action.SENT, AuditLog.ResourceType.E_SIGN,
+                0, Map.of("action", "REMINDER_SENT", "trigger", "MANUAL", "recipients", sent),
+                principal.getUsername(), principal.getOrgId());
+
+        if (sent == 0)
+            throw new IllegalStateException(
+                    "Could not email any reminders. Verify your email sending domain/provider and try again.");
+
+        List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(docId);
+        return DocumentResponse.from(doc, fields, false);
+    }
+
+    /**
+     * Scheduler entry point: walks all still-open documents with automatic reminders enabled and
+     * emails a reminder to each signatory whose next-reminder time (per the org policy) has arrived.
+     * Idempotent per tick — timing/cap are re-derived from persisted counters, so a missed tick
+     * simply resumes on the next one.
+     *
+     * @return the number of reminder emails actually sent this sweep
+     */
+    public int runAutomaticReminderSweep() {
+        LocalDateTime now = LocalDateTime.now();
+        List<ESignDocument> candidates =
+                docRepo.findByStatusInAndTokenExpiresAtAfter(REMINDABLE_STATUSES, now);
+
+        int totalSent = 0;
+        for (ESignDocument doc : candidates) {
+            if (!doc.isRemindersEnabled()) continue;
+
+            EsignReminderPolicy policy = resolveReminderPolicy(doc.getOrgId());
+            if (!policy.isEnabled()) continue;
+
+            boolean touched = false;
+            for (ESignDocument.Signatory s : pendingSignatories(doc)) {
+                if (!reminderDue(doc, s, policy, now)) continue;
+                if (dispatchReminder(doc, s)) totalSent++;
+                touched = true;
+            }
+            if (touched) {
+                docRepo.save(doc);
+                auditService.log(doc.getId(), "system",
+                        ESignAuditEvent.ActorType.SYSTEM,
+                        ESignAuditEvent.EventType.DOCUMENT_SENT, null, null,
+                        Map.of("action", "REMINDER_SENT", "trigger", "AUTOMATIC"));
+            }
+        }
+        if (totalSent > 0) log.info("Automatic e-sign reminder sweep sent {} email(s)", totalSent);
+        return totalSent;
+    }
+
+    /** Signatories who have not yet signed (SEQUENTIAL mode limits this to the current turn-holder). */
+    private List<ESignDocument.Signatory> pendingSignatories(ESignDocument doc) {
+        List<ESignDocument.Signatory> sigs = doc.getSignatories();
+        if (sigs == null || sigs.isEmpty()) return List.of();
+
+        List<ESignDocument.Signatory> unsigned = sigs.stream()
+                .filter(s -> s.getStatus() != ESignDocument.SignatoryStatus.SIGNED)
+                .toList();
+
+        if (doc.getSigningMode() == ESignDocument.SigningMode.SEQUENTIAL) {
+            return unsigned.stream()
+                    .min(java.util.Comparator.comparingInt(ESignDocument.Signatory::getSigningOrder))
+                    .map(List::of).orElse(List.of());
+        }
+        return unsigned;
+    }
+
+    /** Whether {@code s} is due for an automatic reminder now, per the org policy and its history. */
+    private boolean reminderDue(ESignDocument doc, ESignDocument.Signatory s,
+                                EsignReminderPolicy policy, LocalDateTime now) {
+        if (s.getReminderCount() >= policy.getMaxReminders()) return false;
+
+        LocalDateTime base;
+        int waitHours;
+        if (s.getLastReminderAt() != null) {
+            base = s.getLastReminderAt();
+            waitHours = policy.getRepeatEveryHours();
+        } else {
+            base = s.getInvitedAt() != null ? s.getInvitedAt() : doc.getSentAt();
+            waitHours = policy.getFirstReminderAfterHours();
+        }
+        if (base == null) return false;   // never actually sent — nothing to remind from
+        return !base.plusHours(waitHours).isAfter(now);
+    }
+
+    /** Emails one reminder and advances the signatory's counters in memory (caller persists). */
+    private boolean dispatchReminder(ESignDocument doc, ESignDocument.Signatory s) {
+        boolean ok = emailService.sendReminder(doc, s);
+        if (ok) {
+            s.setLastReminderAt(LocalDateTime.now());
+            s.setReminderCount(s.getReminderCount() + 1);
+        }
+        return ok;
+    }
+
+    private EsignReminderPolicy resolveReminderPolicy(String orgId) {
+        if (orgId == null) return EsignReminderPolicy.defaults();
+        return orgRepo.findById(orgId)
+                .map(Organization::effectiveReminderPolicy)
+                .orElseGet(EsignReminderPolicy::defaults);
     }
 
     // ── List / Detail ────────────────────────────────────────────────────────
