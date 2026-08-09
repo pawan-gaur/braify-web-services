@@ -182,6 +182,13 @@ public class ESignDocument {
         /** How many reminders have been sent to this signatory. */
         @Builder.Default
         private int reminderCount = 0;
+        /**
+         * When true, this signatory opted out of reminder emails (via the unsubscribe link in a
+         * reminder). Suppresses both automatic and manual reminders for this signer only — they can
+         * still open the document and sign, and can re-enable reminders from the same link.
+         */
+        @Builder.Default
+        private boolean remindersOptedOut = false;
     }
 
     @Data @Builder @NoArgsConstructor @AllArgsConstructor
