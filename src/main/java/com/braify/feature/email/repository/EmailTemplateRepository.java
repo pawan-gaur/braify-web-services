@@ -28,6 +28,12 @@ public interface EmailTemplateRepository extends MongoRepository<EmailTemplate, 
     List<EmailTemplate> findByOrganizationIdAndDeletedFalseOrderByUpdatedAtDesc(String organizationId);
     Optional<EmailTemplate> findByIdAndOrganizationIdAndDeletedFalse(String id, String organizationId);
 
+    /** Per-org code uniqueness (among non-deleted templates). */
+    boolean existsByOrganizationIdAndCodeAndDeletedFalse(String organizationId, String code);
+
+    /** True if a code is reserved by an INTERNAL system template (must not be shadowed by a user code). */
+    boolean existsByCodeAndTypeAndDeletedFalse(String code, TemplateType type);
+
     /** Counts */
     long countByDeletedFalse();
     long countByOrganizationIdAndDeletedFalse(String organizationId);

@@ -18,6 +18,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @Tag(name = "PDF Templates", description = "CRUD and version history for PDF templates. Each template stores HTML/CSS content plus GrapesJS editor state. All endpoints are org-scoped — users only see their own organisation's templates.")
@@ -76,6 +77,21 @@ public class TemplateController {
         ResponseEntity<Template> result = ResponseEntity.ok(templateService.update(id, template, getUser(auth)));
         log.info("Template '{}' updated", id);
         return result;
+    }
+
+    @Operation(summary = "Clone a PDF template",
+               description = "Duplicates the template into the caller's org, copying all content and appending _clone to the code and name. " +
+                             "Optional body { code, name } overrides the defaults. Returns 400 if the resulting code already exists.")
+    @ApiResponse(responseCode = "200", description = "Template cloned")
+    @ApiResponse(responseCode = "400", description = "A template with that code already exists")
+    @PostMapping("/{id}/clone")
+    public ResponseEntity<Template> clone(@Parameter(description = "Source template ID") @PathVariable String id,
+                                          @RequestBody(required = false) Map<String, String> body,
+                                          Authentication auth) {
+        String code = body != null ? body.get("code") : null;
+        String name = body != null ? body.get("name") : null;
+        log.info("POST /api/templates/{}/clone by '{}'", id, getUser(auth).getEmail());
+        return ResponseEntity.ok(templateService.clone(id, code, name, getUser(auth)));
     }
 
     @Operation(summary = "Soft-delete PDF template",

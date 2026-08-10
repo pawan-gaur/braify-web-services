@@ -23,6 +23,9 @@ public interface TemplateRepository extends MongoRepository<Template, String> {
     List<Template> findByOrganizationIdAndDeletedFalseOrderByUpdatedAtDesc(String organizationId);
     Optional<Template> findByIdAndOrganizationIdAndDeletedFalse(String id, String organizationId);
 
+    /** Per-org code uniqueness (among non-deleted templates). */
+    boolean existsByOrganizationIdAndCodeAndDeletedFalse(String organizationId, String code);
+
     /** Counts */
     long countByDeletedFalse();
     long countByOrganizationIdAndDeletedFalse(String organizationId);

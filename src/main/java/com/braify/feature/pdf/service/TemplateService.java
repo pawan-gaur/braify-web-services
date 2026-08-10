@@ -64,6 +64,9 @@ public class TemplateService {
         template.setCurrentVersion(0);
         template.setOrganizationId(currentUser.getOrganizationId());
         template.setCreatedBy(currentUser.getId());
+        template.setCode(normalizeCode(template.getCode()));
+        if (template.getCode() != null)
+            assertCodeAvailable(currentUser.getOrganizationId(), template.getCode());
         template.setPlaceholders(
                 placeholderService.extractPlaceholders(template.getHtmlContent()));
 
@@ -103,6 +106,13 @@ public class TemplateService {
         existing.setMarginBottom(incoming.getMarginBottom());
         existing.setMarginLeft(incoming.getMarginLeft());
         existing.setMarginRight(incoming.getMarginRight());
+        // Only touch the code when a new, non-blank one is supplied (so ordinary builder saves,
+        // which omit it, never wipe an existing code). A changed code is uniqueness-checked.
+        String incomingCode = normalizeCode(incoming.getCode());
+        if (incomingCode != null && !incomingCode.equals(existing.getCode())) {
+            assertCodeAvailable(existing.getOrganizationId(), incomingCode);
+            existing.setCode(incomingCode);
+        }
         existing.setPlaceholders(
                 placeholderService.extractPlaceholders(incoming.getHtmlContent()));
 
@@ -119,6 +129,67 @@ public class TemplateService {
 
         log.info("Template '{}' updated to version {}", id, saved.getCurrentVersion());
         return saved;
+    }
+
+    // ── Clone ────────────────────────────────────────────────────────────────
+
+    /**
+     * Duplicates a template into the caller's org — copies all content, appends {@code _clone}
+     * to the code and name (or uses the supplied overrides). Rejects a duplicate code with 400
+     * so the user can rename.
+     */
+    public Template clone(String id, String codeOverride, String nameOverride, AppUser currentUser) {
+        log.info("Cloning template id='{}' by '{}'", id, currentUser.getEmail());
+        Template src = findById(id, currentUser);
+        assertAccess(currentUser, src.getOrganizationId());
+
+        Template copy = new Template();
+        copy.setName(nameOverride != null && !nameOverride.isBlank()
+                ? nameOverride.trim() : src.getName() + "_clone");
+        copy.setDescription(src.getDescription());
+        copy.setType(src.getType());
+        copy.setHtmlContent(src.getHtmlContent());
+        copy.setCssContent(src.getCssContent());
+        copy.setPageSize(src.getPageSize());
+        copy.setOrientation(src.getOrientation());
+        copy.setMarginTop(src.getMarginTop());
+        copy.setMarginBottom(src.getMarginBottom());
+        copy.setMarginLeft(src.getMarginLeft());
+        copy.setMarginRight(src.getMarginRight());
+        copy.setPlaceholders(src.getPlaceholders());
+        copy.setGjsData(src.getGjsData());
+        copy.setOrganizationId(currentUser.getOrganizationId());
+        copy.setCreatedBy(currentUser.getId());
+
+        String base = (codeOverride != null && !codeOverride.isBlank())
+                ? codeOverride.trim()
+                : (src.getCode() != null && !src.getCode().isBlank() ? src.getCode() + "_clone" : null);
+        copy.setCode(normalizeCode(base));
+        if (copy.getCode() != null)
+            assertCodeAvailable(currentUser.getOrganizationId(), copy.getCode());
+
+        Template saved = templateRepository.save(copy);
+        versionService.snapshot(saved, "Cloned from " + src.getName(), currentUser.getId());
+        templateRepository.save(saved);
+
+        auditLogService.log(
+                saved.getId(), saved.getName(),
+                AuditLog.Action.CREATED, AuditLog.ResourceType.TEMPLATE,
+                saved.getCurrentVersion(), Map.of("clonedFrom", src.getId()),
+                currentUser.getEmail(), saved.getOrganizationId());
+
+        log.info("Template cloned: '{}' → '{}' (code='{}')", src.getId(), saved.getId(), saved.getCode());
+        return saved;
+    }
+
+    private String normalizeCode(String code) {
+        return (code == null || code.isBlank()) ? null : code.trim();
+    }
+
+    private void assertCodeAvailable(String orgId, String code) {
+        if (templateRepository.existsByOrganizationIdAndCodeAndDeletedFalse(orgId, code))
+            throw new IllegalArgumentException(
+                    "Template code \"" + code + "\" already exists in your organisation. Please choose a different code.");
     }
 
     // ── Soft Delete ──────────────────────────────────────────────────────────
