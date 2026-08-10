@@ -27,6 +27,14 @@ public class Template {
     private String organizationId;
     private String description;
 
+    /**
+     * Optional human-meaningful, per-organisation-unique code (e.g. "INVOICE_A"). Managed by the
+     * user (and inserted directly for existing templates). Uniqueness is enforced per org among
+     * non-deleted templates in the service layer. Null/blank = no code.
+     */
+    @org.springframework.data.mongodb.core.index.Indexed(sparse = true)
+    private String code;
+
     /** EXTERNAL (user/org authored) by default. PDF templates are never INTERNAL today. */
     private TemplateType type = TemplateType.EXTERNAL;
 

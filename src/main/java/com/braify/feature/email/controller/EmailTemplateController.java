@@ -20,6 +20,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @Tag(name = "Email Templates", description = "CRUD, version history, and email dispatch for HTML email templates. Emails are sent via the Resend API. Templates support placeholder substitution using {{variable}} syntax.")
@@ -89,6 +90,21 @@ public class EmailTemplateController {
         ResponseEntity<EmailTemplate> result = ResponseEntity.ok(emailTemplateService.update(id, template, getUser(auth)));
         log.info("Email template updated: id='{}'", id);
         return result;
+    }
+
+    @Operation(summary = "Clone an email template",
+               description = "Duplicates the template into the caller's org, copying all content and appending _clone to the code and name. " +
+                             "Optional body { code, name } overrides the defaults. Returns 400 if the resulting code already exists or is reserved.")
+    @ApiResponse(responseCode = "200", description = "Email template cloned")
+    @ApiResponse(responseCode = "400", description = "A template with that code already exists / reserved")
+    @PostMapping("/{id}/clone")
+    public ResponseEntity<EmailTemplate> clone(@Parameter(description = "Source template ID") @PathVariable String id,
+                                               @RequestBody(required = false) Map<String, String> body,
+                                               Authentication auth) {
+        String code = body != null ? body.get("code") : null;
+        String name = body != null ? body.get("name") : null;
+        log.info("POST /api/email-templates/{}/clone by '{}'", id, getUser(auth).getEmail());
+        return ResponseEntity.ok(emailTemplateService.clone(id, code, name, getUser(auth)));
     }
 
     @Operation(summary = "Soft-delete email template",

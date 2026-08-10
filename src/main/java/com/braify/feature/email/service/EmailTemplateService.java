@@ -89,6 +89,9 @@ public class EmailTemplateService {
         template.setCurrentVersion(0);
         template.setOrganizationId(currentUser.getOrganizationId());
         template.setCreatedBy(currentUser.getId());
+        template.setCode(normalizeCode(template.getCode()));
+        if (template.getCode() != null)
+            assertCodeAvailable(currentUser.getOrganizationId(), template.getCode());
         template.setPlaceholders(
                 placeholderService.extractPlaceholders(template.getHtmlContent()));
 
@@ -122,6 +125,12 @@ public class EmailTemplateService {
         existing.setHtmlContent(incoming.getHtmlContent());
         existing.setCssContent(incoming.getCssContent());
         existing.setGjsData(incoming.getGjsData());
+        // Only touch the code when a new, non-blank one is supplied (ordinary saves omit it).
+        String incomingCode = normalizeCode(incoming.getCode());
+        if (incomingCode != null && !incomingCode.equals(existing.getCode())) {
+            assertCodeAvailable(existing.getOrganizationId(), incomingCode);
+            existing.setCode(incomingCode);
+        }
         existing.setPlaceholders(
                 placeholderService.extractPlaceholders(incoming.getHtmlContent()));
 
@@ -136,6 +145,66 @@ public class EmailTemplateService {
 
         log.info("Email template '{}' updated to version {}", id, saved.getCurrentVersion());
         return saved;
+    }
+
+    // ── Clone ────────────────────────────────────────────────────────────────
+
+    /**
+     * Duplicates an email template into the caller's org — copies all content, appends
+     * {@code _clone} to the code and name (or uses the supplied overrides). Rejects a duplicate
+     * code with 400 so the user can rename.
+     */
+    public EmailTemplate clone(String id, String codeOverride, String nameOverride, AppUser currentUser) {
+        log.info("Cloning email template id='{}' by '{}'", id, currentUser.getEmail());
+        EmailTemplate src = findById(id, currentUser);
+        assertAccess(currentUser, src.getOrganizationId());
+
+        EmailTemplate copy = new EmailTemplate();
+        copy.setName(nameOverride != null && !nameOverride.isBlank()
+                ? nameOverride.trim() : src.getName() + "_clone");
+        copy.setDescription(src.getDescription());
+        copy.setType(com.braify.shared.TemplateType.EXTERNAL);   // a clone is always a user template
+        copy.setSubject(src.getSubject());
+        copy.setPreviewText(src.getPreviewText());
+        copy.setFromName(src.getFromName());
+        copy.setHtmlContent(src.getHtmlContent());
+        copy.setCssContent(src.getCssContent());
+        copy.setPlaceholders(src.getPlaceholders());
+        copy.setGjsData(src.getGjsData());
+        copy.setOrganizationId(currentUser.getOrganizationId());
+        copy.setCreatedBy(currentUser.getId());
+
+        String base = (codeOverride != null && !codeOverride.isBlank())
+                ? codeOverride.trim()
+                : (src.getCode() != null && !src.getCode().isBlank() ? src.getCode() + "_clone" : null);
+        copy.setCode(normalizeCode(base));
+        if (copy.getCode() != null)
+            assertCodeAvailable(currentUser.getOrganizationId(), copy.getCode());
+
+        EmailTemplate saved = emailTemplateRepository.save(copy);
+        versionService.snapshot(saved, "Cloned from " + src.getName(), currentUser.getId());
+        emailTemplateRepository.save(saved);
+
+        auditLogService.log(saved.getId(), saved.getName(),
+                AuditLog.Action.CREATED, RESOURCE, saved.getCurrentVersion(),
+                Map.of("clonedFrom", src.getId()),
+                currentUser.getEmail(), saved.getOrganizationId());
+
+        log.info("Email template cloned: '{}' → '{}' (code='{}')", src.getId(), saved.getId(), saved.getCode());
+        return saved;
+    }
+
+    private String normalizeCode(String code) {
+        return (code == null || code.isBlank()) ? null : code.trim();
+    }
+
+    private void assertCodeAvailable(String orgId, String code) {
+        if (emailTemplateRepository.existsByOrganizationIdAndCodeAndDeletedFalse(orgId, code))
+            throw new IllegalArgumentException(
+                    "Template code \"" + code + "\" already exists in your organisation. Please choose a different code.");
+        if (emailTemplateRepository.existsByCodeAndTypeAndDeletedFalse(code, com.braify.shared.TemplateType.INTERNAL))
+            throw new IllegalArgumentException(
+                    "Template code \"" + code + "\" is reserved by the system. Please choose a different code.");
     }
 
     // ── Soft Delete ──────────────────────────────────────────────────────────
