@@ -85,11 +85,11 @@ public class PdfGenerationService {
         // Layer org-level global placeholders under the caller-supplied data
         // (explicit non-blank values win; globals fill everything else).
         Map<String, Object> merged = globalPlaceholderService.mergeForOrg(template.getOrganizationId(), data);
-        String html     = placeholderService.replacePlaceholders(template.getHtmlContent(), merged);
-        String cleaned  = sanitizeHtml(html);
-        String fullHtml = buildHtmlDocument(cleaned, template, branding);
+        String rawTemplate = template.getHtmlContent();
+        String html        = placeholderService.replacePlaceholders(rawTemplate, merged);
 
-        log.debug("Generating PDF for template: {}", template.getId());
+        log.debug("Generating PDF for template: {} (standalone={})",
+                template.getId(), isFullHtmlDocument(rawTemplate));
 
         try (ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
             PdfRendererBuilder builder = new PdfRendererBuilder();
@@ -97,11 +97,45 @@ public class PdfGenerationService {
             // Bound remote image/CSS fetches so a slow host can't hang the render.
             builder.useHttpStreamImplementation(TIMEOUT_STREAM_FACTORY);
             builder.useSVGDrawer(new BatikSVGDrawer());
-            builder.withHtmlContent(fullHtml, null);
+
+            if (isFullHtmlDocument(rawTemplate)) {
+                // The template IS a complete HTML document (e.g. an uploaded design with its own
+                // <head>/<style>/@page). Render it verbatim so its own styling and page setup are
+                // honored — do NOT flatten it into a body fragment or wrap it in the system chrome.
+                // Parse with jsoup's lenient HTML parser and hand openhtmltopdf a W3C DOM, which
+                // preserves the <style> CSS intact (no XML re-serialization / escaping of selectors).
+                org.jsoup.nodes.Document jsoup = Jsoup.parse(html);
+                scrubOfficeJunk(jsoup);
+                org.w3c.dom.Document w3c = new org.jsoup.helper.W3CDom().fromJsoup(jsoup);
+                builder.withW3cDocument(w3c, null);
+            } else {
+                // Legacy path: template stores a body fragment (+ separate cssContent); wrap it in
+                // the system document shell and apply org branding (logo / footer / brand colour).
+                String cleaned  = sanitizeHtml(html);
+                String fullHtml = buildHtmlDocument(cleaned, template, branding);
+                builder.withHtmlContent(fullHtml, null);
+            }
+
             builder.toStream(baos);
             builder.run();
             return baos.toByteArray();
         }
+    }
+
+    /**
+     * True when the template content is a self-contained HTML document (has a doctype, an
+     * {@code <html>} root, or a {@code <head>}/{@code <style>} block) rather than the body-only
+     * fragment the builder normally produces. Such documents carry their own styling and page
+     * setup and must be rendered verbatim.
+     */
+    private static boolean isFullHtmlDocument(String html) {
+        if (html == null) return false;
+        String head = html.stripLeading();
+        String lower = head.length() > 4000 ? head.substring(0, 4000).toLowerCase() : head.toLowerCase();
+        return lower.startsWith("<!doctype")
+                || lower.contains("<html")
+                || lower.contains("<head")
+                || lower.contains("<style");
     }
 
     /**
@@ -230,18 +264,25 @@ public class PdfGenerationService {
            .charset(java.nio.charset.StandardCharsets.UTF_8)
            .prettyPrint(false);
 
-        // 3. Remove all elements whose tag name contains a colon (namespace-prefixed)
-        //    e.g. <o:p>, <w:sdtPr>, <m:oMath>, <v:shape>, <st1:city>
-        Elements namespacedEls = doc.select("*");
-        for (Element el : namespacedEls) {
-            if (el.tagName().contains(":")) {
-                // Preserve text content — unwrap rather than remove completely
-                el.unwrap();
-            }
-        }
+        // 3-5. Strip Office/Word junk (namespaced elements, xmlns decls, mso-*/panose-* props)
+        scrubOfficeJunk(doc);
 
-        // 4. Strip Office XML namespace declarations from every element's attributes
-        //    (xmlns:o, xmlns:w, xmlns:m, xmlns:v, xmlns:st1, etc.)
+        // 6. Return just the cleaned body inner HTML
+        return doc.body().html();
+    }
+
+    /**
+     * Removes Microsoft Office / Word artefacts from a parsed document, in place:
+     * namespace-prefixed elements ({@code <o:p>}, {@code <w:*>}, …), {@code xmlns:*} attribute
+     * declarations, and {@code mso-*}/{@code panose-*} inline-style properties. Shared by the
+     * body-fragment path and the full-document path.
+     */
+    private static void scrubOfficeJunk(Document doc) {
+        // Remove elements whose tag name contains a colon (namespace-prefixed), keeping their text.
+        for (Element el : doc.select("*")) {
+            if (el.tagName().contains(":")) el.unwrap();
+        }
+        // Strip Office XML namespace declarations from every element's attributes.
         for (Element el : doc.getAllElements()) {
             el.attributes().asList().stream()
               .filter(a -> a.getKey().startsWith("xmlns:") ||
@@ -250,8 +291,7 @@ public class PdfGenerationService {
               .toList()
               .forEach(el::removeAttr);
         }
-
-        // 5. Scrub mso-* and panose-* properties from inline style attributes
+        // Scrub mso-* and panose-* properties from inline style attributes.
         for (Element el : doc.getAllElements()) {
             String style = el.attr("style");
             if (!style.isBlank()) {
@@ -261,9 +301,6 @@ public class PdfGenerationService {
                 else el.attr("style", style.trim());
             }
         }
-
-        // 6. Return just the cleaned body inner HTML
-        return doc.body().html();
     }
 
     private static String escapeHtml(String text) {
