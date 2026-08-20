@@ -118,6 +118,16 @@ public class ESignDocument {
     @Builder.Default
     private boolean remindersEnabled = true;
 
+    /* ── Finalization (SIGNED → COMPLETED: PDF stamping + completion emails) ── */
+    /**
+     * How many times finalization (signed-PDF generation + completion emails) has failed.
+     * Bounds the auto-retry scheduler; reset to 0 on a manual retry.
+     */
+    @Builder.Default
+    private int finalizeAttempts = 0;
+    /** Last finalization error message (null when finalization has not failed / has succeeded). */
+    private String finalizeError;
+
     /* ── Key timestamps ─────────────────────────────────────────────────── */
     private LocalDateTime sentAt;
     private LocalDateTime viewedAt;
