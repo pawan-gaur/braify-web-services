@@ -63,6 +63,7 @@ public class ESignDocumentService {
     private final AuditLogService               auditLogService;
     private final QuotaService                  quotaService;
     private final ESignStorageService           esignStorage;
+    private final ESignClientService            clientService;
     private final OrgContactService             contactService;
     private final AppUserRepository             userRepo;
     private final OrganizationRepository        orgRepo;
@@ -454,6 +455,25 @@ public class ESignDocumentService {
 
         List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(docId);
         return DocumentResponse.from(doc, fields, false);
+    }
+
+    /**
+     * Manually re-runs finalization (signed-PDF generation + completion emails) for a document that
+     * fully signed (status SIGNED) but never reached COMPLETED — e.g. the async finalize failed on a
+     * transient cloud-storage error. Resets the auto-retry cap so a person can always retry.
+     */
+    public DocumentResponse finalizeDocument(String docId, UserDetailsImpl principal, String ip, String ua) {
+        ESignDocument doc = getAccessibleDoc(docId, principal);
+        clientService.retryFinalization(doc, ip, ua, true);
+
+        auditLogService.log(docId, doc.getTitle(),
+                AuditLog.Action.UPDATED, AuditLog.ResourceType.E_SIGN,
+                0, Map.of("action", "MANUAL_FINALIZE"),
+                principal.getUsername(), principal.getOrgId());
+
+        ESignDocument fresh = docRepo.findById(docId).orElse(doc);
+        List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(docId);
+        return DocumentResponse.from(fresh, fields, false);
     }
 
     // ── Resend invitation ────────────────────────────────────────────────────

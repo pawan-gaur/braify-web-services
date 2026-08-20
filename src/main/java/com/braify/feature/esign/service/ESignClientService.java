@@ -248,10 +248,39 @@ public class ESignClientService {
 
     // ── Async finalization ───────────────────────────────────────────────────
 
+    /** Max automatic finalization retries before the scheduler gives up (manual retry still works). */
+    public static final int MAX_FINALIZE_ATTEMPTS = 5;
+
     @Async
     public void finalizeDocumentAsync(ESignDocument doc,
                                        List<ESignSignatureField> fields,
                                        String ip, String ua) {
+        doFinalize(doc, fields, ip, ua);
+    }
+
+    /**
+     * Re-runs finalization for a document that submitted but never reached COMPLETED (e.g. the async
+     * finalize threw on a transient cloud-storage error). Safe to call repeatedly — a no-op once the
+     * document is COMPLETED. Used by the manual "Finalize now" action and the retry scheduler.
+     *
+     * @param manual when true, resets the attempt counter so a human retry is never blocked by the cap
+     * @return true if the document is COMPLETED after this call
+     */
+    public boolean retryFinalization(ESignDocument doc, String ip, String ua, boolean manual) {
+        if (doc.getStatus() == ESignDocument.Status.COMPLETED) return true;
+        if (doc.getStatus() != ESignDocument.Status.SIGNED) {
+            throw new IllegalStateException(
+                    "Only a fully-signed document can be finalized (this one is " + doc.getStatus() + ").");
+        }
+        if (manual) { doc.setFinalizeAttempts(0); docRepo.save(doc); }
+        List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(doc.getId());
+        return doFinalize(doc, fields, ip, ua);
+    }
+
+    /** Runs the finalize body; on failure records the error + attempt count so the doc isn't silently stranded. */
+    private boolean doFinalize(ESignDocument doc,
+                               List<ESignSignatureField> fields,
+                               String ip, String ua) {
         try {
             // Resolve the creator (sender) for the audit report + completion emails.
             var creatorOpt = userRepo.findById(doc.getCreatedBy());
@@ -275,6 +304,7 @@ public class ESignClientService {
             if (doc.getPdfCloudProvider() == null) doc.setPdfCloudProvider(ref.provider());
             doc.setStatus(ESignDocument.Status.COMPLETED);
             doc.setCompletedAt(LocalDateTime.now());
+            doc.setFinalizeError(null);   // clear any prior failure
             docRepo.save(doc);
 
             auditService.log(doc.getId(), "SYSTEM",
@@ -290,9 +320,23 @@ public class ESignClientService {
                     ESignAuditEvent.ActorType.SYSTEM,
                     ESignAuditEvent.EventType.COMPLETION_EMAIL_SENT, ip, ua,
                     Map.of("recipients", notifications.size()));
+            return true;
 
         } catch (Exception e) {
-            log.error("Async PDF finalization failed for doc {}: {}", doc.getId(), e.getMessage(), e);
+            log.error("PDF finalization failed for doc {}: {}", doc.getId(), e.getMessage(), e);
+            // Record the failure so the document isn't silently stranded at SIGNED — it stays
+            // retryable (manual "Finalize now" + the retry scheduler) and the error is visible.
+            try {
+                ESignDocument fresh = docRepo.findById(doc.getId()).orElse(doc);
+                if (fresh.getStatus() == ESignDocument.Status.SIGNED) {
+                    fresh.setFinalizeAttempts(fresh.getFinalizeAttempts() + 1);
+                    fresh.setFinalizeError(e.getMessage() != null
+                            ? (e.getMessage().length() > 500 ? e.getMessage().substring(0, 500) : e.getMessage())
+                            : e.getClass().getSimpleName());
+                    docRepo.save(fresh);
+                }
+            } catch (Exception ignore) { /* best-effort */ }
+            return false;
         }
     }
 

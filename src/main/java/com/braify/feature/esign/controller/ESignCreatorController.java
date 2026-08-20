@@ -183,6 +183,23 @@ public class ESignCreatorController {
         return ResponseEntity.ok(doc);
     }
 
+    @Operation(summary = "Finalize a signed document",
+               description = "Re-runs finalization (signed-PDF generation + completion emails) for a document that is " +
+                             "fully SIGNED but never reached COMPLETED — e.g. the automatic finalize failed on a transient " +
+                             "storage error. Safe to call repeatedly; a no-op once COMPLETED.")
+    @ApiResponse(responseCode = "200", description = "Finalization attempted — returns the (hopefully COMPLETED) document")
+    @PostMapping("/{id}/finalize")
+    public ResponseEntity<DocumentResponse> finalize(
+            @Parameter(description = "Document ID") @PathVariable String id,
+            @AuthenticationPrincipal UserDetailsImpl principal,
+            HttpServletRequest http) {
+
+        log.info("POST /api/esign/documents/{}/finalize by '{}'", id, principal.getUsername());
+        DocumentResponse doc = documentService.finalizeDocument(
+                id, principal, extractIp(http), http.getHeader("User-Agent"));
+        return ResponseEntity.ok(doc);
+    }
+
     @Operation(summary = "Resend signing invitation",
                description = "Invalidates the previous signing token, issues a new one, and re-sends the invitation email. Resets the expiry window.")
     @ApiResponse(responseCode = "200", description = "Invitation resent")

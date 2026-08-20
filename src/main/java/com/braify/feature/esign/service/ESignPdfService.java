@@ -52,6 +52,16 @@ public class ESignPdfService {
                                   String creatorName,
                                   String creatorEmail) throws IOException {
         try (PDDocument pdf = PDDocument.load(new ByteArrayInputStream(sourcePdf))) {
+            // Some uploaded PDFs (e.g. bank / institution forms) carry a permissions / owner-password
+            // encryption dictionary. They open fine (empty user password) and render in the browser,
+            // but PDFBox refuses to SAVE a modified copy while an encryption dictionary is present
+            // ("PDF contains an encryption dictionary…"). Strip the encryption so the stamped signed
+            // copy can be written. The signed output gets its own SHA-256 + tamper-evident audit trail.
+            if (pdf.isEncrypted()) {
+                pdf.setAllSecurityToBeRemoved(true);
+                log.info("Removed encryption dictionary from source PDF before stamping (doc {})", doc.getId());
+            }
+
             int totalPages = pdf.getNumberOfPages();
 
             // Resolve each field's signer name from the document's signatories (fallback: client name).

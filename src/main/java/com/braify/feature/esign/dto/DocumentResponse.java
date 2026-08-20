@@ -44,6 +44,9 @@ public class DocumentResponse {
     /** Whether automatic signing reminders are enabled for this document. */
     private boolean remindersEnabled;
 
+    /** Last finalization error (SIGNED → COMPLETED) if it failed; null when fine. Drives the "Finalize now" retry UI. */
+    private String finalizeError;
+
     private List<FieldResponse> fields;
 
     /** Who was emailed the final signed document (populated once completed). */
@@ -181,6 +184,7 @@ public class DocumentResponse {
                 .tokenExpiresAt(doc.getTokenExpiresAt())
                 .createdAt(doc.getCreatedAt())
                 .remindersEnabled(doc.isRemindersEnabled())
+                .finalizeError(doc.getFinalizeError())
                 .fields(fields.stream().map(f -> FieldResponse.from(f, nameFor.apply(f))).toList())
                 .completionNotifications(doc.getCompletionNotifications() == null ? List.of()
                         : doc.getCompletionNotifications().stream()
