@@ -1,16 +1,22 @@
 package com.braify.feature.bulkemail.service;
 
 import com.braify.config.infra.email.EmailDispatcher;
+import com.braify.feature.bulkemail.migration.BulkEmailRowMigrationService;
+import com.braify.feature.bulkemail.model.BulkEmailDetailRow;
 import com.braify.feature.bulkemail.model.BulkEmailJob;
+import com.braify.feature.bulkemail.model.BulkEmailJob.BulkEmailAuditEvent.EventType;
+import com.braify.feature.bulkemail.model.BulkEmailJob.JobStatus;
+import com.braify.feature.bulkemail.model.BulkEmailRecipient;
 import com.braify.feature.bulkemail.repository.BulkEmailJobRepository;
+import com.braify.feature.emaillog.model.EmailLog;
+import com.braify.feature.emaillog.service.EmailLogService;
 import com.braify.feature.pdf.model.Template;
 import com.braify.feature.pdf.repository.TemplateRepository;
 import com.braify.feature.pdf.service.PdfGenerationService;
+import com.braify.feature.placeholder.service.GlobalPlaceholderService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.mongodb.core.MongoTemplate;
-import org.springframework.data.mongodb.core.query.Criteria;
-import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.http.*;
 import org.springframework.scheduling.annotation.Async;
@@ -18,33 +24,30 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Separate Spring bean that owns the {@code @Async} bulk-email processing method.
+ * Sends a bulk-email campaign. Owns the {@code @Async} entry point (a separate bean from
+ * {@link BulkEmailService} so the async proxy is honoured).
  *
- * <p>Spring's {@code @Async} proxy only intercepts calls that cross a bean boundary.
- * Calling {@code this.processJobAsync()} inside {@link BulkEmailService} would bypass
- * the proxy and run synchronously, blocking the HTTP response thread until every email
- * is sent.  By moving the method here, {@code BulkEmailService} calls it through the
- * proxy and the method executes on Spring's async executor thread pool.
- *
- * <h3>Performance design</h3>
+ * <h3>Design (memory stays flat at any campaign size)</h3>
  * <ul>
- *   <li>{@code CONCURRENCY} emails are sent in parallel via a dedicated thread pool.</li>
- *   <li>No per-row {@code Thread.sleep} — the thread pool acts as the natural throttle.</li>
- *   <li>DB progress is flushed in two tiers:
- *       <ol>
- *         <li>Every {@code COUNTER_FLUSH_EVERY} rows a lightweight MongoDB {@code $set}
- *             updates only the three counter fields (no row-array serialisation).</li>
- *         <li>Every {@code ROWS_FLUSH_EVERY} rows a full document save persists the
- *             per-row status changes so the Recipients tab reflects live progress.</li>
- *       </ol>
- *   </li>
+ *   <li>Recipients are read from {@code bulk_email_recipients} in keyset pages of
+ *       {@code bulkemail.batch-size}; the campaign is never loaded into memory as a whole.</li>
+ *   <li>Each page is sent by a bounded pool of {@code bulkemail.concurrency} workers, paced by
+ *       the shared {@link EmailRateLimiter}.</li>
+ *   <li>Each result is persisted with a small targeted update on that recipient; the job's
+ *       counters are re-derived from the recipients ({@link BulkEmailJobStore#refreshCounters}),
+ *       so there is no full-document rewrite and nothing to drift.</li>
+ *   <li>Cancellation is honoured between pages and between rows.</li>
  * </ul>
  */
 @Slf4j
@@ -52,380 +55,329 @@ import java.util.concurrent.atomic.AtomicInteger;
 @RequiredArgsConstructor
 public class BulkEmailProcessor {
 
-    // ── Tuning knobs ──────────────────────────────────────────────────────────
-    /** Number of emails sent concurrently. Adjust to match your email provider's rate limit. */
-    private static final int CONCURRENCY        = 10;
-
-    /**
-     * Lightweight counter-only MongoDB {@code $set} every N rows processed.
-     * Updates {@code sentCount / failedCount / pendingCount} without serialising
-     * the entire rows array — very cheap on Atlas.
-     */
-    private static final int COUNTER_FLUSH_EVERY = 5;
-
-    /**
-     * Full document save (including per-row statuses) every N rows processed.
-     * More expensive — choose a value that balances live-status granularity vs DB load.
-     */
-    private static final int ROWS_FLUSH_EVERY    = 50;
+    /** Re-derive counters / re-check cancellation every N recipients. */
+    private static final int  PROGRESS_EVERY  = 25;
+    /** Extra passes for recipients still PENDING after a pass (e.g. a transient DB write failure). */
+    private static final int  MAX_PASSES      = 3;
+    private static final long BASE_BACKOFF_MS = 500;
 
     // ── Dependencies ──────────────────────────────────────────────────────────
-    private final BulkEmailJobRepository jobRepo;
-    private final TemplateRepository     pdfTemplateRepo;
-    private final EmailDispatcher        emailDispatcher;
-    private final com.braify.feature.emaillog.service.EmailLogService emailLogService;
-    private final EmailTrackingService   emailTrackingService;
-    private final EmailRateLimiter       rateLimiter;
-    private final PdfGenerationService   pdfGenerationService;
-    private final MongoTemplate          mongoTemplate;
-    private final com.braify.feature.placeholder.service.GlobalPlaceholderService globalPlaceholderService;
+    private final BulkEmailJobRepository       jobRepo;
+    private final BulkEmailJobStore            jobStore;
+    private final BulkEmailRecipientStore      recipientStore;
+    private final BulkEmailRowMigrationService migrationService;
+    private final TemplateRepository           pdfTemplateRepo;
+    private final EmailDispatcher              emailDispatcher;
+    private final EmailLogService              emailLogService;
+    private final EmailTrackingService         emailTrackingService;
+    private final EmailRateLimiter             rateLimiter;
+    private final PdfGenerationService         pdfGenerationService;
+    private final GlobalPlaceholderService     globalPlaceholderService;
 
-    /** Max send attempts per recipient before giving up (transient failures only). */
-    @org.springframework.beans.factory.annotation.Value("${bulkemail.max-send-attempts:3}")
+    /** Parallel workers per campaign. Keep low on small instances (e.g. 2–3 on a t3.micro). */
+    @Value("${bulkemail.concurrency:3}")
+    private int concurrency;
+
+    /** Recipients fetched per page. */
+    @Value("${bulkemail.batch-size:100}")
+    private int batchSize;
+
+    /** Max send attempts per recipient (transient failures only). */
+    @Value("${bulkemail.max-send-attempts:3}")
     private int maxSendAttempts;
-
-    /** Base backoff between retries; grows exponentially with jitter. */
-    private static final long BASE_BACKOFF_MS = 500;
 
     /** Shared RestTemplate — thread-safe; reused across all jobs. */
     private final RestTemplate restTemplate = new RestTemplate();
+
+    /** Campaigns being sent in this JVM — a second start of the same job is ignored. */
+    private final Set<String> running = ConcurrentHashMap.newKeySet();
 
     // ── Entry point ───────────────────────────────────────────────────────────
 
     @Async
     public void processJobAsync(String jobId) {
-        BulkEmailJob job = jobRepo.findById(jobId).orElse(null);
-        if (job == null) {
-            log.error("BulkEmailJob {} not found for async processing", jobId);
+        if (!running.add(jobId)) {
+            log.info("BulkEmailJob '{}' is already being processed — ignoring duplicate start", jobId);
             return;
         }
+        try {
+            process(jobId);
+        } catch (Exception e) {
+            log.error("BulkEmailJob '{}' processing aborted: {}", jobId, e.getMessage(), e);
+        } finally {
+            running.remove(jobId);
+        }
+    }
 
-        job.setStatus(BulkEmailJob.JobStatus.PROCESSING);
-        job.setStartedAt(LocalDateTime.now());
-        addAuditEvent(job, BulkEmailJob.BulkEmailAuditEvent.EventType.PROCESSING_STARTED,
-                "Email dispatch started");
-        jobRepo.save(job);
+    private void process(String jobId) throws InterruptedException {
+        migrationService.ensureMigrated(jobId);   // legacy jobs: move embedded rows out first
 
-        // Pre-load PDF template once (shared read-only across worker threads)
+        // Claim the job. CANCELLED / finished jobs are never (re)started here.
+        if (!jobStore.transition(jobId, List.of(JobStatus.PENDING, JobStatus.PROCESSING), JobStatus.PROCESSING, null)) {
+            log.info("BulkEmailJob '{}' not runnable (status={}) — skipping", jobId, jobStore.status(jobId));
+            return;
+        }
+        BulkEmailJob job = jobRepo.findById(jobId).orElse(null);
+        if (job == null) return;
+        if (job.getStartedAt() == null) {
+            jobStore.transition(jobId, List.of(JobStatus.PROCESSING), JobStatus.PROCESSING,
+                    new Update().set("startedAt", LocalDateTime.now()));
+        }
+        jobStore.pushAudit(jobId, EventType.PROCESSING_STARTED, "Email dispatch started");
+
+        // Pre-load the PDF template once (shared read-only across workers).
         Template pdfTemplate = null;
         if (job.getAttachmentType() == BulkEmailJob.AttachmentType.PDF_TEMPLATE) {
             pdfTemplate = pdfTemplateRepo.findById(job.getPdfTemplateId()).orElse(null);
             if (pdfTemplate == null) {
                 log.error("PDF template {} not found — failing job {}", job.getPdfTemplateId(), jobId);
-                markAllFailed(job, "PDF template not found");
+                recipientStore.failAllPending(jobId, "PDF template not found");
+                finish(jobId, false);
                 return;
             }
         }
 
-        // Seed counters from any rows already processed (retry-pending / resend path)
-        int initialSent   = (int) job.getRows().stream()
-                .filter(r -> r.getStatus() == BulkEmailJob.BulkEmailRow.RowStatus.SENT).count();
-        int initialFailed = (int) job.getRows().stream()
-                .filter(r -> r.getStatus() == BulkEmailJob.BulkEmailRow.RowStatus.FAILED).count();
-
-        List<BulkEmailJob.BulkEmailRow> pendingRows = job.getRows().stream()
-                .filter(r -> r.getStatus() == BulkEmailJob.BulkEmailRow.RowStatus.PENDING)
-                .toList();
-
-        if (pendingRows.isEmpty()) {
-            log.info("BulkEmailJob '{}' has no pending rows — nothing to do", jobId);
-            finalizeJob(job, initialSent, initialFailed);
-            return;
-        }
-
-        log.info("BulkEmailJob '{}' starting: {} pending rows, {} workers",
-                jobId, pendingRows.size(), Math.min(CONCURRENCY, pendingRows.size()));
-
-        // ── Parallel dispatch ─────────────────────────────────────────────────
-        AtomicInteger sentCount    = new AtomicInteger(initialSent);
-        AtomicInteger failedCount  = new AtomicInteger(initialFailed);
-        AtomicInteger doneCount    = new AtomicInteger(0);
-
-        final Template finalPdfTemplate = pdfTemplate;
-        // Resolve the org's global placeholders once — shared read-only across workers.
-        final Map<String, Object> jobGlobals = globalPlaceholderService.resolveForOrg(job.getOrgId());
-        ExecutorService pool = Executors.newFixedThreadPool(
-                Math.min(CONCURRENCY, pendingRows.size()));
-
-        List<CompletableFuture<Void>> futures = pendingRows.stream()
-                .map(row -> CompletableFuture.runAsync(
-                        () -> processRow(job, row, finalPdfTemplate, jobGlobals,
-                                sentCount, failedCount, doneCount),
-                        pool))
-                .toList();
+        final Template            finalPdfTemplate = pdfTemplate;
+        final Map<String, Object> jobGlobals       = globalPlaceholderService.resolveForOrg(job.getOrgId());
+        final AtomicBoolean       cancelled        = new AtomicBoolean(false);
+        final AtomicInteger       done             = new AtomicInteger();
+        int workers = Math.max(1, concurrency);
+        ExecutorService pool = Executors.newFixedThreadPool(workers);
+        log.info("BulkEmailJob '{}' started: {} worker(s), batch {}", jobId, workers, batchSize);
 
         try {
-            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-        } catch (Exception e) {
-            log.error("Unexpected error waiting for job {} workers: {}", jobId, e.getMessage(), e);
+            for (int pass = 1; pass <= MAX_PASSES && !cancelled.get(); pass++) {
+                int cursor = -1;
+                boolean foundAny = false;
+                while (!cancelled.get()) {
+                    if (jobStore.status(jobId) == JobStatus.CANCELLED) { cancelled.set(true); break; }
+
+                    List<BulkEmailRecipient> page = recipientStore.nextPending(jobId, cursor, batchSize);
+                    if (page.isEmpty()) break;
+                    foundAny = true;
+                    cursor = page.get(page.size() - 1).getSeq();
+
+                    List<Future<?>> futures = new ArrayList<>(page.size());
+                    for (BulkEmailRecipient r : page) {
+                        futures.add(pool.submit(() ->
+                                sendOne(job, r, finalPdfTemplate, jobGlobals, cancelled, done)));
+                    }
+                    for (Future<?> f : futures) {
+                        try {
+                            f.get();
+                        } catch (ExecutionException e) {
+                            log.warn("Worker error in job {}: {}", jobId, e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
+                        }
+                    }
+                    jobStore.refreshCounters(jobId);
+                }
+                if (!foundAny) break;   // nothing pending — done
+            }
+        } catch (InterruptedException ie) {
+            // Shutting down: leave the job PROCESSING so it resumes on the next start.
+            Thread.currentThread().interrupt();
+            log.warn("BulkEmailJob '{}' interrupted — will resume on next start", jobId);
+            throw ie;
         } finally {
             pool.shutdownNow();
         }
 
-        finalizeJob(job, sentCount.get(), failedCount.get());
-        log.info("BulkEmailJob '{}' done: sent={} failed={} status={}",
-                jobId, sentCount.get(), failedCount.get(), job.getStatus());
+        finish(jobId, cancelled.get());
     }
 
-    // ── Per-row worker (runs on the thread-pool) ──────────────────────────────
+    /** Records the final status from the recipients' actual outcomes. */
+    private void finish(String jobId, boolean cancelled) {
+        BulkEmailJobStore.Counts c = jobStore.refreshCounters(jobId);
+        if (cancelled) {
+            log.info("BulkEmailJob '{}' stopped by cancellation: sent={} failed={} pending={}",
+                    jobId, c.sent(), c.failed(), c.pending());
+            return;   // status is already CANCELLED; pending recipients remain resumable
+        }
+        if (c.pending() > 0) {
+            // Still pending after every pass — fail them visibly so "Resend failed" can retry them.
+            recipientStore.failAllPending(jobId, "Not processed — use Resend failed to retry");
+            c = jobStore.refreshCounters(jobId);
+        }
 
-    private void processRow(BulkEmailJob job,
-                            BulkEmailJob.BulkEmailRow row,
-                            Template pdfTemplate,
-                            Map<String, Object> jobGlobals,
-                            AtomicInteger sentCount,
-                            AtomicInteger failedCount,
-                            AtomicInteger doneCount) {
+        JobStatus finalStatus;
+        EventType event;
+        String    description;
+        if (c.failed() == 0) {
+            finalStatus = JobStatus.COMPLETED; event = EventType.JOB_COMPLETED;
+            description = "All " + c.sent() + " email(s) delivered successfully";
+        } else if (c.sent() == 0) {
+            finalStatus = JobStatus.FAILED; event = EventType.JOB_FAILED;
+            description = "All " + c.failed() + " recipient(s) failed to send";
+        } else {
+            finalStatus = JobStatus.PARTIAL; event = EventType.JOB_PARTIAL;
+            description = c.sent() + " sent, " + c.failed() + " failed out of " + c.total();
+        }
+        // Conditional: a cancel that raced the last page must not be overwritten.
+        if (jobStore.transition(jobId, List.of(JobStatus.PROCESSING), finalStatus,
+                new Update().set("completedAt", LocalDateTime.now()))) {
+            jobStore.pushAudit(jobId, event, description);
+        }
+        log.info("BulkEmailJob '{}' done: sent={} failed={} status={}", jobId, c.sent(), c.failed(), finalStatus);
+    }
 
-        if (Thread.currentThread().isInterrupted()) return;
+    // ── One recipient (runs on a pool worker) ─────────────────────────────────
 
-        // Hoisted so the email-log block after the try/catch can record CC recipients too.
+    private void sendOne(BulkEmailJob job,
+                         BulkEmailRecipient r,
+                         Template pdfTemplate,
+                         Map<String, Object> jobGlobals,
+                         AtomicBoolean cancelled,
+                         AtomicInteger done) {
+
+        // Leave the recipient PENDING if the campaign was cancelled — "Retry pending" resumes it.
+        if (cancelled.get() || Thread.currentThread().isInterrupted()) return;
+
+        Map<String, String> data = r.getData() != null ? r.getData() : Map.of();
         List<String> ccRecipients = null;
+        String messageId = null;
+        String error     = null;
 
         try {
-            // 1. Build email placeholder map — seed with org globals, then let
-            //    per-row column values / recipient fields override them.
+            // 1. Placeholders — org globals first, then per-row column values / recipient fields.
             Map<String, Object> emailPlaceholders = new HashMap<>(jobGlobals);
             if (job.getColumnMapping() != null) {
                 job.getColumnMapping().forEach((placeholder, xlsxCol) ->
-                        emailPlaceholders.put(placeholder, row.getData().getOrDefault(xlsxCol, "")));
+                        emailPlaceholders.put(placeholder, data.getOrDefault(xlsxCol, "")));
             }
-            emailPlaceholders.put("email", row.getRecipientEmail());
-            if (row.getRecipientName() != null && !row.getRecipientName().isBlank())
-                emailPlaceholders.put("name", row.getRecipientName());
+            emailPlaceholders.put("email", r.getRecipientEmail());
+            if (r.getRecipientName() != null && !r.getRecipientName().isBlank())
+                emailPlaceholders.put("name", r.getRecipientName());
 
-            // 2. Resolve subject
-            String subject = substituteVars(job.getEmailTemplateSubject(), row.getData());
+            // 2. Subject
+            String subject = substituteVars(job.getEmailTemplateSubject(), data);
 
-            // 3. Build attachments — primary type + optional secondary Excel sheet
-            //    Stored as an ordered map so filename → bytes pairs are sent in order.
-            Map<String, byte[]> attachments = new java.util.LinkedHashMap<>();
-
+            // 3. Attachments — primary type + optional secondary Excel sheet, in order.
+            Map<String, byte[]> attachments = new LinkedHashMap<>();
             switch (job.getAttachmentType()) {
                 case UPLOAD -> {
-                    String name = job.getUploadedPdfName() != null
-                            ? job.getUploadedPdfName() : "attachment.pdf";
-                    if (job.getUploadedPdfData() != null)
-                        attachments.put(name, job.getUploadedPdfData());
+                    String name = job.getUploadedPdfName() != null ? job.getUploadedPdfName() : "attachment.pdf";
+                    if (job.getUploadedPdfData() != null) attachments.put(name, job.getUploadedPdfData());
                 }
                 case PDF_TEMPLATE -> {
                     Map<String, Object> pdfData = new HashMap<>();
                     if (job.getPdfColumnMapping() != null) {
                         job.getPdfColumnMapping().forEach((pdfVar, xlsxCol) ->
-                                pdfData.put(pdfVar, row.getData().getOrDefault(xlsxCol, "")));
+                                pdfData.put(pdfVar, data.getOrDefault(xlsxCol, "")));
                     } else {
-                        pdfData.putAll(row.getData());
+                        pdfData.putAll(data);
                     }
                     String pdfName = sanitize(job.getPdfTemplateName() != null
                             ? job.getPdfTemplateName() : "document") + ".pdf";
                     attachments.put(pdfName, pdfGenerationService.generate(pdfTemplate, pdfData));
                 }
-                case EXTERNAL_API -> {
-                    attachments.put("attachment.pdf", fetchExternalPdf(job, row));
-                }
-                case EXCEL_SHEET -> {
-                    String idValue = row.getData().getOrDefault(job.getMainSheetIdColumn(), "");
-                    String tpl     = (job.getDetailSheetFileName() != null
-                            && !job.getDetailSheetFileName().isBlank())
-                            ? job.getDetailSheetFileName()
-                            : "details_{{" + job.getMainSheetIdColumn() + "}}.xlsx";
-                    attachments.put(substituteVars(tpl, row.getData()), generateDetailExcel(job, idValue));
-                }
+                case EXTERNAL_API -> attachments.put("attachment.pdf", fetchExternalPdf(job, data));
+                case EXCEL_SHEET -> attachments.put(detailFileName(job, data), generateDetailExcel(job, data));
                 default -> { /* NONE — no primary attachment */ }
             }
-
-            // Secondary: also attach Excel from Sheet 2 when requested and Sheet 2 data is present.
-            // Skipped when the primary type is already EXCEL_SHEET (avoid duplicate attachment).
             if (job.isIncludeExcelSheet()
                     && job.getAttachmentType() != BulkEmailJob.AttachmentType.EXCEL_SHEET
                     && job.getDetailSheetIdColumn() != null && job.getMainSheetIdColumn() != null) {
-                String idValue  = row.getData().getOrDefault(job.getMainSheetIdColumn(), "");
-                String tpl      = (job.getDetailSheetFileName() != null
-                        && !job.getDetailSheetFileName().isBlank())
-                        ? job.getDetailSheetFileName()
-                        : "details_{{" + job.getMainSheetIdColumn() + "}}.xlsx";
-                attachments.put(substituteVars(tpl, row.getData()), generateDetailExcel(job, idValue));
+                attachments.put(detailFileName(job, data), generateDetailExcel(job, data));
             }
 
-            // 4. Resolve CC recipients from configured columns
+            // 4. CC recipients from configured columns
             if (job.getCcColumns() != null && !job.getCcColumns().isEmpty()) {
                 ccRecipients = job.getCcColumns().stream()
-                        .map(col -> row.getData().getOrDefault(col, "").trim())
+                        .map(col -> data.getOrDefault(col, "").trim())
                         .filter(addr -> !addr.isBlank() && addr.contains("@"))
                         .distinct()
                         .toList();
                 if (ccRecipients.isEmpty()) ccRecipients = null;
             }
-            final List<String> ccEmails = ccRecipients;
 
-            // 5. Send — inject open pixel / rewrite links / append unsubscribe for this
-            //    recipient's opaque token. Runs on the FINAL html (post-placeholder), so
-            //    links that contained {{placeholders}} are signed with their real URLs.
+            // 5. Send — open pixel / tracked links / unsubscribe injected on the final HTML.
             String senderName = (job.getOrgName() != null && !job.getOrgName().isBlank())
                     ? job.getOrgName() : job.getEmailTemplateName();
-
-            final String trackingId = row.getTrackingId();
+            String trackingId = r.getTrackingId();
             java.util.function.UnaryOperator<String> tracking =
                     (trackingId != null && !trackingId.isBlank())
                             ? html -> emailTrackingService.applyTracking(html, trackingId)
                             : null;
 
-            final List<String> ccFinal = ccEmails;
-            final String subjectFinal = subject;
-            final Map<String, byte[]> attachmentsFinal = attachments;
-            java.util.concurrent.Callable<com.resend.services.emails.model.CreateEmailResponse> sendOnce =
-                    () -> attachmentsFinal.isEmpty()
+            final List<String> ccFinal = ccRecipients;
+            Callable<com.resend.services.emails.model.CreateEmailResponse> sendOnce =
+                    () -> attachments.isEmpty()
                         ? emailDispatcher.sendHtmlEmail(
-                                row.getRecipientEmail(), ccFinal, subjectFinal,
+                                r.getRecipientEmail(), ccFinal, subject,
                                 job.getEmailTemplateHtml(), emailPlaceholders, senderName, tracking)
                         : emailDispatcher.sendHtmlEmailWithAttachments(
-                                row.getRecipientEmail(), ccFinal, subjectFinal,
+                                r.getRecipientEmail(), ccFinal, subject,
                                 job.getEmailTemplateHtml(), emailPlaceholders,
-                                attachmentsFinal, senderName, tracking);
+                                attachments, senderName, tracking);
 
-            var response = sendWithRetry(sendOnce, row, job.getId());
-
-            row.setStatus(BulkEmailJob.BulkEmailRow.RowStatus.SENT);
-            row.setSentAt(LocalDateTime.now());
-            row.setMessageId(response != null ? response.getId() : null);
-            sentCount.incrementAndGet();
+            var response = sendWithRetry(sendOnce, r, job.getId());
+            messageId = response != null ? response.getId() : null;
+            recipientStore.markSent(r.getId(), messageId);
 
         } catch (Exception ex) {
-            log.warn("Row {} failed in job {}: {}", row.getRowIndex(), job.getId(), ex.getMessage());
-            row.setStatus(BulkEmailJob.BulkEmailRow.RowStatus.FAILED);
-            row.setError(truncate(ex.getMessage(), 200));
-            failedCount.incrementAndGet();
+            log.warn("Recipient {} failed in job {}: {}", r.getSeq(), job.getId(), ex.getMessage());
+            error = truncate(ex.getMessage(), 200);
+            try {
+                recipientStore.markFailed(r.getId(), error);
+            } catch (Exception dbEx) {
+                // Left PENDING — the next pass retries it.
+                log.warn("Could not record failure for recipient {} in job {}: {}", r.getSeq(), job.getId(), dbEx.getMessage());
+                return;
+            }
         }
 
-        // ── Email audit log: the primary To recipient, plus one entry per CC recipient ─────
-        com.braify.feature.emaillog.model.EmailLog.Status logStatus =
-                row.getStatus() == BulkEmailJob.BulkEmailRow.RowStatus.SENT
-                        ? com.braify.feature.emaillog.model.EmailLog.Status.SENT
-                        : com.braify.feature.emaillog.model.EmailLog.Status.FAILED;
+        recordEmailLog(job, r, ccRecipients, messageId, error);
 
-        emailLogService.record(com.braify.feature.emaillog.model.EmailLog.builder()
+        // Progress + cancellation check every N recipients.
+        if (done.incrementAndGet() % PROGRESS_EVERY == 0) {
+            try {
+                jobStore.refreshCounters(job.getId());
+                if (jobStore.status(job.getId()) == JobStatus.CANCELLED) cancelled.set(true);
+            } catch (Exception e) {
+                log.debug("Progress refresh failed for job {}: {}", job.getId(), e.getMessage());
+            }
+        }
+    }
+
+    /** Email audit log: the To recipient plus one entry per CC recipient. */
+    private void recordEmailLog(BulkEmailJob job, BulkEmailRecipient r, List<String> cc,
+                                String messageId, String error) {
+        EmailLog.Status status = error == null ? EmailLog.Status.SENT : EmailLog.Status.FAILED;
+        emailLogService.record(EmailLog.builder()
                 .orgId(job.getOrgId())
-                .category(com.braify.feature.emaillog.model.EmailLog.Category.BULK_EMAIL)
-                .status(logStatus)
-                .recipient(row.getRecipientEmail())
-                .ccEmails(ccRecipients)
+                .category(EmailLog.Category.BULK_EMAIL)
+                .status(status)
+                .recipient(r.getRecipientEmail())
+                .ccEmails(cc)
                 .subject(job.getEmailTemplateSubject())
                 .senderName(job.getOrgName())
-                .providerMessageId(row.getMessageId())
-                .errorMessage(row.getError())
-                .relatedType(com.braify.feature.emaillog.model.EmailLog.RelatedType.BULK_EMAIL_JOB)
+                .providerMessageId(messageId)
+                .errorMessage(error)
+                .relatedType(EmailLog.RelatedType.BULK_EMAIL_JOB)
                 .relatedId(job.getId())
                 .createdBy(job.getCreatedBy())
                 .build());
-
-        // Each CC recipient gets its own trackable entry (same send, so same status/message id).
-        if (ccRecipients != null) {
-            for (String ccAddr : ccRecipients) {
-                emailLogService.record(com.braify.feature.emaillog.model.EmailLog.builder()
+        if (cc != null) {
+            for (String ccAddr : cc) {
+                emailLogService.record(EmailLog.builder()
                         .orgId(job.getOrgId())
-                        .category(com.braify.feature.emaillog.model.EmailLog.Category.BULK_EMAIL)
-                        .status(logStatus)
+                        .category(EmailLog.Category.BULK_EMAIL)
+                        .status(status)
                         .recipient(ccAddr)
                         .cc(true)
                         .subject(job.getEmailTemplateSubject())
                         .senderName(job.getOrgName())
-                        .providerMessageId(row.getMessageId())
-                        .errorMessage(row.getError())
-                        .relatedType(com.braify.feature.emaillog.model.EmailLog.RelatedType.BULK_EMAIL_JOB)
+                        .providerMessageId(messageId)
+                        .errorMessage(error)
+                        .relatedType(EmailLog.RelatedType.BULK_EMAIL_JOB)
                         .relatedId(job.getId())
                         .createdBy(job.getCreatedBy())
                         .build());
             }
         }
-
-        // ── Tiered progress persistence ───────────────────────────────────────
-        int done   = doneCount.incrementAndGet();
-        int sent   = sentCount.get();
-        int failed = failedCount.get();
-        int pending = job.getTotalCount() - sent - failed;
-
-        if (done % ROWS_FLUSH_EVERY == 0) {
-            // Tier 2: full save — persists per-row statuses for the Recipients tab
-            synchronized (job) {
-                job.setSentCount(sent);
-                job.setFailedCount(failed);
-                job.setPendingCount(Math.max(0, pending));
-                jobRepo.save(job);
-            }
-        } else if (done % COUNTER_FLUSH_EVERY == 0) {
-            // Tier 1: lightweight $set — only touches 3 counter fields, no row-array I/O
-            flushCounters(job.getId(), sent, failed, Math.max(0, pending));
-        }
     }
 
-    // ── Finalize job after all workers complete ───────────────────────────────
-
-    private void finalizeJob(BulkEmailJob job, int sent, int failed) {
-        job.setSentCount(sent);
-        job.setFailedCount(failed);
-        job.setPendingCount(0);
-        job.setCompletedAt(LocalDateTime.now());
-
-        if (failed == 0) {
-            job.setStatus(BulkEmailJob.JobStatus.COMPLETED);
-            addAuditEvent(job, BulkEmailJob.BulkEmailAuditEvent.EventType.JOB_COMPLETED,
-                    "All " + sent + " email(s) delivered successfully");
-        } else if (sent == 0) {
-            job.setStatus(BulkEmailJob.JobStatus.FAILED);
-            addAuditEvent(job, BulkEmailJob.BulkEmailAuditEvent.EventType.JOB_FAILED,
-                    "All " + failed + " recipient(s) failed to send");
-        } else {
-            job.setStatus(BulkEmailJob.JobStatus.PARTIAL);
-            addAuditEvent(job, BulkEmailJob.BulkEmailAuditEvent.EventType.JOB_PARTIAL,
-                    sent + " sent, " + failed + " failed out of " + job.getTotalCount());
-        }
-        jobRepo.save(job);
-    }
-
-    // ── MongoDB $set — counters only, no row-array serialisation ─────────────
-
-    private void flushCounters(String jobId, int sent, int failed, int pending) {
-        try {
-            mongoTemplate.updateFirst(
-                    Query.query(Criteria.where("_id").is(jobId)),
-                    new Update()
-                            .set("sentCount",    sent)
-                            .set("failedCount",  failed)
-                            .set("pendingCount", pending),
-                    BulkEmailJob.class);
-        } catch (Exception e) {
-            log.warn("Counter flush failed for job {}: {}", jobId, e.getMessage());
-        }
-    }
-
-    // ── Private helpers ───────────────────────────────────────────────────────
-
-    private void markAllFailed(BulkEmailJob job, String error) {
-        job.getRows().stream()
-                .filter(r -> r.getStatus() == BulkEmailJob.BulkEmailRow.RowStatus.PENDING)
-                .forEach(r -> {
-                    r.setStatus(BulkEmailJob.BulkEmailRow.RowStatus.FAILED);
-                    r.setError(error);
-                });
-        job.setFailedCount((int) job.getRows().stream()
-                .filter(r -> r.getStatus() == BulkEmailJob.BulkEmailRow.RowStatus.FAILED).count());
-        job.setPendingCount(0);
-        job.setStatus(BulkEmailJob.JobStatus.FAILED);
-        job.setCompletedAt(LocalDateTime.now());
-        addAuditEvent(job, BulkEmailJob.BulkEmailAuditEvent.EventType.JOB_FAILED, "Job failed: " + error);
-        jobRepo.save(job);
-    }
-
-    private void addAuditEvent(BulkEmailJob job,
-                               BulkEmailJob.BulkEmailAuditEvent.EventType type,
-                               String description) {
-        if (job.getAuditEvents() == null) job.setAuditEvents(new java.util.ArrayList<>());
-        job.getAuditEvents().add(BulkEmailJob.BulkEmailAuditEvent.builder()
-                .type(type)
-                .description(description)
-                .timestamp(LocalDateTime.now())
-                .build());
-    }
+    // ── Sending with retry ────────────────────────────────────────────────────
 
     /**
      * Sends one email, respecting the shared rate limit, and retries transient failures
@@ -433,8 +385,8 @@ public class BulkEmailProcessor {
      * Permanent failures (e.g. a rejected address) fail fast without retry.
      */
     private com.resend.services.emails.model.CreateEmailResponse sendWithRetry(
-            java.util.concurrent.Callable<com.resend.services.emails.model.CreateEmailResponse> send,
-            BulkEmailJob.BulkEmailRow row, String jobId) throws Exception {
+            Callable<com.resend.services.emails.model.CreateEmailResponse> send,
+            BulkEmailRecipient r, String jobId) throws Exception {
 
         int attempts = Math.max(1, maxSendAttempts);
         Exception last = null;
@@ -446,9 +398,9 @@ public class BulkEmailProcessor {
                 last = e;
                 if (attempt >= attempts || !isTransient(e)) throw e;
                 long backoff = (long) (BASE_BACKOFF_MS * Math.pow(2, attempt - 1))
-                        + java.util.concurrent.ThreadLocalRandom.current().nextLong(250);
-                log.warn("Transient send failure row {} job {} (attempt {}/{}): {} — retrying in {}ms",
-                        row.getRowIndex(), jobId, attempt, attempts, e.getMessage(), backoff);
+                        + ThreadLocalRandom.current().nextLong(250);
+                log.warn("Transient send failure recipient {} job {} (attempt {}/{}): {} — retrying in {}ms",
+                        r.getSeq(), jobId, attempt, attempts, e.getMessage(), backoff);
                 Thread.sleep(backoff);
             }
         }
@@ -473,19 +425,11 @@ public class BulkEmailProcessor {
         return false;
     }
 
-    private String substituteVars(String template, Map<String, String> data) {
-        if (template == null) return "";
-        String result = template;
-        for (Map.Entry<String, String> e : data.entrySet()) {
-            result = result.replace("{{" + e.getKey() + "}}", e.getValue() != null ? e.getValue() : "");
-        }
-        return result;
-    }
+    // ── Attachments ───────────────────────────────────────────────────────────
 
-    private byte[] fetchExternalPdf(BulkEmailJob job, BulkEmailJob.BulkEmailRow row) {
-        String url    = substituteVars(job.getExternalApiUrl(), row.getData());
-        String method = job.getExternalApiMethod() != null
-                ? job.getExternalApiMethod().toUpperCase() : "GET";
+    private byte[] fetchExternalPdf(BulkEmailJob job, Map<String, String> data) {
+        String url    = substituteVars(job.getExternalApiUrl(), data);
+        String method = job.getExternalApiMethod() != null ? job.getExternalApiMethod().toUpperCase() : "GET";
 
         HttpHeaders headers = new HttpHeaders();
         headers.setAccept(List.of(MediaType.APPLICATION_PDF, MediaType.APPLICATION_OCTET_STREAM));
@@ -503,8 +447,7 @@ public class BulkEmailProcessor {
 
         ResponseEntity<byte[]> resp;
         if ("POST".equals(method)) {
-            String body = substituteVars(
-                    job.getExternalApiBody() != null ? job.getExternalApiBody() : "{}", row.getData());
+            String body = substituteVars(job.getExternalApiBody() != null ? job.getExternalApiBody() : "{}", data);
             headers.setContentType(MediaType.APPLICATION_JSON);
             resp = restTemplate.exchange(url, HttpMethod.POST, new HttpEntity<>(body, headers), byte[].class);
         } else {
@@ -516,34 +459,35 @@ public class BulkEmailProcessor {
         return resp.getBody();
     }
 
-    private byte[] generateDetailExcel(BulkEmailJob job, String idValue) {
-        List<Map<String, String>> allDetailRows = job.getDetailSheetRows();
-        List<String> columns = job.getDetailSheetColumns();
+    private String detailFileName(BulkEmailJob job, Map<String, String> data) {
+        String tpl = (job.getDetailSheetFileName() != null && !job.getDetailSheetFileName().isBlank())
+                ? job.getDetailSheetFileName()
+                : "details_{{" + job.getMainSheetIdColumn() + "}}.xlsx";
+        return substituteVars(tpl, data);
+    }
 
-        List<Map<String, String>> matchingRows = (allDetailRows == null || job.getDetailSheetIdColumn() == null)
+    /** Per-recipient Excel built from the Sheet-2 rows matching this recipient (indexed lookup). */
+    private byte[] generateDetailExcel(BulkEmailJob job, Map<String, String> data) {
+        String idValue = data.getOrDefault(job.getMainSheetIdColumn(), "");
+        List<Map<String, String>> matchingRows = job.getDetailSheetIdColumn() == null
                 ? List.of()
-                : allDetailRows.stream()
-                        .filter(r -> idValue.equalsIgnoreCase(
-                                r.getOrDefault(job.getDetailSheetIdColumn(), "")))
+                : recipientStore.detailRowsFor(job.getId(), idValue).stream()
+                        .map(BulkEmailDetailRow::getData)
+                        .map(m -> m != null ? m : Map.<String, String>of())
                         .toList();
 
+        List<String> columns = job.getDetailSheetColumns();
         if ((columns == null || columns.isEmpty()) && !matchingRows.isEmpty()) {
-            columns = new java.util.ArrayList<>(matchingRows.get(0).keySet());
+            columns = new ArrayList<>(matchingRows.get(0).keySet());
         }
         if (columns == null) columns = List.of();
 
-        try (org.apache.poi.xssf.usermodel.XSSFWorkbook wb =
-                     new org.apache.poi.xssf.usermodel.XSSFWorkbook()) {
-
+        try (org.apache.poi.xssf.usermodel.XSSFWorkbook wb = new org.apache.poi.xssf.usermodel.XSSFWorkbook()) {
             org.apache.poi.ss.usermodel.Sheet sheet = wb.createSheet("Details");
-
             if (!columns.isEmpty()) {
                 org.apache.poi.ss.usermodel.Row header = sheet.createRow(0);
-                for (int i = 0; i < columns.size(); i++) {
-                    header.createCell(i).setCellValue(columns.get(i));
-                }
+                for (int i = 0; i < columns.size(); i++) header.createCell(i).setCellValue(columns.get(i));
             }
-
             for (int ri = 0; ri < matchingRows.size(); ri++) {
                 org.apache.poi.ss.usermodel.Row dataRow = sheet.createRow(ri + 1);
                 Map<String, String> rowData = matchingRows.get(ri);
@@ -551,14 +495,23 @@ public class BulkEmailProcessor {
                     dataRow.createCell(ci).setCellValue(rowData.getOrDefault(columns.get(ci), ""));
                 }
             }
-
             java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
             wb.write(baos);
             return baos.toByteArray();
-
         } catch (java.io.IOException e) {
             throw new RuntimeException("Failed to generate Excel attachment: " + e.getMessage(), e);
         }
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private String substituteVars(String template, Map<String, String> data) {
+        if (template == null) return "";
+        String result = template;
+        for (Map.Entry<String, String> e : data.entrySet()) {
+            result = result.replace("{{" + e.getKey() + "}}", e.getValue() != null ? e.getValue() : "");
+        }
+        return result;
     }
 
     private String sanitize(String name) {

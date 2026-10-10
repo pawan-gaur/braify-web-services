@@ -28,6 +28,7 @@ All timestamps are UTC `LocalDateTime`.
 | 14 | [Branding](./14-branding.md) | `/api/organizations/{orgId}/branding` | Logo, colours, email sender |
 | 15 | [Cloud Config](./15-cloud-config.md) | `/api/organizations/{orgId}/cloud-config` | AWS / Azure / GCP credentials |
 | 16 | [Sessions](./16-sessions.md) | `/api/sessions` | Active JWT sessions, revocation |
+| 17 | [Bulk Email Recipients Migration](./17-bulk-email-recipients-migration.md) | `/api/bulk-email/migration` | Recipient storage redesign, migration runbook |
 
 ---
 

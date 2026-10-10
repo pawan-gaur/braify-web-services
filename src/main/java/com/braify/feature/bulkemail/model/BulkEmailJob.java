@@ -15,17 +15,23 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Tracks a bulk-email send job — config, progress counters, and per-row results.
- * Rows are embedded for atomic access; max 5 000 rows per job.
+ * A bulk-email campaign — its configuration, progress counters and audit trail.
+ *
+ * <p>Recipients live in {@code bulk_email_recipients} ({@link BulkEmailRecipient}) and Sheet-2
+ * rows in {@code bulk_email_detail_rows} ({@link BulkEmailDetailRow}); this document stays small
+ * regardless of campaign size. Existing jobs are only ever changed through targeted
+ * {@code $set}/{@code $inc}/{@code $push} updates — never a full-document save — so concurrent
+ * writers (processor, tracking endpoints, cancel) cannot overwrite each other.
+ *
+ * <h3>Legacy (schema v1) documents</h3>
+ * Jobs created before the recipients collection existed embed {@code rows} and
+ * {@code detailSheetRows} arrays. Those fields are intentionally absent from this class; they are
+ * read only as raw BSON by {@code BulkEmailRowMigrationService}, which copies them out, verifies
+ * every row, and then removes them. A job counts as migrated exactly when neither field exists.
  *
  * <h3>Index strategy</h3>
- * <ul>
- *   <li>Compound indexes on the three list-query patterns (user / org / all) each
- *       include {@code createdAt DESC} so MongoDB can satisfy the sort from the index
- *       without a separate in-memory sort pass.</li>
- *   <li>Heavy fields ({@code rows}, {@code emailTemplateHtml}, {@code uploadedPdfData},
- *       {@code detailSheetRows}) are excluded from list projections in the service layer.</li>
- * </ul>
+ * Compound indexes on the three list-query patterns (user / org / all) each include
+ * {@code createdAt DESC} so MongoDB can satisfy the sort from the index.
  */
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
 @Document(collection = "bulk_email_jobs")
@@ -36,11 +42,14 @@ import java.util.Map;
     @CompoundIndex(name = "idx_orgId_createdAt",     def = "{'orgId': 1,     'createdAt': -1}"),
     // PLATFORM_ADMIN full-scan, still benefits from a createdAt index for the sort
     @CompoundIndex(name = "idx_createdAt_desc",      def = "{'createdAt': -1}"),
-    // Open/click/unsubscribe tracking hits look a recipient up by its opaque token —
-    // index the embedded rows.trackingId so each tracking pixel/redirect is an O(1) find.
-    @CompoundIndex(name = "idx_rows_trackingId",     def = "{'rows.trackingId': 1}"),
+    // NOTE: the legacy 'idx_rows_trackingId' index ({'rows.trackingId': 1}) is no longer declared
+    // here but is deliberately left in the database until migration cleanup — the tracking
+    // fallback uses it to find not-yet-migrated jobs by token. See docs/17-bulk-email-recipients-migration.md.
 })
 public class BulkEmailJob {
+
+    /** Current storage layout: recipients/detail rows in their own collections. */
+    public static final int SCHEMA_VERSION = 2;
 
     @Id private String id;
 
@@ -84,11 +93,11 @@ public class BulkEmailJob {
     private String externalApiHeaders;    // JSON string of header key→value pairs
     private String externalApiBody;       // POST body template with {{col}} placeholders
 
-    // EXCEL_SHEET — generate per-recipient Excel from Sheet 2 of the uploaded workbook
-    @Builder.Default
-    private List<Map<String, String>> detailSheetRows = new ArrayList<>(); // all Sheet 2 rows
+    // EXCEL_SHEET — generate per-recipient Excel from Sheet 2 of the uploaded workbook.
+    // The Sheet-2 rows themselves live in bulk_email_detail_rows (see BulkEmailDetailRow).
     @Builder.Default
     private List<String> detailSheetColumns = new ArrayList<>();            // Sheet 2 column names
+    @Builder.Default private int detailRowCount = 0;                         // # of Sheet 2 rows stored
     private String detailSheetIdColumn;     // Sheet 2 column to match against
     private String mainSheetIdColumn;       // Sheet 1 column that holds the matching key
     private String detailSheetFileName;     // e.g. "Statement_{{name}}.xlsx"
@@ -136,36 +145,14 @@ public class BulkEmailJob {
     private LocalDateTime startedAt;
     private LocalDateTime completedAt;
 
-    /* ── Per-row results ─────────────────────────────────────────────────── */
-    @Builder.Default
-    private List<BulkEmailRow> rows = new ArrayList<>();
-
-    @Data @Builder @NoArgsConstructor @AllArgsConstructor
-    public static class BulkEmailRow {
-        private int    rowIndex;
-        private String recipientEmail;
-        private String recipientName;
-        private Map<String, String> data;   // original XLSX row (for resend)
-        public enum RowStatus { PENDING, SENT, FAILED }
-        @Builder.Default private RowStatus status = RowStatus.PENDING;
-        private String error;
-        private String messageId;           // Resend API message ID on success
-        private LocalDateTime sentAt;
-
-        /* ── Engagement tracking ─────────────────────────────────────────────
-         * {@code trackingId} is an opaque, unguessable per-recipient token embedded in
-         * the open pixel and click/unsubscribe links. It is the join key the public
-         * /api/track endpoints use to attribute a hit back to this recipient. */
-        private String trackingId;
-        @Builder.Default private int openCount  = 0;
-        private LocalDateTime firstOpenedAt;
-        private LocalDateTime lastOpenedAt;
-        @Builder.Default private int clickCount = 0;
-        private LocalDateTime firstClickedAt;
-        private LocalDateTime lastClickedAt;
-        @Builder.Default private boolean unsubscribed = false;
-        private LocalDateTime unsubscribedAt;
-    }
+    /* ── Storage layout / migration ──────────────────────────────────────── */
+    /** {@link #SCHEMA_VERSION} for current jobs; null on legacy documents (informational only —
+     *  "migrated" is decided by the absence of the embedded arrays, not by this value). */
+    private Integer schemaVersion;
+    /** When this job's embedded rows were moved to the recipients collection (legacy jobs only). */
+    private LocalDateTime rowsMigratedAt;
+    /** Set if migration verification failed; the embedded rows are then left untouched. */
+    private String migrationError;
 
     /* ── Audit trail ─────────────────────────────────────────────────────── */
     @Builder.Default

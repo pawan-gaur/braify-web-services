@@ -5,7 +5,12 @@ import com.braify.feature.audit.model.AuditLog;
 import com.braify.feature.audit.service.AuditLogService;
 import com.braify.feature.bulkemail.dto.BulkEmailJobRequest;
 import com.braify.feature.bulkemail.dto.BulkEmailJobResponse;
+import com.braify.feature.bulkemail.dto.RecipientPageResponse;
+import com.braify.feature.bulkemail.migration.BulkEmailRowMigrationService;
 import com.braify.feature.bulkemail.model.BulkEmailJob;
+import com.braify.feature.bulkemail.model.BulkEmailJob.BulkEmailAuditEvent.EventType;
+import com.braify.feature.bulkemail.model.BulkEmailJob.JobStatus;
+import com.braify.feature.bulkemail.model.BulkEmailRecipient;
 import com.braify.feature.bulkemail.repository.BulkEmailJobRepository;
 import com.braify.feature.email.model.EmailTemplate;
 import com.braify.feature.email.repository.EmailTemplateRepository;
@@ -15,6 +20,8 @@ import com.braify.feature.user.model.AppUser;
 import com.braify.security.UserDetailsImpl;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.bson.types.ObjectId;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
@@ -33,22 +40,47 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Bulk-email campaigns: creation, reads, resend/retry/cancel and follow-ups.
+ *
+ * <p>Recipients live in {@code bulk_email_recipients}. Existing jobs are changed only through
+ * {@link BulkEmailJobStore}'s targeted updates and conditional status transitions — never a
+ * full-document save — and every operation on an existing job first guarantees the job is
+ * migrated ({@link BulkEmailRowMigrationService#ensureMigrated}).
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class BulkEmailService {
 
-    private static final int MAX_ROWS = 10000;
-
-    private final BulkEmailJobRepository   jobRepo;
-    private final EmailTemplateRepository  emailTemplateRepo;
-    private final OrganizationRepository   orgRepo;
-    private final TemplateRepository       pdfTemplateRepo;
-    private final CssInliner               cssInliner;
-    private final AuditLogService          auditLogService;
-    private final MongoTemplate            mongoTemplate;
+    private final BulkEmailJobRepository       jobRepo;
+    private final BulkEmailJobStore            jobStore;
+    private final BulkEmailRecipientStore      recipientStore;
+    private final BulkEmailRowMigrationService migrationService;
+    private final EmailTemplateRepository      emailTemplateRepo;
+    private final OrganizationRepository       orgRepo;
+    private final TemplateRepository           pdfTemplateRepo;
+    private final CssInliner                   cssInliner;
+    private final AuditLogService              auditLogService;
+    private final MongoTemplate                mongoTemplate;
     private final com.braify.feature.bulkemail.repository.EmailSuppressionRepository suppressionRepo;
     private final com.braify.feature.bulkemail.repository.BulkEmailEventRepository   eventRepo;
+
+    /**
+     * Injected as a separate bean so that the {@code @Async} proxy on
+     * {@link BulkEmailProcessor#processJobAsync} is honoured. A direct
+     * {@code this.processJobAsync()} call would bypass Spring's proxy and
+     * execute synchronously on the request thread.
+     */
+    private final BulkEmailProcessor bulkEmailProcessor;
+
+    /** Max recipients per campaign. Recipients are separate documents, so this is about request size. */
+    @Value("${bulkemail.max-rows:25000}")
+    private int maxRows;
+
+    /** Max Sheet-2 (detail) rows per campaign. */
+    @Value("${bulkemail.max-detail-rows:100000}")
+    private int maxDetailRows;
 
     /** Pragmatic email-shape check (not full RFC 5322) — rejects the obvious garbage. */
     private static final java.util.regex.Pattern EMAIL_RE =
@@ -64,29 +96,19 @@ public class BulkEmailService {
     }
 
     /**
-     * Fields excluded from list-view projections.
-     * These are the heavyweight embedded arrays / blobs that the list page never
-     * displays — excluding them can reduce per-document payload from hundreds of KB
-     * (5 000 rows + HTML template + PDF bytes) down to under 1 KB.
+     * Fields excluded from list-view projections. {@code rows}/{@code detailSheetRows} only exist on
+     * legacy documents that have not been migrated yet; the rest are config the list never shows.
      */
     private static final String[] LIST_EXCLUDE_FIELDS = {
-        "rows",               // per-recipient results (up to 5 000 entries each with full data Map)
-        "emailTemplateHtml",  // the full rendered HTML body of the email template
-        "uploadedPdfData",    // binary PDF bytes (potentially several MB)
-        "detailSheetRows",    // all Sheet-2 rows for EXCEL_SHEET attachment type
-        "columnMapping",      // placeholder→column maps not needed in list view
+        "rows",
+        "detailSheetRows",
+        "emailTemplateHtml",
+        "uploadedPdfData",
+        "columnMapping",
         "pdfColumnMapping",
         "externalApiHeaders",
         "externalApiBody",
     };
-
-    /**
-     * Injected as a separate bean so that the {@code @Async} proxy on
-     * {@link BulkEmailProcessor#processJobAsync} is honoured.  A direct
-     * {@code this.processJobAsync()} call would bypass Spring's proxy and
-     * execute synchronously on the request thread.
-     */
-    private final BulkEmailProcessor bulkEmailProcessor;
 
     // ── Create & start job ───────────────────────────────────────────────────
 
@@ -100,8 +122,10 @@ public class BulkEmailService {
         // Validate rows
         if (req.getRows() == null || req.getRows().isEmpty())
             throw new IllegalArgumentException("No rows provided");
-        if (req.getRows().size() > MAX_ROWS)
-            throw new IllegalArgumentException("Maximum " + MAX_ROWS + " rows per job");
+        if (req.getRows().size() > maxRows)
+            throw new IllegalArgumentException("Maximum " + maxRows + " rows per job");
+        if (req.getDetailSheetRows() != null && req.getDetailSheetRows().size() > maxDetailRows)
+            throw new IllegalArgumentException("Maximum " + maxDetailRows + " detail-sheet rows per job");
 
         // Suppression list — addresses that unsubscribed (or bounced) for this org are
         // silently skipped so a campaign never re-mails someone who opted out.
@@ -110,10 +134,13 @@ public class BulkEmailService {
                 .filter(e -> !e.isEmpty())
                 .collect(java.util.stream.Collectors.toSet());
 
+        // Pre-assign the id so recipients can reference the job before it is inserted.
+        String jobId = new ObjectId().toHexString();
+
         // Build the recipient list, filtering in one pass:
         //   blank → skipped silently; bad format → invalid; opted-out → suppressed;
         //   already-seen (case-insensitive) → duplicate. Only survivors get a row + token.
-        List<BulkEmailJob.BulkEmailRow> rows = new ArrayList<>();
+        List<BulkEmailRecipient> recipients = new ArrayList<>();
         java.util.Set<String> seen = new java.util.HashSet<>();
         int suppressedSkipped = 0, invalidSkipped = 0, duplicateSkipped = 0;
         for (int i = 0; i < req.getRows().size(); i++) {
@@ -127,16 +154,19 @@ public class BulkEmailService {
             if (!seen.add(key))                     { duplicateSkipped++;  continue; }
             String name = req.getNameColumn() != null
                     ? rowData.getOrDefault(req.getNameColumn(), "") : "";
-            rows.add(BulkEmailJob.BulkEmailRow.builder()
+            recipients.add(BulkEmailRecipient.builder()
+                    .jobId(jobId)
+                    .orgId(principal.getOrgId())
+                    .seq(recipients.size())
                     .rowIndex(i)
                     .recipientEmail(email)
                     .recipientName(name)
                     .data(new HashMap<>(rowData))
-                    .status(BulkEmailJob.BulkEmailRow.RowStatus.PENDING)
+                    .status(BulkEmailRecipient.Status.PENDING)
                     .trackingId(newTrackingId())
                     .build());
         }
-        if (rows.isEmpty()) {
+        if (recipients.isEmpty()) {
             List<String> reasons = new ArrayList<>();
             if (suppressedSkipped > 0) reasons.add(suppressedSkipped + " unsubscribed");
             if (invalidSkipped > 0)    reasons.add(invalidSkipped + " invalid");
@@ -147,8 +177,8 @@ public class BulkEmailService {
         }
 
         // Scheduling — a future scheduledAt parks the job in SCHEDULED for the poller.
-        java.time.LocalDateTime scheduledAt = req.getScheduledAt();
-        boolean scheduled = scheduledAt != null && scheduledAt.isAfter(java.time.LocalDateTime.now());
+        LocalDateTime scheduledAt = req.getScheduledAt();
+        boolean scheduled = scheduledAt != null && scheduledAt.isAfter(LocalDateTime.now());
 
         // Resolve attachment config
         BulkEmailJob.AttachmentType attType =
@@ -188,8 +218,7 @@ public class BulkEmailService {
         }
 
         // Resolve organisation display name (used as email "From:" sender).
-        // Guard against a null orgId (e.g. a platform-admin account with no org) so the
-        // repository doesn't throw "The given id must not be null".
+        // Guard against a null orgId (e.g. a platform-admin account with no org).
         String orgName = principal.getOrgId() != null
                 ? orgRepo.findById(principal.getOrgId()).map(org -> org.getName()).orElse(null)
                 : null;
@@ -200,7 +229,10 @@ public class BulkEmailService {
                 : emailTemplate.getName() + " — " + LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd MMM HH:mm"));
 
         BulkEmailJob job = BulkEmailJob.builder()
+                .id(jobId)
+                .schemaVersion(BulkEmailJob.SCHEMA_VERSION)
                 .createdBy(principal.getId())
+                .createdAt(LocalDateTime.now())   // set explicitly: a pre-assigned id skips @CreatedDate
                 .orgId(principal.getOrgId())
                 .orgName(orgName)
                 .label(label)
@@ -223,22 +255,20 @@ public class BulkEmailService {
                 .externalApiMethod(req.getExternalApiMethod())
                 .externalApiHeaders(req.getExternalApiHeaders())
                 .externalApiBody(req.getExternalApiBody())
-                .detailSheetRows(req.getDetailSheetRows() != null ? req.getDetailSheetRows() : List.of())
                 .detailSheetColumns(req.getDetailSheetColumns() != null ? req.getDetailSheetColumns() : List.of())
                 .detailSheetIdColumn(req.getDetailSheetIdColumn())
                 .mainSheetIdColumn(req.getMainSheetIdColumn())
                 .detailSheetFileName(req.getDetailSheetFileName())
                 .includeExcelSheet(req.isIncludeExcelSheet())
-                .status(scheduled ? BulkEmailJob.JobStatus.SCHEDULED : BulkEmailJob.JobStatus.PENDING)
+                .status(scheduled ? JobStatus.SCHEDULED : JobStatus.PENDING)
                 .scheduledAt(scheduled ? scheduledAt : null)
-                .totalCount(rows.size())
-                .pendingCount(rows.size())
+                .totalCount(recipients.size())
+                .pendingCount(recipients.size())
                 .sentCount(0)
                 .failedCount(0)
                 .suppressedCount(suppressedSkipped)
                 .invalidSkippedCount(invalidSkipped)
                 .duplicateSkippedCount(duplicateSkipped)
-                .rows(rows)
                 .build();
 
         String skips = java.util.stream.Stream.of(
@@ -246,41 +276,46 @@ public class BulkEmailService {
                         invalidSkipped    > 0 ? invalidSkipped + " invalid"        : null,
                         duplicateSkipped  > 0 ? duplicateSkipped + " duplicate"    : null)
                 .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.joining(", "));
-        addAuditEvent(job, BulkEmailJob.BulkEmailAuditEvent.EventType.JOB_CREATED,
-                "Job created with " + rows.size() + " recipient(s), attachment=" + attType
+        addAuditEvent(job, EventType.JOB_CREATED,
+                "Job created with " + recipients.size() + " recipient(s), attachment=" + attType
                 + ", template=\"" + emailTemplate.getName() + "\""
                 + (skips.isEmpty() ? "" : " (skipped: " + skips + ")"));
         if (scheduled)
-            addAuditEvent(job, BulkEmailJob.BulkEmailAuditEvent.EventType.JOB_SCHEDULED,
-                    "Scheduled to send at " + scheduledAt);
-        job = jobRepo.save(job);
-        log.info("BulkEmailJob '{}' created: {} rows, attachment={}", job.getId(), rows.size(), attType);
+            addAuditEvent(job, EventType.JOB_SCHEDULED, "Scheduled to send at " + scheduledAt);
+
+        // Store recipients + Sheet-2 rows first; the job document is inserted last, so a job is only
+        // ever visible (or resumable) once all of its recipients exist. Roll back on any failure.
+        try {
+            recipientStore.insertRecipients(recipients);
+            job.setDetailRowCount(recipientStore.insertDetailRows(
+                    jobId, req.getDetailSheetIdColumn(), req.getDetailSheetRows()));
+            job = jobRepo.insert(job);
+        } catch (RuntimeException e) {
+            log.error("BulkEmailJob '{}' creation failed — rolling back stored recipients: {}", jobId, e.getMessage());
+            recipientStore.deleteJobData(jobId);
+            throw e;
+        }
+        log.info("BulkEmailJob '{}' created: {} recipients, {} detail rows, attachment={}",
+                jobId, recipients.size(), job.getDetailRowCount(), attType);
 
         // Unified audit log (visible on the main Audit Log page)
         auditLogService.log(
                 job.getId(), job.getLabel(),
                 AuditLog.Action.CREATED, AuditLog.ResourceType.BULK_EMAIL,
-                0, Map.of("rows", rows.size(), "attachment", attType.name(),
+                0, Map.of("rows", recipients.size(), "attachment", attType.name(),
                            "emailTemplate", emailTemplate.getName()),
                 principal.getUsername(), principal.getOrgId());
 
         // Delegate to BulkEmailProcessor — cross-bean call so @Async proxy is honoured.
         // Scheduled jobs are left for BulkEmailScheduler to pick up when due.
         if (!scheduled) bulkEmailProcessor.processJobAsync(job.getId());
-        return BulkEmailJobResponse.from(job, false);
+        return BulkEmailJobResponse.from(job);
     }
 
     // ── List & get ───────────────────────────────────────────────────────────
 
     /**
      * Returns a lightweight list of jobs for the caller's role.
-     *
-     * <p>Heavy fields ({@code rows}, {@code emailTemplateHtml}, {@code uploadedPdfData},
-     * {@code detailSheetRows}, mapping fields) are excluded via a MongoDB projection so
-     * that only the summary fields required by the list view are transferred from Atlas.
-     * For a job with 5 000 rows this typically reduces the per-document payload from
-     * several hundred KB to under 1 KB — a ~99 % reduction.
-     *
      * <ul>
      *   <li>PLATFORM_ADMIN — all jobs across all orgs</li>
      *   <li>ORG_ADMIN      — all jobs within their organisation</li>
@@ -289,93 +324,66 @@ public class BulkEmailService {
      */
     public Page<BulkEmailJobResponse> listJobs(UserDetailsImpl principal, int page, int size) {
         int safeSize = Math.min(size, 50);
-        AppUser.Role role = principal.getAppUser().getRole();
+        Criteria criteria = scopeCriteria(principal);
 
-        // Build the role-scoped filter criteria
-        Criteria criteria = switch (role) {
-            case PLATFORM_ADMIN -> new Criteria();                                      // no filter — all jobs
-            case ORG_ADMIN      -> Criteria.where("orgId").is(principal.getOrgId());
-            default             -> Criteria.where("createdBy").is(principal.getId());
-        };
-
-        // Count query (cheap — hits the compound index without loading documents)
         long total = mongoTemplate.count(Query.query(criteria), BulkEmailJob.class);
-
         if (total == 0) {
             return new PageImpl<>(List.of(), PageRequest.of(page, safeSize), 0);
         }
 
-        // Data query with projection — exclude all heavy embedded fields
         Query dataQuery = Query.query(criteria)
                 .with(Sort.by(Sort.Direction.DESC, "createdAt"))
                 .skip((long) page * safeSize)
                 .limit(safeSize);
+        for (String field : LIST_EXCLUDE_FIELDS) dataQuery.fields().exclude(field);
 
-        for (String field : LIST_EXCLUDE_FIELDS) {
-            dataQuery.fields().exclude(field);
-        }
-
-        List<BulkEmailJob> jobs = mongoTemplate.find(dataQuery, BulkEmailJob.class);
-        List<BulkEmailJobResponse> responses = jobs.stream()
-                .map(j -> BulkEmailJobResponse.from(j, false))
+        List<BulkEmailJobResponse> responses = mongoTemplate.find(dataQuery, BulkEmailJob.class).stream()
+                .map(BulkEmailJobResponse::from)
                 .toList();
-
         return new PageImpl<>(responses, PageRequest.of(page, safeSize), total);
     }
 
-    /**
-     * Returns a single job with per-row status (Recipients tab).
-     *
-     * <p>Heavy fields that are never displayed in the detail view are excluded
-     * from the MongoDB projection so the network payload stays manageable
-     * even for jobs with 5 000 rows:
-     * <ul>
-     *   <li>{@code rows[].data} — raw Excel values (not shown in the UI; only
-     *       needed internally by the processor for resend); this single exclusion
-     *       typically removes 80–95 % of the document size.</li>
-     *   <li>{@code emailTemplateHtml} — full HTML body</li>
-     *   <li>{@code uploadedPdfData}   — binary PDF bytes</li>
-     *   <li>{@code detailSheetRows}   — all Sheet-2 rows</li>
-     * </ul>
-     */
+    /** A single job's summary (recipients are served separately by {@link #getRecipients}). */
     public BulkEmailJobResponse getJob(String jobId, UserDetailsImpl principal) {
-        AppUser.Role role  = principal.getAppUser().getRole();
-        Criteria criteria = switch (role) {
-            case PLATFORM_ADMIN -> Criteria.where("_id").is(jobId);
-            case ORG_ADMIN      -> Criteria.where("_id").is(jobId).and("orgId").is(principal.getOrgId());
-            default             -> Criteria.where("_id").is(jobId).and("createdBy").is(principal.getId());
-        };
-
-        Query q = Query.query(criteria);
-        q.fields()
-                .exclude("emailTemplateHtml")   // ~50 KB – not displayed
-                .exclude("uploadedPdfData")      // binary bytes – not displayed
-                .exclude("detailSheetRows")      // Sheet-2 raw rows – not displayed
-                .exclude("rows.data");           // raw Excel values per row – biggest item; not shown in Recipients tab
-
+        Query q = Query.query(accessCriteria(jobId, principal));
+        for (String field : LIST_EXCLUDE_FIELDS) q.fields().exclude(field);
         BulkEmailJob job = mongoTemplate.findOne(q, BulkEmailJob.class);
         if (job == null) throw new IllegalArgumentException("Job not found: " + jobId);
-        return BulkEmailJobResponse.from(job, true);
+        return BulkEmailJobResponse.from(job);
+    }
+
+    /**
+     * One page of a job's recipients (Recipients tab), filtered and searched server-side, plus the
+     * count for every filter chip. Works for campaigns of any size — nothing is loaded in full.
+     */
+    public RecipientPageResponse getRecipients(String jobId, BulkEmailRecipientStore.Filter filter,
+                                               String search, int page, int size,
+                                               UserDetailsImpl principal) {
+        assertAccess(jobId, principal);
+        migrationService.ensureMigrated(jobId);
+
+        int safeSize = Math.max(1, Math.min(size, 200));
+        int safePage = Math.max(0, page);
+        long total = recipientStore.count(jobId, filter, search);
+        List<BulkEmailJobResponse.RowResponse> rows = recipientStore.page(jobId, filter, search, safePage, safeSize)
+                .stream().map(BulkEmailJobResponse.RowResponse::from).toList();
+
+        return RecipientPageResponse.builder()
+                .content(rows)
+                .page(safePage)
+                .size(safeSize)
+                .totalElements(total)
+                .totalPages((int) ((total + safeSize - 1) / safeSize))
+                .counts(recipientStore.filterCounts(jobId))
+                .build();
     }
 
     /**
      * Returns only the audit trail for a job — no rows, no binary data.
-     * Uses a targeted projection so the document payload is tiny regardless
-     * of how many rows the job contains.
      */
-    public List<BulkEmailJobResponse.AuditEventResponse> getJobAudit(
-            String jobId, UserDetailsImpl principal) {
-
-        AppUser.Role role = principal.getAppUser().getRole();
-        Criteria criteria = switch (role) {
-            case PLATFORM_ADMIN -> Criteria.where("_id").is(jobId);
-            case ORG_ADMIN      -> Criteria.where("_id").is(jobId).and("orgId").is(principal.getOrgId());
-            default             -> Criteria.where("_id").is(jobId).and("createdBy").is(principal.getId());
-        };
-
-        Query q = Query.query(criteria);
-        q.fields().include("auditEvents");   // include only what we need
-
+    public List<BulkEmailJobResponse.AuditEventResponse> getJobAudit(String jobId, UserDetailsImpl principal) {
+        Query q = Query.query(accessCriteria(jobId, principal));
+        q.fields().include("auditEvents");
         BulkEmailJob job = mongoTemplate.findOne(q, BulkEmailJob.class);
         if (job == null) throw new IllegalArgumentException("Job not found: " + jobId);
 
@@ -391,23 +399,10 @@ public class BulkEmailService {
 
     /**
      * Lightweight status poll — returns only the five counter fields.
-     * Fetches a projection that excludes all heavy embedded arrays so the
-     * response is always under 200 bytes regardless of row count.
      * Used by the progress-bar polling in the UI (every 3 s while active).
      */
     public Map<String, Object> getJobStatus(String jobId, UserDetailsImpl principal) {
-        // Resolve access rights using the full document would load 5 000 rows just to check orgId.
-        // Instead: load only the access-check fields + counters in one targeted query.
-        AppUser.Role role = principal.getAppUser().getRole();
-
-        Criteria idCriteria = Criteria.where("_id").is(jobId);
-        Criteria accessCriteria = switch (role) {
-            case PLATFORM_ADMIN -> idCriteria;
-            case ORG_ADMIN      -> idCriteria.and("orgId").is(principal.getOrgId());
-            default             -> idCriteria.and("createdBy").is(principal.getId());
-        };
-
-        Query q = Query.query(accessCriteria);
+        Query q = Query.query(accessCriteria(jobId, principal));
         q.fields()
                 .include("status")
                 .include("totalCount")
@@ -438,13 +433,7 @@ public class BulkEmailService {
     public com.braify.feature.bulkemail.dto.BulkEmailAnalyticsResponse getAnalytics(
             String jobId, UserDetailsImpl principal) {
 
-        AppUser.Role role = principal.getAppUser().getRole();
-        Criteria access = switch (role) {
-            case PLATFORM_ADMIN -> Criteria.where("_id").is(jobId);
-            case ORG_ADMIN      -> Criteria.where("_id").is(jobId).and("orgId").is(principal.getOrgId());
-            default             -> Criteria.where("_id").is(jobId).and("createdBy").is(principal.getId());
-        };
-        Query q = Query.query(access);
+        Query q = Query.query(accessCriteria(jobId, principal));
         q.fields().include("label").include("sentCount").include("suppressedCount")
                   .include("unsubscribedCount");
         BulkEmailJob job = mongoTemplate.findOne(q, BulkEmailJob.class);
@@ -557,148 +546,96 @@ public class BulkEmailService {
         return out;
     }
 
-    /**
-     * Resolves a job with role-based access enforcement.
-     */
-    private BulkEmailJob resolveJob(String jobId, UserDetailsImpl principal) {
-        AppUser.Role role = principal.getAppUser().getRole();
-        return switch (role) {
-            case PLATFORM_ADMIN ->
-                    jobRepo.findById(jobId)
-                            .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
-            case ORG_ADMIN ->
-                    jobRepo.findByIdAndOrgId(jobId, principal.getOrgId())
-                            .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
-            default ->
-                    jobRepo.findByIdAndCreatedBy(jobId, principal.getId())
-                            .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
-        };
-    }
-
     // ── Resend failed rows ───────────────────────────────────────────────────
 
     public BulkEmailJobResponse resendFailed(String jobId, UserDetailsImpl principal) {
-        BulkEmailJob job = resolveJob(jobId, principal);
+        BulkEmailJob job = accessibleSummary(jobId, principal);
 
         // Guard: only PARTIAL or FAILED jobs can be retried
-        if (job.getStatus() != BulkEmailJob.JobStatus.PARTIAL
-                && job.getStatus() != BulkEmailJob.JobStatus.FAILED) {
+        if (job.getStatus() != JobStatus.PARTIAL && job.getStatus() != JobStatus.FAILED) {
             throw new IllegalStateException(
-                    "Can only resend failed rows from a PARTIAL or FAILED job. Current status: "
-                    + job.getStatus());
+                    "Can only resend failed rows from a PARTIAL or FAILED job. Current status: " + job.getStatus());
         }
+        long failedCount = recipientStore.count(jobId, BulkEmailRecipientStore.Filter.FAILED, null);
+        if (failedCount == 0) throw new IllegalStateException("No failed rows to resend");
 
-        // Collect the failed rows (we need the count before mutating)
-        long failedCount = job.getRows().stream()
-                .filter(r -> r.getStatus() == BulkEmailJob.BulkEmailRow.RowStatus.FAILED)
-                .count();
+        // Claim the job first so a concurrent action can't interleave, then reset the rows.
+        if (!jobStore.transition(jobId, List.of(JobStatus.PARTIAL, JobStatus.FAILED), JobStatus.PENDING,
+                new Update().unset("completedAt"))) {
+            throw new IllegalStateException("The job's status changed — refresh and try again");
+        }
+        long reset = recipientStore.resetFailedToPending(jobId);
+        jobStore.refreshCounters(jobId);   // sent/total preserved, failed → pending
+        jobStore.pushAudit(jobId, EventType.RESEND_CREATED,
+                "Resend initiated — " + reset + " failed row(s) reset to PENDING");
+        log.info("Resend initiated for job '{}': {} failed row(s) reset to PENDING", jobId, reset);
 
-        if (failedCount == 0)
-            throw new IllegalStateException("No failed rows to resend");
-
-        // ── Reset every FAILED row to PENDING in-place ───────────────────────
-        //    sentCount / totalCount are intentionally preserved so the progress
-        //    bar reflects the full picture (already-sent + now-retrying rows).
-        job.getRows().stream()
-                .filter(r -> r.getStatus() == BulkEmailJob.BulkEmailRow.RowStatus.FAILED)
-                .forEach(r -> {
-                    r.setStatus(BulkEmailJob.BulkEmailRow.RowStatus.PENDING);
-                    r.setError(null);
-                    r.setMessageId(null);
-                    r.setSentAt(null);
-                });
-
-        // ── Update counters ──────────────────────────────────────────────────
-        job.setPendingCount((int) failedCount);   // the just-reset rows are now pending
-        job.setFailedCount(0);
-        // sentCount and totalCount stay the same
-
-        // ── Reset status & timestamps ────────────────────────────────────────
-        job.setStatus(BulkEmailJob.JobStatus.PENDING);
-        job.setCompletedAt(null);
-
-        addAuditEvent(job, BulkEmailJob.BulkEmailAuditEvent.EventType.RESEND_CREATED,
-                "Resend initiated — " + failedCount + " failed row(s) reset to PENDING");
-        job = jobRepo.save(job);
-        log.info("Resend initiated for job '{}': {} failed row(s) reset to PENDING", jobId, failedCount);
-
-        // Cross-bean call so @Async proxy is honoured
-        bulkEmailProcessor.processJobAsync(job.getId());
-        return BulkEmailJobResponse.from(job, false);
+        bulkEmailProcessor.processJobAsync(jobId);
+        return BulkEmailJobResponse.from(jobStore.findSummary(jobId));
     }
 
     // ── Retry pending rows (after cancellation) ──────────────────────────────
 
     /**
      * Re-queues all PENDING rows from a CANCELLED job and restarts processing.
-     *
-     * <p>This is the "resume" path for campaigns that were cancelled mid-flight.
-     * SENT rows are untouched; only rows still in PENDING status are re-processed.
-     * The job's {@code sentCount} is preserved so the progress display stays accurate.</p>
+     * SENT rows are untouched; only rows still PENDING are re-processed.
      *
      * @throws IllegalStateException if the job is not CANCELLED or has no pending rows
      */
     public BulkEmailJobResponse retryPending(String jobId, UserDetailsImpl principal) {
-        BulkEmailJob job = resolveJob(jobId, principal);
+        BulkEmailJob job = accessibleSummary(jobId, principal);
 
-        if (job.getStatus() != BulkEmailJob.JobStatus.CANCELLED) {
+        if (job.getStatus() != JobStatus.CANCELLED) {
             throw new IllegalStateException(
-                    "Only CANCELLED jobs can have their pending rows retried. Current status: "
-                    + job.getStatus());
+                    "Only CANCELLED jobs can have their pending rows retried. Current status: " + job.getStatus());
         }
-
-        long pendingCount = job.getRows().stream()
-                .filter(r -> r.getStatus() == BulkEmailJob.BulkEmailRow.RowStatus.PENDING)
-                .count();
-
+        long pendingCount = recipientStore.count(jobId, BulkEmailRecipientStore.Filter.PENDING, null);
         if (pendingCount == 0)
             throw new IllegalStateException("No pending rows to retry — all rows were already sent or failed");
 
-        // Pending rows keep their PENDING status; no mutation needed on the rows themselves.
-        // Just reset the job-level counters and status so the processor picks them up.
-        job.setPendingCount((int) pendingCount);
-        job.setStatus(BulkEmailJob.JobStatus.PENDING);
-        job.setCompletedAt(null);
-
-        addAuditEvent(job, BulkEmailJob.BulkEmailAuditEvent.EventType.RETRY_PENDING,
+        if (!jobStore.transition(jobId, List.of(JobStatus.CANCELLED), JobStatus.PENDING,
+                new Update().unset("completedAt"))) {
+            throw new IllegalStateException("The job's status changed — refresh and try again");
+        }
+        BulkEmailJobStore.Counts c = jobStore.refreshCounters(jobId);
+        jobStore.pushAudit(jobId, EventType.RETRY_PENDING,
                 "Retry pending initiated — " + pendingCount + " pending row(s) will be sent "
-                + "(already sent: " + job.getSentCount() + ", failed: " + job.getFailedCount() + ")");
-        job = jobRepo.save(job);
+                + "(already sent: " + c.sent() + ", failed: " + c.failed() + ")");
         log.info("Retry-pending initiated for job '{}': {} pending row(s) will be processed", jobId, pendingCount);
 
         auditLogService.log(
-                job.getId(), job.getLabel(),
+                jobId, job.getLabel(),
                 AuditLog.Action.UPDATED, AuditLog.ResourceType.BULK_EMAIL,
-                0, Map.of("pendingCount", pendingCount, "sentCount", job.getSentCount()),
+                0, Map.of("pendingCount", pendingCount, "sentCount", c.sent()),
                 principal.getUsername(), job.getOrgId());
 
-        bulkEmailProcessor.processJobAsync(job.getId());
-        return BulkEmailJobResponse.from(job, false);
+        bulkEmailProcessor.processJobAsync(jobId);
+        return BulkEmailJobResponse.from(jobStore.findSummary(jobId));
     }
 
     // ── Cancel ───────────────────────────────────────────────────────────────
 
     public BulkEmailJobResponse cancelJob(String jobId, UserDetailsImpl principal) {
-        BulkEmailJob job = resolveJob(jobId, principal);
-        if (job.getStatus() == BulkEmailJob.JobStatus.COMPLETED
-         || job.getStatus() == BulkEmailJob.JobStatus.FAILED
-         || job.getStatus() == BulkEmailJob.JobStatus.CANCELLED)
-            throw new IllegalStateException("Job is already in terminal state: " + job.getStatus());
+        BulkEmailJob job = accessibleSummary(jobId, principal);
 
-        job.setStatus(BulkEmailJob.JobStatus.CANCELLED);
-        addAuditEvent(job, BulkEmailJob.BulkEmailAuditEvent.EventType.JOB_CANCELLED,
-                "Job cancelled. Sent=" + job.getSentCount() + ", Failed=" + job.getFailedCount()
-                + ", Pending=" + job.getPendingCount());
-        jobRepo.save(job);
+        // Conditional transition: the running processor sees CANCELLED and stops within a few rows,
+        // and its final status update is itself conditional, so this can no longer be overwritten.
+        if (!jobStore.transition(jobId,
+                List.of(JobStatus.SCHEDULED, JobStatus.PENDING, JobStatus.PROCESSING, JobStatus.PARTIAL),
+                JobStatus.CANCELLED, null)) {
+            throw new IllegalStateException("Job is already in terminal state: " + jobStore.status(jobId));
+        }
+        BulkEmailJobStore.Counts c = jobStore.refreshCounters(jobId);
+        jobStore.pushAudit(jobId, EventType.JOB_CANCELLED,
+                "Job cancelled. Sent=" + c.sent() + ", Failed=" + c.failed() + ", Pending=" + c.pending());
 
-        // Unified audit log
         auditLogService.log(
-                job.getId(), job.getLabel(),
+                jobId, job.getLabel(),
                 AuditLog.Action.CANCELLED, AuditLog.ResourceType.BULK_EMAIL,
-                0, Map.of("sentCount", job.getSentCount(), "failedCount", job.getFailedCount()),
+                0, Map.of("sentCount", c.sent(), "failedCount", c.failed()),
                 principal.getUsername(), job.getOrgId());
 
-        return BulkEmailJobResponse.from(job, false);
+        return BulkEmailJobResponse.from(jobStore.findSummary(jobId));
     }
 
     // ── Re-engagement: follow-up campaign to non-openers / non-clickers ────────
@@ -709,13 +646,15 @@ public class BulkEmailService {
      * Creates a NEW campaign that re-sends to the recipients of {@code jobId} who were sent
      * successfully but did not open (or did not click). The original campaign is untouched;
      * the follow-up gets fresh tracking tokens and its own analytics. Unsubscribed and
-     * now-suppressed addresses are excluded.
+     * now-suppressed addresses are excluded. Recipients are streamed, never loaded in full.
      */
     public BulkEmailJobResponse resendToSegment(String jobId, ResendSegment segment,
                                                 String label, UserDetailsImpl principal) {
-        BulkEmailJob src = resolveJob(jobId, principal);
-        if (src.getStatus() != BulkEmailJob.JobStatus.COMPLETED
-                && src.getStatus() != BulkEmailJob.JobStatus.PARTIAL) {
+        assertAccess(jobId, principal);
+        migrationService.ensureMigrated(jobId);
+        BulkEmailJob src = jobRepo.findById(jobId)
+                .orElseThrow(() -> new IllegalArgumentException("Job not found: " + jobId));
+        if (src.getStatus() != JobStatus.COMPLETED && src.getStatus() != JobStatus.PARTIAL) {
             throw new IllegalStateException(
                     "Follow-up sends require a finished campaign (COMPLETED or PARTIAL). Current: " + src.getStatus());
         }
@@ -724,82 +663,104 @@ public class BulkEmailService {
                 .map(s -> s.getEmail() == null ? "" : s.getEmail().trim().toLowerCase())
                 .filter(e -> !e.isEmpty()).collect(java.util.stream.Collectors.toSet());
 
-        List<BulkEmailJob.BulkEmailRow> newRows = new ArrayList<>();
+        String newJobId = new ObjectId().toHexString();
+        Criteria segmentCriteria = new Criteria().andOperator(
+                Criteria.where("status").is(BulkEmailRecipient.Status.SENT),
+                Criteria.where("unsubscribed").ne(true),
+                Criteria.where(segment == ResendSegment.UNOPENED ? "openCount" : "clickCount").not().gt(0));
+
+        List<BulkEmailRecipient> buffer = new ArrayList<>(BulkEmailRecipientStore.INSERT_CHUNK);
         java.util.Set<String> seen = new java.util.HashSet<>();
-        int idx = 0;
-        for (BulkEmailJob.BulkEmailRow r : src.getRows()) {
-            boolean matches = r.getStatus() == BulkEmailJob.BulkEmailRow.RowStatus.SENT
-                    && !r.isUnsubscribed()
-                    && (segment == ResendSegment.UNOPENED ? r.getOpenCount() == 0 : r.getClickCount() == 0);
-            if (!matches) continue;
-            String email = r.getRecipientEmail();
-            if (email == null || email.isBlank()) continue;
-            String key = email.trim().toLowerCase();
-            if (suppressed.contains(key) || !seen.add(key)) continue;
-            newRows.add(BulkEmailJob.BulkEmailRow.builder()
-                    .rowIndex(idx++)
-                    .recipientEmail(email.trim())
-                    .recipientName(r.getRecipientName())
-                    .data(new HashMap<>(r.getData() != null ? r.getData() : Map.of()))
-                    .status(BulkEmailJob.BulkEmailRow.RowStatus.PENDING)
-                    .trackingId(newTrackingId())
-                    .build());
+        int[] count = {0};
+        int detailRows;
+        BulkEmailJob job;
+        try {
+            recipientStore.forEach(jobId, segmentCriteria, r -> {
+                String email = r.getRecipientEmail();
+                if (email == null || email.isBlank()) return;
+                String key = email.trim().toLowerCase();
+                if (suppressed.contains(key) || !seen.add(key)) return;
+                buffer.add(BulkEmailRecipient.builder()
+                        .jobId(newJobId)
+                        .orgId(src.getOrgId())
+                        .seq(count[0])
+                        .rowIndex(count[0])
+                        .recipientEmail(email.trim())
+                        .recipientName(r.getRecipientName())
+                        .data(new HashMap<>(r.getData() != null ? r.getData() : Map.of()))
+                        .status(BulkEmailRecipient.Status.PENDING)
+                        .trackingId(newTrackingId())
+                        .build());
+                count[0]++;
+                if (buffer.size() == BulkEmailRecipientStore.INSERT_CHUNK) {
+                    recipientStore.insertRecipients(buffer);
+                    buffer.clear();
+                }
+            });
+            if (!buffer.isEmpty()) recipientStore.insertRecipients(buffer);
+            if (count[0] == 0) {
+                throw new IllegalStateException("No "
+                        + (segment == ResendSegment.UNOPENED ? "non-openers" : "non-clickers") + " to email");
+            }
+            detailRows = recipientStore.copyDetailRows(jobId, newJobId);
+
+            String defaultLabel = (segment == ResendSegment.UNOPENED ? "Re-engage non-openers" : "Re-engage non-clickers")
+                    + " — " + src.getLabel();
+            job = BulkEmailJob.builder()
+                    .id(newJobId)
+                    .schemaVersion(BulkEmailJob.SCHEMA_VERSION)
+                    .createdBy(principal.getId())
+                    .createdAt(LocalDateTime.now())
+                    .orgId(src.getOrgId())
+                    .orgName(src.getOrgName())
+                    .label(label != null && !label.isBlank() ? label : defaultLabel)
+                    .emailTemplateId(src.getEmailTemplateId())
+                    .emailTemplateName(src.getEmailTemplateName())
+                    .emailTemplateSubject(src.getEmailTemplateSubject())
+                    .emailTemplateHtml(src.getEmailTemplateHtml())
+                    .emailColumn(src.getEmailColumn())
+                    .nameColumn(src.getNameColumn())
+                    .columnMapping(src.getColumnMapping())
+                    .ccColumns(src.getCcColumns() != null ? src.getCcColumns() : List.of())
+                    .attachmentType(src.getAttachmentType())
+                    .uploadedPdfData(src.getUploadedPdfData())
+                    .uploadedPdfName(src.getUploadedPdfName())
+                    .pdfTemplateId(src.getPdfTemplateId())
+                    .pdfTemplateName(src.getPdfTemplateName())
+                    .pdfColumnMapping(src.getPdfColumnMapping())
+                    .externalApiUrl(src.getExternalApiUrl())
+                    .externalApiMethod(src.getExternalApiMethod())
+                    .externalApiHeaders(src.getExternalApiHeaders())
+                    .externalApiBody(src.getExternalApiBody())
+                    .detailSheetColumns(src.getDetailSheetColumns() != null ? src.getDetailSheetColumns() : List.of())
+                    .detailRowCount(detailRows)
+                    .detailSheetIdColumn(src.getDetailSheetIdColumn())
+                    .mainSheetIdColumn(src.getMainSheetIdColumn())
+                    .detailSheetFileName(src.getDetailSheetFileName())
+                    .includeExcelSheet(src.isIncludeExcelSheet())
+                    .status(JobStatus.PENDING)
+                    .totalCount(count[0])
+                    .pendingCount(count[0])
+                    .build();
+            addAuditEvent(job, EventType.RESEND_SEGMENT,
+                    "Follow-up to " + count[0] + " "
+                    + (segment == ResendSegment.UNOPENED ? "non-opener" : "non-clicker")
+                    + "(s) from campaign " + src.getId());
+            job = jobRepo.insert(job);
+        } catch (RuntimeException e) {
+            recipientStore.deleteJobData(newJobId);   // never leave a half-built follow-up behind
+            throw e;
         }
-        if (newRows.isEmpty())
-            throw new IllegalStateException("No "
-                    + (segment == ResendSegment.UNOPENED ? "non-openers" : "non-clickers") + " to email");
-
-        String defaultLabel = (segment == ResendSegment.UNOPENED ? "Re-engage non-openers" : "Re-engage non-clickers")
-                + " — " + src.getLabel();
-        BulkEmailJob job = BulkEmailJob.builder()
-                .createdBy(principal.getId())
-                .orgId(src.getOrgId())
-                .orgName(src.getOrgName())
-                .label(label != null && !label.isBlank() ? label : defaultLabel)
-                .emailTemplateId(src.getEmailTemplateId())
-                .emailTemplateName(src.getEmailTemplateName())
-                .emailTemplateSubject(src.getEmailTemplateSubject())
-                .emailTemplateHtml(src.getEmailTemplateHtml())
-                .emailColumn(src.getEmailColumn())
-                .nameColumn(src.getNameColumn())
-                .columnMapping(src.getColumnMapping())
-                .ccColumns(src.getCcColumns() != null ? src.getCcColumns() : List.of())
-                .attachmentType(src.getAttachmentType())
-                .uploadedPdfData(src.getUploadedPdfData())
-                .uploadedPdfName(src.getUploadedPdfName())
-                .pdfTemplateId(src.getPdfTemplateId())
-                .pdfTemplateName(src.getPdfTemplateName())
-                .pdfColumnMapping(src.getPdfColumnMapping())
-                .externalApiUrl(src.getExternalApiUrl())
-                .externalApiMethod(src.getExternalApiMethod())
-                .externalApiHeaders(src.getExternalApiHeaders())
-                .externalApiBody(src.getExternalApiBody())
-                .detailSheetRows(src.getDetailSheetRows() != null ? src.getDetailSheetRows() : List.of())
-                .detailSheetColumns(src.getDetailSheetColumns() != null ? src.getDetailSheetColumns() : List.of())
-                .detailSheetIdColumn(src.getDetailSheetIdColumn())
-                .mainSheetIdColumn(src.getMainSheetIdColumn())
-                .detailSheetFileName(src.getDetailSheetFileName())
-                .includeExcelSheet(src.isIncludeExcelSheet())
-                .status(BulkEmailJob.JobStatus.PENDING)
-                .totalCount(newRows.size())
-                .pendingCount(newRows.size())
-                .rows(newRows)
-                .build();
-        addAuditEvent(job, BulkEmailJob.BulkEmailAuditEvent.EventType.RESEND_SEGMENT,
-                "Follow-up to " + newRows.size() + " "
-                + (segment == ResendSegment.UNOPENED ? "non-opener" : "non-clicker")
-                + "(s) from campaign " + src.getId());
-        job = jobRepo.save(job);
         log.info("Segment resend '{}' ({}) created from '{}': {} recipients",
-                job.getId(), segment, src.getId(), newRows.size());
+                newJobId, segment, src.getId(), count[0]);
 
-        auditLogService.log(job.getId(), job.getLabel(),
+        auditLogService.log(newJobId, job.getLabel(),
                 AuditLog.Action.CREATED, AuditLog.ResourceType.BULK_EMAIL, 0,
-                Map.of("segment", segment.name(), "recipients", newRows.size(), "sourceJob", src.getId()),
+                Map.of("segment", segment.name(), "recipients", count[0], "sourceJob", src.getId()),
                 principal.getUsername(), principal.getOrgId());
 
-        bulkEmailProcessor.processJobAsync(job.getId());
-        return BulkEmailJobResponse.from(job, false);
+        bulkEmailProcessor.processJobAsync(newJobId);
+        return BulkEmailJobResponse.from(job);
     }
 
     // ── Suppression (unsubscribe) list management ──────────────────────────────
@@ -834,12 +795,46 @@ public class BulkEmailService {
         suppressionRepo.deleteById(id);
     }
 
-    // ── Private helpers ───────────────────────────────────────────────────────
+    // ── Access + helpers ─────────────────────────────────────────────────────
 
-    private void addAuditEvent(BulkEmailJob job,
-                               BulkEmailJob.BulkEmailAuditEvent.EventType type,
-                               String description) {
-        if (job.getAuditEvents() == null) job.setAuditEvents(new java.util.ArrayList<>());
+    /** Role scope for listing: PLATFORM_ADMIN all, ORG_ADMIN own org, others own jobs. */
+    private static Criteria scopeCriteria(UserDetailsImpl principal) {
+        AppUser.Role role = principal.getAppUser().getRole();
+        return switch (role) {
+            case PLATFORM_ADMIN -> new Criteria();
+            case ORG_ADMIN      -> Criteria.where("orgId").is(principal.getOrgId());
+            default             -> Criteria.where("createdBy").is(principal.getId());
+        };
+    }
+
+    /** Criteria matching {@code jobId} only if the caller may access it. */
+    private static Criteria accessCriteria(String jobId, UserDetailsImpl principal) {
+        AppUser.Role role = principal.getAppUser().getRole();
+        return switch (role) {
+            case PLATFORM_ADMIN -> Criteria.where("_id").is(jobId);
+            case ORG_ADMIN      -> Criteria.where("_id").is(jobId).and("orgId").is(principal.getOrgId());
+            default             -> Criteria.where("_id").is(jobId).and("createdBy").is(principal.getId());
+        };
+    }
+
+    private void assertAccess(String jobId, UserDetailsImpl principal) {
+        if (!mongoTemplate.exists(Query.query(accessCriteria(jobId, principal)), BulkEmailJob.class)) {
+            throw new IllegalArgumentException("Job not found: " + jobId);
+        }
+    }
+
+    /** Access-checked, migrated, lightweight job (no heavy fields). */
+    private BulkEmailJob accessibleSummary(String jobId, UserDetailsImpl principal) {
+        assertAccess(jobId, principal);
+        migrationService.ensureMigrated(jobId);
+        BulkEmailJob job = jobStore.findSummary(jobId);
+        if (job == null) throw new IllegalArgumentException("Job not found: " + jobId);
+        return job;
+    }
+
+    /** Appends an audit event to a NEW (not yet inserted) job. Existing jobs use {@link BulkEmailJobStore#pushAudit}. */
+    private void addAuditEvent(BulkEmailJob job, EventType type, String description) {
+        if (job.getAuditEvents() == null) job.setAuditEvents(new ArrayList<>());
         job.getAuditEvents().add(BulkEmailJob.BulkEmailAuditEvent.builder()
                 .type(type)
                 .description(description)
