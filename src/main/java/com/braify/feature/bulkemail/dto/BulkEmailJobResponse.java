@@ -1,6 +1,7 @@
 package com.braify.feature.bulkemail.dto;
 
 import com.braify.feature.bulkemail.model.BulkEmailJob;
+import com.braify.feature.bulkemail.model.BulkEmailRecipient;
 import lombok.Builder;
 import lombok.Data;
 
@@ -8,6 +9,10 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.stream.Collectors;
 
+/**
+ * A campaign's summary. Recipients are not included — they are served paginated by
+ * {@code GET /api/bulk-email/jobs/{id}/recipients} ({@link RecipientPageResponse}).
+ */
 @Data @Builder
 public class BulkEmailJobResponse {
 
@@ -41,15 +46,15 @@ public class BulkEmailJobResponse {
     private LocalDateTime createdAt;
     private LocalDateTime startedAt;
     private LocalDateTime completedAt;
-    private List<RowResponse>        rows;        // null when not requested
-    private List<AuditEventResponse> auditEvents; // null when not requested
+    private List<AuditEventResponse> auditEvents; // null when not loaded
 
+    /** One recipient row in the Recipients tab. */
     @Data @Builder
     public static class RowResponse {
         private int    rowIndex;
         private String recipientEmail;
         private String recipientName;
-        private BulkEmailJob.BulkEmailRow.RowStatus status;
+        private BulkEmailRecipient.Status status;
         private String error;
         private String messageId;
         private LocalDateTime sentAt;
@@ -62,6 +67,26 @@ public class BulkEmailJobResponse {
         private LocalDateTime lastClickedAt;
         private boolean unsubscribed;
         private LocalDateTime unsubscribedAt;
+
+        public static RowResponse from(BulkEmailRecipient r) {
+            return RowResponse.builder()
+                    .rowIndex(r.getRowIndex())
+                    .recipientEmail(r.getRecipientEmail())
+                    .recipientName(r.getRecipientName())
+                    .status(r.getStatus())
+                    .error(r.getError())
+                    .messageId(r.getMessageId())
+                    .sentAt(r.getSentAt())
+                    .openCount(r.getOpenCount())
+                    .firstOpenedAt(r.getFirstOpenedAt())
+                    .lastOpenedAt(r.getLastOpenedAt())
+                    .clickCount(r.getClickCount())
+                    .firstClickedAt(r.getFirstClickedAt())
+                    .lastClickedAt(r.getLastClickedAt())
+                    .unsubscribed(r.isUnsubscribed())
+                    .unsubscribedAt(r.getUnsubscribedAt())
+                    .build();
+        }
     }
 
     @Data @Builder
@@ -71,7 +96,7 @@ public class BulkEmailJobResponse {
         private LocalDateTime timestamp;
     }
 
-    public static BulkEmailJobResponse from(BulkEmailJob job, boolean includeRows) {
+    public static BulkEmailJobResponse from(BulkEmailJob job) {
         var b = BulkEmailJobResponse.builder()
                 .id(job.getId())
                 .label(job.getLabel())
@@ -103,28 +128,6 @@ public class BulkEmailJobResponse {
                 .startedAt(job.getStartedAt())
                 .completedAt(job.getCompletedAt());
 
-        if (includeRows && job.getRows() != null) {
-            b.rows(job.getRows().stream()
-                    .map(r -> RowResponse.builder()
-                            .rowIndex(r.getRowIndex())
-                            .recipientEmail(r.getRecipientEmail())
-                            .recipientName(r.getRecipientName())
-                            .status(r.getStatus())
-                            .error(r.getError())
-                            .messageId(r.getMessageId())
-                            .sentAt(r.getSentAt())
-                            .openCount(r.getOpenCount())
-                            .firstOpenedAt(r.getFirstOpenedAt())
-                            .lastOpenedAt(r.getLastOpenedAt())
-                            .clickCount(r.getClickCount())
-                            .firstClickedAt(r.getFirstClickedAt())
-                            .lastClickedAt(r.getLastClickedAt())
-                            .unsubscribed(r.isUnsubscribed())
-                            .unsubscribedAt(r.getUnsubscribedAt())
-                            .build())
-                    .collect(Collectors.toList()));
-        }
-
         if (job.getAuditEvents() != null) {
             b.auditEvents(job.getAuditEvents().stream()
                     .map(e -> AuditEventResponse.builder()
@@ -134,7 +137,6 @@ public class BulkEmailJobResponse {
                             .build())
                     .collect(Collectors.toList()));
         }
-
         return b.build();
     }
 }

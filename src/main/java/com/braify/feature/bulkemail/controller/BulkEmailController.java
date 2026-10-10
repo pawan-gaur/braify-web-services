@@ -63,9 +63,9 @@ public class BulkEmailController {
     }
 
     @Operation(summary = "Get job details",
-               description = "Returns full job including per-row status, errors, and Resend message IDs. " +
-                             "Poll this endpoint while status is PROCESSING to get live progress.")
-    @ApiResponse(responseCode = "200", description = "Job details with row results")
+               description = "Returns the job summary — configuration, counters and audit trail. " +
+                             "Recipients are paginated via GET /{id}/recipients.")
+    @ApiResponse(responseCode = "200", description = "Job summary")
     @ApiResponse(responseCode = "404", description = "Job not found or not owned by caller")
     @GetMapping("/{id}")
     public ResponseEntity<BulkEmailJobResponse> getJob(
@@ -73,6 +73,30 @@ public class BulkEmailController {
             @AuthenticationPrincipal UserDetailsImpl principal) {
 
         return ResponseEntity.ok(bulkEmailService.getJob(id, principal));
+    }
+
+    @Operation(summary = "List a job's recipients (paginated)",
+               description = "Per-recipient status, errors and engagement for one page, filtered and searched " +
+                             "server-side, plus the count for every filter.")
+    @ApiResponse(responseCode = "200", description = "One page of recipients")
+    @ApiResponse(responseCode = "404", description = "Job not found or not owned by caller")
+    @GetMapping("/{id}/recipients")
+    public ResponseEntity<com.braify.feature.bulkemail.dto.RecipientPageResponse> getRecipients(
+            @Parameter(description = "Job ID") @PathVariable String id,
+            @Parameter(description = "ALL, SENT, FAILED, PENDING, OPENED, CLICKED, UNOPENED or UNSUBSCRIBED")
+                @RequestParam(defaultValue = "ALL") String filter,
+            @Parameter(description = "Search email or name (optional)") @RequestParam(required = false) String search,
+            @Parameter(description = "Zero-based page index") @RequestParam(defaultValue = "0") int page,
+            @Parameter(description = "Page size (max 200)") @RequestParam(defaultValue = "100") int size,
+            @AuthenticationPrincipal UserDetailsImpl principal) {
+
+        com.braify.feature.bulkemail.service.BulkEmailRecipientStore.Filter f;
+        try {
+            f = com.braify.feature.bulkemail.service.BulkEmailRecipientStore.Filter.valueOf(filter.trim().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            f = com.braify.feature.bulkemail.service.BulkEmailRecipientStore.Filter.ALL;
+        }
+        return ResponseEntity.ok(bulkEmailService.getRecipients(id, f, search, page, size, principal));
     }
 
     @Operation(summary = "Resend failed rows",

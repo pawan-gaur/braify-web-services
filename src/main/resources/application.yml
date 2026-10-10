@@ -107,6 +107,17 @@ bulkemail:
   rate-limit-per-second: ${BULK_EMAIL_RATE_PER_SEC:8}
   # Attempts per recipient before giving up — only transient errors (429/5xx/timeouts) are retried.
   max-send-attempts: ${BULK_EMAIL_MAX_ATTEMPTS:3}
+  # Parallel workers per campaign. Keep low on small instances (2–3 on a t3.micro); raise on bigger hosts.
+  concurrency: ${BULK_EMAIL_CONCURRENCY:3}
+  # Recipients fetched per page while sending (memory stays flat regardless of campaign size).
+  batch-size: ${BULK_EMAIL_BATCH_SIZE:100}
+  # Max recipients / Sheet-2 rows accepted per campaign (bounded by request size, not storage).
+  max-rows: ${BULK_EMAIL_MAX_ROWS:25000}
+  max-detail-rows: ${BULK_EMAIL_MAX_DETAIL_ROWS:100000}
+  migration:
+    # Migrate legacy campaigns (embedded rows) to the recipients collection at startup.
+    # Leave on; when off, each legacy campaign is still migrated lazily on first access.
+    enabled: ${BULK_EMAIL_MIGRATION_ENABLED:true}
 
 management:
   endpoints:
