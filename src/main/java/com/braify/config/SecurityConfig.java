@@ -5,6 +5,9 @@ import com.braify.security.JwtAuthFilter;
 import com.braify.security.RestAuthenticationEntryPoint;
 import com.braify.security.UserDetailsServiceImpl;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
+import org.springframework.security.authorization.AuthorizationDecision;
+import org.springframework.security.core.Authentication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -56,7 +59,17 @@ public class SecurityConfig {
                 .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/onboarding").permitAll() // public get-started form
                 // OpenAPI / Swagger UI — allow unauthenticated access so the frontend doc page can load the spec
                 .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
-                .anyRequest().authenticated()
+                // Signer inbox: signer-portal sessions and Braify users (scoped to their own email).
+                .requestMatchers("/api/signer/**").authenticated()
+                // Everything else: authenticated, and NEVER a signer-portal identity. JwtAuthFilter
+                // already only honours signer tokens on /api/signer/**; this is the second lock.
+                .anyRequest().access((authentication, context) -> {
+                    Authentication a = authentication.get();
+                    boolean ok = a != null && a.isAuthenticated()
+                            && !(a instanceof AnonymousAuthenticationToken)
+                            && a.getAuthorities().stream().noneMatch(g -> "ROLE_SIGNER".equals(g.getAuthority()));
+                    return new AuthorizationDecision(ok);
+                })
             )
             // Unauthenticated requests (missing / expired / invalid token) must return
             // 401 — NOT the Spring default of 403 — so the client can distinguish a

@@ -20,6 +20,9 @@ import java.util.List;
     // Creator-scoped list (USER/ADMIN)
     @CompoundIndex(name = "idx_createdBy_status_batch_created",
                    def = "{'createdBy':1,'status':1,'bulkBatchId':1,'createdAt':-1}"),
+    // Signer inbox: "documents where this email is a signatory / legacy client / CC"
+    @CompoundIndex(name = "idx_signatories_email", def = "{'signatories.email':1}"),
+    @CompoundIndex(name = "idx_client_email",      def = "{'clientEmail':1}"),
 })
 public class ESignDocument {
 

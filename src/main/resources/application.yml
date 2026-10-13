@@ -71,6 +71,14 @@ app:
     open-enabled: ${TRACKING_OPEN_ENABLED:true}
     click-enabled: ${TRACKING_CLICK_ENABLED:true}
     unsubscribe-enabled: ${TRACKING_UNSUBSCRIBE_ENABLED:false}
+  # Email one-time sign-in codes (POST /api/auth/otp/*) — used by Braify users and
+  # e-sign recipients (signer inbox). Codes are single-use and stored hashed.
+  otp:
+    length: ${OTP_LENGTH:6}
+    ttl-minutes: ${OTP_TTL_MINUTES:10}
+    max-attempts: ${OTP_MAX_ATTEMPTS:5}
+    resend-seconds: ${OTP_RESEND_SECONDS:60}
+    max-per-hour: ${OTP_MAX_PER_HOUR:5}
 
 resend:
   api-key: "${RESEND_KEY}"

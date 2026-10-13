@@ -117,6 +117,7 @@ public class ESignEmailService implements InternalTemplateProvider {
         vars.put("expiryDate",    fmt(doc.getTokenExpiresAt(), EXPIRY_FMT));
         vars.put("expiresIn",     expiresInPhrase(doc.getTokenExpiresAt()));
         vars.put("signingLink",   signingLink);
+        vars.put("portalLink",    portalLink(recipientEmail));
         // legacy aliases for any org-custom template still using the old tokens
         vars.put("clientName",    recipientName != null ? recipientName : "");
         vars.put("documentTitle", doc.getTitle() != null ? doc.getTitle() : "");
@@ -199,6 +200,7 @@ public class ESignEmailService implements InternalTemplateProvider {
         vars.put("expiresIn",     expiresInPhrase(doc.getTokenExpiresAt()));
         vars.put("signingLink",   signingLink);
         vars.put("unsubscribeLink", baseUrl + "/esign/unsubscribe/" + token);
+        vars.put("portalLink",    portalLink(signatory.getEmail()));
         // legacy aliases
         vars.put("clientName",    notBlank(signatory.getName()) ? signatory.getName() : "");
         vars.put("documentTitle", doc.getTitle() != null ? doc.getTitle() : "");
@@ -421,6 +423,16 @@ public class ESignEmailService implements InternalTemplateProvider {
 
     private String buildInvitationHtml() { return ESignEmailTemplates.INVITATION; }
 
+    /**
+     * Link to the signer inbox ("all documents sent to you"), via the sign-in page with the
+     * recipient's email pre-filled. Recipients sign in with an emailed code.
+     */
+    private String portalLink(String recipientEmail) {
+        String email = recipientEmail != null ? recipientEmail.trim() : "";
+        return baseUrl + "/login?next=%2Fmy-documents&email="
+                + java.net.URLEncoder.encode(email, java.nio.charset.StandardCharsets.UTF_8);
+    }
+
     private String buildCompletionHtml() { return ESignEmailTemplates.COMPLETION; }
 
     // ── Brand + content variable assembly ────────────────────────────────────
@@ -569,7 +581,7 @@ public class ESignEmailService implements InternalTemplateProvider {
                         buildInvitationHtml(),
                         List.of("organizationName", "brandMark", "accent", "accentSoft", "accentBorder",
                                 "signerName", "signerEmail", "documentName", "expiryDate", "expiresIn",
-                                "signingLink", "footerContact")),
+                                "signingLink", "portalLink", "footerContact")),
                 new InternalTemplateSeed(
                         InternalTemplateCodes.ESIGN_SIGNING_REMINDER,
                         "System — E-Sign: Signing Reminder",
@@ -577,7 +589,7 @@ public class ESignEmailService implements InternalTemplateProvider {
                         buildReminderHtml(),
                         List.of("organizationName", "brandMark", "accent", "accentSoft", "accentBorder",
                                 "signerName", "signerEmail", "documentName", "expiryDate", "expiresIn",
-                                "signingLink", "unsubscribeLink", "footerContact")),
+                                "signingLink", "unsubscribeLink", "portalLink", "footerContact")),
                 new InternalTemplateSeed(
                         InternalTemplateCodes.ESIGN_COMPLETION_SIGNER,
                         "System — E-Sign: Document Signed",

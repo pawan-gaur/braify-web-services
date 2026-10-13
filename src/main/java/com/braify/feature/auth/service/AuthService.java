@@ -13,6 +13,10 @@ import com.braify.feature.user.repository.AppUserRepository;
 import com.braify.feature.organization.repository.OrganizationRepository;
 import com.braify.feature.platform.service.PlatformSettingsService;
 import com.braify.feature.session.repository.UserSessionRepository;
+import com.braify.feature.signer.service.EmailOtpService;
+import com.braify.feature.signer.service.SignerAuthService;
+import com.braify.feature.signer.service.SignerEmails;
+import com.braify.feature.signer.service.SignerInboxService;
 import com.braify.security.JwtUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -23,6 +27,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 @Slf4j
 @Service
@@ -38,6 +43,9 @@ public class AuthService {
     private final MfaService            mfaService;
     private final PlatformSettingsService platformSettingsService;
     private final PasswordPolicyService   passwordPolicyService;
+    private final EmailOtpService         emailOtpService;
+    private final SignerAuthService       signerAuthService;
+    private final SignerInboxService      signerInboxService;
 
     private static final int MAX_SESSIONS = 3;
 
@@ -51,11 +59,20 @@ public class AuthService {
 
     public LoginResult login(LoginRequest req, String ipAddress) {
         log.info("Login attempt for email='{}'", req.getEmail());
-        AppUser user = userRepository.findByEmail(req.getEmail())
-                .orElseThrow(() -> {
-                    log.warn("Login failed — user not found for email='{}'", req.getEmail());
-                    return new RuntimeException("Invalid email or password");
-                });
+        Optional<AppUser> userOpt = findUserByEmail(req.getEmail());
+        if (userOpt.isEmpty()) {
+            // No Braify account — the email may belong to an e-sign recipient who set a
+            // signer-portal password. Same generic error either way (no account enumeration).
+            String email = SignerEmails.normalize(req.getEmail());
+            if (email != null) {
+                Optional<LoginResult> signer =
+                        signerAuthService.passwordLogin(email, req.getPassword(), req.getDeviceInfo(), ipAddress);
+                if (signer.isPresent()) return signer.get();
+            }
+            log.warn("Login failed — user not found for email='{}'", req.getEmail());
+            throw new RuntimeException("Invalid email or password");
+        }
+        AppUser user = userOpt.get();
 
         if (!user.isActive()) {
             log.warn("Login rejected — account disabled for email='{}'", req.getEmail());
@@ -96,7 +113,80 @@ public class AuthService {
                     .build(), null);
         }
         boolean mustSetupMfa = (mfaReq == MfaService.MfaRequirement.MUST_SETUP);
-        return issueSession(user, req.getDeviceInfo(), ipAddress, false, mustSetupMfa);
+        return issueSession(user, req.getDeviceInfo(), ipAddress, false, mustSetupMfa, "PASSWORD", false);
+    }
+
+    // ── Email OTP sign-in ─────────────────────────────────────────────────────
+
+    /**
+     * Emails a one-time sign-in code when the address belongs to an active Braify user or
+     * to an e-sign recipient (has a signer account or any sent document). Unknown emails are
+     * silently ignored — the caller always returns the same generic response.
+     */
+    public void requestLoginOtp(String rawEmail, String ipAddress) {
+        String email = SignerEmails.normalize(rawEmail);
+        if (email == null) throw new IllegalArgumentException("Email is required");
+
+        boolean eligible = findUserByEmail(email).map(AppUser::isActive).orElse(false)
+                || signerAuthService.hasAccount(email)
+                || signerInboxService.hasAnyDocuments(email);
+        if (!eligible) {
+            log.info("OTP requested for unknown email='{}' — ignored", email);
+            return;
+        }
+        emailOtpService.issue(email, ipAddress);
+    }
+
+    /**
+     * Completes an email-OTP sign-in. A Braify user gets a full app session — the code
+     * replaces the password only, so lockout and the MFA policy still apply exactly as for
+     * a password login. A recipient without an AppUser gets a signer-portal session.
+     */
+    public LoginResult loginWithOtp(String rawEmail, String code, String deviceInfo, String ipAddress) {
+        String email = SignerEmails.normalize(rawEmail);
+        if (email == null) throw new IllegalArgumentException("Email is required");
+
+        emailOtpService.verify(email, code);
+
+        Optional<AppUser> userOpt = findUserByEmail(email).filter(AppUser::isActive);
+        if (userOpt.isPresent()) {
+            AppUser user = userOpt.get();
+            LocalDateTime now = LocalDateTime.now();
+            if (user.getLockedUntil() != null && user.getLockedUntil().isAfter(now)) {
+                long mins = Duration.between(now, user.getLockedUntil()).toMinutes() + 1;
+                throw new IllegalArgumentException(
+                        "Account locked due to too many failed attempts. Try again in " + mins + " minute(s).");
+            }
+            MfaService.MfaRequirement mfaReq = mfaService.requirementAtLogin(user);
+            if (mfaReq == MfaService.MfaRequirement.CHALLENGE) {
+                log.info("OTP login for '{}' — MFA challenge required", user.getEmail());
+                return new LoginResult(LoginResponse.builder()
+                        .mfaRequired(true)
+                        .mfaToken(jwtUtil.generateMfaChallengeToken(user, "EMAIL_OTP"))
+                        .build(), null);
+            }
+            return issueSession(user, deviceInfo, ipAddress, false,
+                    mfaReq == MfaService.MfaRequirement.MUST_SETUP, "EMAIL_OTP", true);
+        }
+
+        // No (active) Braify account — signer portal, if this email has anything to sign.
+        if (signerAuthService.hasAccount(email) || signerInboxService.hasAnyDocuments(email)) {
+            var account = signerAuthService.findOrCreate(email);
+            if (!account.isActive()) throw new IllegalArgumentException("Account is disabled");
+            return signerAuthService.issueSession(account, deviceInfo, ipAddress);
+        }
+        throw new IllegalArgumentException("Invalid or expired code. Request a new one.");
+    }
+
+    /** Exact match first (existing rows), then the normalized form. */
+    private Optional<AppUser> findUserByEmail(String email) {
+        if (email == null) return Optional.empty();
+        Optional<AppUser> exact = userRepository.findByEmail(email.trim());
+        if (exact.isPresent()) return exact;
+        String normalized = SignerEmails.normalize(email);
+        return normalized != null && !normalized.equals(email.trim())
+                ? userRepository.findByEmail(normalized)
+                : Optional.empty();
     }
 
     /**
@@ -119,7 +209,10 @@ public class AuthService {
                     AuditLog.Action.LOGIN, AuditLog.ResourceType.SESSION, user, "Invalid MFA code");
             throw new RuntimeException("Invalid verification code");
         }
-        return issueSession(user, req.getDeviceInfo(), ipAddress, true, false);
+        boolean viaEmailOtp = "EMAIL_OTP".equals(
+                jwtUtil.parseToken(req.getMfaToken()).get("firstFactor", String.class));
+        return issueSession(user, req.getDeviceInfo(), ipAddress, true, false,
+                viaEmailOtp ? "EMAIL_OTP+MFA" : "PASSWORD+MFA", viaEmailOtp);
     }
 
     /**
@@ -151,7 +244,8 @@ public class AuthService {
      * {@link UserSession}, audit the LOGIN, and build the full {@link LoginResponse}.
      */
     private LoginResult issueSession(AppUser user, String deviceInfo, String ipAddress,
-                                     boolean mfaUsed, boolean mustSetupMfa) {
+                                     boolean mfaUsed, boolean mustSetupMfa, String method,
+                                     boolean emailVerified) {
         // Password expiry (platform policy): force a change at login when overdue.
         if (!user.isMustChangePassword() && passwordPolicyService.isExpired(user)) {
             user.setMustChangePassword(true);
@@ -197,6 +291,7 @@ public class AuthService {
                 .deviceInfo(deviceInfo)
                 .ipAddress(ipAddress)
                 .active(true)
+                .emailVerified(emailVerified)
                 .expiresAt(sessionExpiry)
                 .lastUsedAt(LocalDateTime.now())
                 .build();
@@ -208,7 +303,8 @@ public class AuthService {
                 AuditLog.Action.LOGIN, AuditLog.ResourceType.SESSION,
                 0, Map.of("ip",         ipAddress  != null ? ipAddress : "unknown",
                            "deviceInfo", deviceInfo != null ? deviceInfo : "",
-                           "mfa",        String.valueOf(mfaUsed)),
+                           "mfa",        String.valueOf(mfaUsed),
+                           "method",     method),
                 user);
 
         log.info("Login successful for user '{}' (role={}, mfa={})", user.getEmail(), user.getRole(), mfaUsed);
@@ -246,6 +342,11 @@ public class AuthService {
                 && session.getLastUsedAt().plusMinutes(idleMinutes).isBefore(now)) {
             deactivate(session, "idle timeout");
             throw new RuntimeException("Session idle timeout");
+        }
+
+        // Signer-portal session — the session row points at a SignerAccount, not an AppUser.
+        if (SignerAuthService.PRINCIPAL_TYPE.equals(session.getPrincipalType())) {
+            return signerAuthService.refresh(session);
         }
 
         AppUser user = userRepository.findById(session.getUserId())
