@@ -176,6 +176,33 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(status).body(body);
     }
 
+    /**
+     * Token-scoped authorization failure in the public e-sign flow — e.g. signing a field
+     * that belongs to another signatory or a creator pre-filled field, or an invalid view /
+     * signing link. Returns 403 (not 401, so the client never attempts a session refresh).
+     *
+     * <p>Must be declared because {@link SecurityException} extends {@link RuntimeException},
+     * whose handler would otherwise turn it into a 500.
+     */
+    @ExceptionHandler(SecurityException.class)
+    public ResponseEntity<Map<String, Object>> handleSecurity(SecurityException ex) {
+        log.warn("Forbidden: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(errorBody(HttpStatus.FORBIDDEN, ex.getMessage()));
+    }
+
+    /** Signer inbox opened by a session that hasn't proven the mailbox — client offers the code step. */
+    @ExceptionHandler(com.braify.feature.signer.EmailVerificationRequiredException.class)
+    public ResponseEntity<Map<String, Object>> handleEmailVerificationRequired(
+            com.braify.feature.signer.EmailVerificationRequiredException ex) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("status",    HttpStatus.FORBIDDEN.value());
+        body.put("reason",    "EMAIL_VERIFICATION_REQUIRED");
+        body.put("message",   ex.getMessage());
+        body.put("timestamp", Instant.now().toString());
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
+    }
+
     /** Resource not found — RuntimeException thrown by services. */
     @ExceptionHandler(RuntimeException.class)
     public ResponseEntity<Map<String, Object>> handleRuntime(RuntimeException ex) {

@@ -40,6 +40,7 @@ public class EmailLog {
         ESIGN_CC,
         USER_INVITE,
         PASSWORD_RESET,
+        LOGIN_OTP,
         BULK_EMAIL,
         TEMPLATE_SEND,
         ONBOARDING,

@@ -115,7 +115,8 @@ final class ESignEmailTemplates {
         + """
               </div>
               <div style="text-align:center;margin:30px 0 8px;"><a href="{{signingLink}}" style="display:inline-block;background:{{accent}};color:#fff;font-size:15px;font-weight:700;padding:15px 40px;border-radius:10px;text-decoration:none;">Review &amp; Sign Document</a></div>
-              <p style="margin:0 auto 30px;text-align:center;font-size:12.5px;line-height:1.5;color:#94A3B8;max-width:360px;">This is a secure, single-use link unique to you. Please don't forward this email.</p>
+              <p style="margin:0 auto 18px;text-align:center;font-size:12.5px;line-height:1.5;color:#94A3B8;max-width:360px;">This is a secure, single-use link unique to you. Please don't forward this email.</p>
+              <p style="margin:0 auto 30px;text-align:center;font-size:13px;line-height:1.5;color:#64748B;max-width:400px;">Signing several documents? <a href="{{portalLink}}" style="color:{{accent}};font-weight:600;text-decoration:none;">View all your documents</a> in one place — sign in with a code sent to this email.</p>
             </div>
             """
         + footer("If you weren't expecting this request, you can safely ignore this email — no signature will be recorded and no further action is required.")
@@ -138,7 +139,8 @@ final class ESignEmailTemplates {
         + """
               </div>
               <div style="text-align:center;margin:30px 0 8px;"><a href="{{signingLink}}" style="display:inline-block;background:{{accent}};color:#fff;font-size:15px;font-weight:700;padding:15px 40px;border-radius:10px;text-decoration:none;">Review &amp; Sign Document</a></div>
-              <p style="margin:0 auto 30px;text-align:center;font-size:12.5px;line-height:1.5;color:#94A3B8;max-width:360px;">This is a secure, single-use link unique to you. Please don't forward this email.</p>
+              <p style="margin:0 auto 18px;text-align:center;font-size:12.5px;line-height:1.5;color:#94A3B8;max-width:360px;">This is a secure, single-use link unique to you. Please don't forward this email.</p>
+              <p style="margin:0 auto 30px;text-align:center;font-size:13px;line-height:1.5;color:#64748B;max-width:400px;">Signing several documents? <a href="{{portalLink}}" style="color:{{accent}};font-weight:600;text-decoration:none;">View all your documents</a> in one place — sign in with a code sent to this email.</p>
             </div>
             """
         + footer("If you've already signed, no further action is needed — you can safely ignore this reminder."

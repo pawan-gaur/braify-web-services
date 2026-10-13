@@ -42,6 +42,7 @@ public class ESignClientService {
     public DocumentResponse openDocument(String rawJwt, String ip, String ua) {
         ESignSigningToken token = validateToken(rawJwt);
         ESignDocument doc = fetchDoc(token.getDocumentId());
+        requireOpenForSigning(doc);
         ESignDocument.Signatory signatory = resolveSignatory(doc, token);
 
         boolean dirty = false;
@@ -87,6 +88,7 @@ public class ESignClientService {
     public DocumentResponse recordConsent(String rawJwt, String ip, String ua) {
         ESignSigningToken token = validateToken(rawJwt);
         ESignDocument doc = fetchDoc(token.getDocumentId());
+        requireOpenForSigning(doc);
         ESignDocument.Signatory signatory = resolveSignatory(doc, token);
 
         LocalDateTime now = LocalDateTime.now();
@@ -117,6 +119,7 @@ public class ESignClientService {
     public byte[] getSourcePdfBytes(String rawJwt) {
         ESignSigningToken token = validateToken(rawJwt);
         ESignDocument doc = fetchDoc(token.getDocumentId());
+        requireOpenForSigning(doc);
         return esignStorage.resolveSourceBytes(doc);
     }
 
@@ -165,10 +168,19 @@ public class ESignClientService {
         if (field.getFilledBy() == ESignSignatureField.FilledBy.CREATOR)
             throw new SecurityException("This field is pre-filled by the sender and cannot be signed");
 
-        // A signatory may only sign fields assigned to them (legacy tokens / unassigned fields are unrestricted).
-        if (token.getSignatoryId() != null && field.getSignatoryId() != null
-                && !token.getSignatoryId().equals(field.getSignatoryId()))
-            throw new SecurityException("This field belongs to a different signatory");
+        ESignDocument doc = fetchDoc(token.getDocumentId());
+        requireOpenForSigning(doc);
+
+        // A signatory may only sign fields assigned to them. An unassigned field belongs to the
+        // first signatory — the same rule fieldsForSignatory() uses when validating submission
+        // (legacy single-signer tokens carry no signatoryId and stay unrestricted).
+        if (token.getSignatoryId() != null && doc.getSignatories() != null && !doc.getSignatories().isEmpty()) {
+            String owner = field.getSignatoryId() != null
+                    ? field.getSignatoryId()
+                    : doc.getSignatories().get(0).getId();
+            if (!token.getSignatoryId().equals(owner))
+                throw new SecurityException("This field belongs to a different signatory");
+        }
 
         field.setValue(req.getValue());
         field.setSigningMethod(ESignSignatureField.SigningMethod.valueOf(
@@ -185,7 +197,6 @@ public class ESignClientService {
                 Map.of("fieldId", fieldId, "method", req.getSigningMethod()));
 
         // Resolve the field owner's display name for the signature caption.
-        ESignDocument doc = fetchDoc(token.getDocumentId());
         ESignDocument.Signatory signatory = resolveSignatory(doc, token);
         String signerName = signatory != null ? signatory.getName() : doc.getClientName();
 
@@ -197,6 +208,7 @@ public class ESignClientService {
     public DocumentResponse submitDocument(String rawJwt, String ip, String ua) {
         ESignSigningToken token = validateToken(rawJwt);
         ESignDocument doc = fetchDoc(token.getDocumentId());
+        requireOpenForSigning(doc);
         ESignDocument.Signatory signatory = resolveSignatory(doc, token);
 
         List<ESignSignatureField> allFields =
@@ -544,6 +556,28 @@ public class ESignClientService {
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
+
+    /**
+     * Signing actions are only allowed while the document is out for signature. A valid,
+     * unused token is not enough on its own: tokens of legacy cancelled documents were never
+     * revoked, and the expiry scheduler only runs hourly.
+     */
+    private void requireOpenForSigning(ESignDocument doc) {
+        switch (doc.getStatus()) {
+            case PENDING, IN_REVIEW, PARTIALLY_SIGNED -> { /* open */ }
+            case CANCELLED -> throw new SigningLinkException(SigningLinkException.Reason.CANCELLED,
+                    "This document was cancelled by the sender.");
+            case EXPIRED -> throw new SigningLinkException(SigningLinkException.Reason.EXPIRED,
+                    "This signing link has expired.");
+            case SIGNED, COMPLETED -> throw new SigningLinkException(SigningLinkException.Reason.ALREADY_SIGNED,
+                    "This document has already been signed.");
+            default -> throw new SigningLinkException(SigningLinkException.Reason.INVALID,
+                    "This signing link isn't valid.");
+        }
+        if (doc.getTokenExpiresAt() != null && doc.getTokenExpiresAt().isBefore(LocalDateTime.now())) {
+            throw new SigningLinkException(SigningLinkException.Reason.EXPIRED, "This signing link has expired.");
+        }
+    }
 
     private ESignSigningToken validateToken(String rawJwt) {
         return tokenService.validateSigningToken(rawJwt)
