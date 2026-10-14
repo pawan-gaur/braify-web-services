@@ -85,7 +85,11 @@ public class SignerController {
                description = "Needed once per session before a Braify user can open the signer inbox, unless they signed in with an email code.")
     @PostMapping("/verify-email/request")
     public ResponseEntity<Map<String, Object>> requestEmailVerification(Authentication auth, HttpServletRequest http) {
-        emailOtpService.issue(email(auth), clientIp(http));
+        String name = auth.getPrincipal() instanceof UserDetailsImpl ud
+                ? java.util.stream.Stream.of(ud.getAppUser().getFirstName(), ud.getAppUser().getLastName())
+                        .filter(n -> n != null && !n.isBlank()).collect(java.util.stream.Collectors.joining(" "))
+                : signerAuthService.displayName(email(auth));
+        emailOtpService.issue(email(auth), name, http.getHeader("User-Agent"), clientIp(http));
         return ResponseEntity.ok(Map.of(
                 "resendAfterSeconds", emailOtpService.getResendSeconds(),
                 "ttlMinutes", emailOtpService.getTtlMinutes()));

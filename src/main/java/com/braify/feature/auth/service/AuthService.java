@@ -124,18 +124,26 @@ public class AuthService {
      * to an e-sign recipient (has a signer account or any sent document). Unknown emails are
      * silently ignored — the caller always returns the same generic response.
      */
-    public void requestLoginOtp(String rawEmail, String ipAddress) {
+    public void requestLoginOtp(String rawEmail, String ipAddress, String userAgent) {
         String email = SignerEmails.normalize(rawEmail);
         if (email == null) throw new IllegalArgumentException("Email is required");
 
-        boolean eligible = findUserByEmail(email).map(AppUser::isActive).orElse(false)
+        Optional<AppUser> user = findUserByEmail(email).filter(AppUser::isActive);
+        boolean eligible = user.isPresent()
                 || signerAuthService.hasAccount(email)
                 || signerInboxService.hasAnyDocuments(email);
         if (!eligible) {
             log.info("OTP requested for unknown email='{}' — ignored", email);
             return;
         }
-        emailOtpService.issue(email, ipAddress);
+        String name = user.map(u -> joinName(u.getFirstName(), u.getLastName()))
+                .filter(n -> !n.isBlank())
+                .orElseGet(() -> signerAuthService.displayName(email));
+        emailOtpService.issue(email, name, userAgent, ipAddress);
+    }
+
+    private static String joinName(String first, String last) {
+        return ((first != null ? first : "") + " " + (last != null ? last : "")).trim();
     }
 
     /**

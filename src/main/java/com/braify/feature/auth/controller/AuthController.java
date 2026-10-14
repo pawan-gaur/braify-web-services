@@ -110,7 +110,7 @@ public class AuthController {
     public ResponseEntity<Map<String, Object>> requestOtp(@Valid @RequestBody OtpRequest req,
                                                           HttpServletRequest httpReq) {
         log.info("POST /api/auth/otp/request email='{}'", req.getEmail());
-        authService.requestLoginOtp(req.getEmail(), extractClientIp(httpReq));
+        authService.requestLoginOtp(req.getEmail(), extractClientIp(httpReq), httpReq.getHeader("User-Agent"));
         return ResponseEntity.ok(Map.of(
                 "message", "If this email can sign in, a code is on its way.",
                 "resendAfterSeconds", emailOtpService.getResendSeconds(),

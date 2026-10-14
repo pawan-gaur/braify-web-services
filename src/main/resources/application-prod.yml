@@ -75,6 +75,9 @@ springdoc:
 resend:
   api-key: "${RESEND_API_KEY}"
   from-email: "${RESEND_FROM_EMAIL}"
+  # Optional separate sender for sign-in codes — use a different subdomain than bulk/marketing mail
+  # (e.g. "Braify <no-reply@notify.yourdomain.com>") so Gmail keeps them out of Promotions.
+  transactional-from-email: "${RESEND_TRANSACTIONAL_FROM_EMAIL:}"
 
 # Bulk-email sending reliability (see application.yml for docs)
 bulkemail:
