@@ -417,7 +417,8 @@ public class DashboardService {
                                            caller.getOrganizationId(),
                                            List.of(AppUser.Role.ADMIN, AppUser.Role.USER))
                                            .stream().map(AppUser::getEmail).toList();
-            case USER           -> List.of(caller.getEmail());
+            // SIGNER (e-sign recipient, no org) — least privilege: only their own activity.
+            case USER, SIGNER   -> List.of(caller.getEmail());
         };
     }
 

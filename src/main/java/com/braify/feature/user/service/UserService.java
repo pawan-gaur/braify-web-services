@@ -159,6 +159,8 @@ public class UserService {
         if (req.getPassword() != null && !req.getPassword().isBlank()) {
             // Enforce platform password policy (length / complexity / re-use) + history.
             passwordPolicyService.applyNewPassword(user, req.getPassword());
+            // Set by someone else (an admin): no longer proof of mailbox ownership.
+            if (!user.getId().equals(currentUser.getId())) user.setPasswordMailboxVerified(false);
         }
         UserResponse response = toResponse(userRepository.save(user));
 
@@ -256,6 +258,7 @@ public class UserService {
             case ORG_ADMIN      -> 3;
             case ADMIN          -> 2;
             case USER           -> 1;
+            case SIGNER         -> 0;   // e-sign recipient — outranks no one
         };
     }
 

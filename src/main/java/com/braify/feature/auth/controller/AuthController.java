@@ -308,6 +308,7 @@ public class AuthController {
         // Enforce platform password policy (length / complexity / re-use) + history.
         passwordPolicyService.applyNewPassword(user, newPassword);
         user.setMustChangePassword(false);
+        user.setPasswordMailboxVerified(true);   // set via an emailed link
         userRepository.save(user);
 
         it.setUsed(true);
@@ -364,6 +365,7 @@ public class AuthController {
         // Enforce platform password policy (length / complexity / re-use) + history.
         passwordPolicyService.applyNewPassword(user, newPassword);
         user.setMustChangePassword(false);
+        user.setPasswordMailboxVerified(true);   // set via an emailed link
         userRepository.save(user);
 
         it.setUsed(true);
