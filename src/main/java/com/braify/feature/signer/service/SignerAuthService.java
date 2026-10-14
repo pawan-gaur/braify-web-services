@@ -46,6 +46,14 @@ public class SignerAuthService {
         return accountRepository.findByEmail(email).isPresent();
     }
 
+    /** Greeting name for an email: the signer account's name, else the latest signatory name. */
+    public String displayName(String email) {
+        return accountRepository.findByEmail(email)
+                .map(SignerAccount::getName)
+                .filter(n -> n != null && !n.isBlank())
+                .orElseGet(() -> inboxService.latestSignerName(email));
+    }
+
     /** Returns the account for {@code email}, creating it on first sign-in. */
     public SignerAccount findOrCreate(String email) {
         return accountRepository.findByEmail(email).orElseGet(() -> {

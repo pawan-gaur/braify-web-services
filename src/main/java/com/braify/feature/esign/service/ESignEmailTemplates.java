@@ -13,7 +13,7 @@ package com.braify.feature.esign.service;
  * {{accentSoft}} {{accentBorder}} {{footerContact}}}. {@code brandMark} /
  * {@code footerContact} carry sender-built HTML (logo-or-initial, contact line).
  */
-final class ESignEmailTemplates {
+public final class ESignEmailTemplates {
 
     private ESignEmailTemplates() {}
 
@@ -212,4 +212,89 @@ final class ESignEmailTemplates {
             """
         + footer("This is a view-only link — no action is required from you.")
         + TAIL;
+
+    // ── Template 05 — Sign-in code (email OTP) ────────────────────────────────
+    /**
+     * One-time sign-in code. Platform-level (not org-branded): {@code {{organizationName}}} is
+     * the product name. Tokens: {@code {{recipientName}} {{codeBoxes}} {{ttlMinutes}}
+     * {{accountEmail}} {{requestedAt}} {{requestedFrom}}} plus {@code {{brandMark}} {{accent}}
+     * {{footerContact}}}. {@code {{codeBoxes}}} is sender-built HTML (one box per digit).
+     *
+     * <p>Deliberately more compact than the document emails (480px card, smaller type) so the
+     * whole message — code included — fits a mail client's reading pane without scrolling.
+     */
+    public static final String SIGN_IN_CODE = """
+            <!DOCTYPE html>
+            <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+            <body style="margin:0;padding:0;background:#EEF2F6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#EEF2F6;padding:24px 12px;"><tr><td align="center">
+              <div style="width:480px;max-width:100%;text-align:left;background:#fff;border:1px solid #E2E8F0;border-radius:14px;overflow:hidden;">
+                <div style="height:3px;background:{{accent}};"></div>
+
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-bottom:1px solid #EEF2F6;"><tr>
+                  <td style="padding:14px 24px;vertical-align:middle;">
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+                      <td style="vertical-align:middle;padding-right:8px;">{{brandMark}}</td>
+                      <td style="vertical-align:middle;font-size:14px;font-weight:700;color:#0F172A;">{{organizationName}}</td>
+                    </tr></table>
+                  </td>
+                  <td align="right" style="padding:14px 24px;vertical-align:middle;white-space:nowrap;">
+                    <span style="display:inline-block;width:6px;height:6px;border-radius:999px;background:#22C55E;vertical-align:middle;margin-right:5px;"></span><span style="font-size:9.5px;font-weight:700;letter-spacing:0.12em;color:#94A3B8;vertical-align:middle;">SECURE SIGN-IN</span>
+                  </td>
+                </tr></table>
+
+                <div style="padding:22px 24px 4px;">
+                  <div style="font-size:10px;font-weight:700;letter-spacing:0.12em;color:{{accent}};margin-bottom:8px;">VERIFICATION CODE</div>
+                  <h1 style="margin:0 0 8px;font-size:20px;line-height:1.3;font-weight:700;color:#0F172A;letter-spacing:-0.01em;">Your sign-in code</h1>
+                  <p style="margin:0 0 18px;font-size:14px;line-height:1.55;color:#475569;">Hi <strong style="color:#0F172A;">{{recipientName}}</strong>, enter the code below to finish signing in to {{organizationName}}. It can be used once.</p>
+
+                  <div style="border:1px solid #E2E8F0;border-radius:10px;background:#F8FAFC;overflow:hidden;">
+                    <div style="padding:18px 12px 14px;text-align:center;">
+                      {{codeBoxes}}
+                      <div style="margin-top:12px;"><span style="display:inline-block;white-space:nowrap;font-size:11px;font-weight:700;color:#B45309;background:#FEF3C7;border-radius:5px;padding:3px 10px;">Expires in {{ttlMinutes}} minutes</span></div>
+                    </div>
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border-top:1px solid #E2E8F0;"><tr>
+                      <td width="50%" style="padding:10px 16px;border-right:1px solid #E2E8F0;vertical-align:top;">
+                        <div style="font-size:9.5px;font-weight:700;letter-spacing:0.1em;color:#94A3B8;margin-bottom:3px;">ACCOUNT</div>
+                        <div style="font-size:12.5px;font-weight:600;color:#0F172A;word-break:break-all;"><a style="color:#0F172A;text-decoration:none;">{{accountEmail}}</a></div>
+                      </td>
+                      <td width="50%" style="padding:10px 16px;vertical-align:top;">
+                        <div style="font-size:9.5px;font-weight:700;letter-spacing:0.1em;color:#94A3B8;margin-bottom:3px;">REQUESTED</div>
+                        <div style="font-size:12.5px;font-weight:600;color:#0F172A;">{{requestedAt}}</div>
+                        <div style="font-size:11.5px;color:#64748B;margin-top:1px;">{{requestedFrom}}</div>
+                      </td>
+                    </tr></table>
+                  </div>
+
+                  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:16px 0 22px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:10px;"><tr>
+                    <td width="18" style="vertical-align:top;padding:12px 0 12px 14px;">
+                      <div style="width:18px;height:18px;line-height:18px;border-radius:999px;background:#F59E0B;color:#fff;text-align:center;font-size:11px;font-weight:800;">!</div>
+                    </td>
+                    <td style="vertical-align:top;padding:12px 14px 12px 10px;font-size:12.5px;line-height:1.5;color:#92400E;">
+                      <strong>Never share this code.</strong> {{organizationName}} staff will never ask for it by phone, chat, or email.
+                    </td>
+                  </tr></table>
+                </div>
+
+                <div style="padding:16px 24px 18px;background:#F8FAFC;border-top:1px solid #EEF2F6;">
+                  <p style="margin:0 0 8px;font-size:11.5px;line-height:1.55;color:#94A3B8;">If you didn't try to sign in, you can safely ignore this email — your account stays secure. If this keeps happening, contact support.</p>
+                  {{footerContact}}
+                  <div style="margin-top:10px;font-size:10.5px;color:#CBD5E1;">Powered by <span style="color:#94A3B8;font-weight:700;">{{organizationName}}</span> · 256-bit encrypted &amp; audit-logged</div>
+                </div>
+              </div>
+            </td></tr></table></body></html>
+            """;
+
+    /** Plain-text part of {@link #SIGN_IN_CODE} — sent alongside the HTML (better inbox placement). */
+    public static final String SIGN_IN_CODE_TEXT = """
+            Your {{organizationName}} sign-in code: {{code}}
+
+            Hi {{recipientName}}, enter this code to finish signing in. It expires in {{ttlMinutes}} minutes and can be used once.
+
+            Account: {{accountEmail}}
+            Requested: {{requestedAt}} ({{requestedFrom}})
+
+            Never share this code. {{organizationName}} staff will never ask for it by phone, chat, or email.
+            If you didn't try to sign in, you can safely ignore this email.
+            """;
 }

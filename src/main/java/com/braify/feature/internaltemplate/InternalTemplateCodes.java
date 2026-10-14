@@ -12,6 +12,7 @@ public final class InternalTemplateCodes {
     // Auth
     public static final String INVITE_EMAIL          = "INVITE_EMAIL";
     public static final String PASSWORD_RESET_EMAIL  = "PASSWORD_RESET_EMAIL";
+    public static final String AUTH_SIGN_IN_CODE     = "AUTH_SIGN_IN_CODE";
 
     // Onboarding
     public static final String ONBOARDING_CONFIRMATION  = "ONBOARDING_CONFIRMATION";
