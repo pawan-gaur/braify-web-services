@@ -50,6 +50,14 @@ public class AppUser {
     /** When the password was last set/changed — used for expiry enforcement. */
     private LocalDateTime passwordChangedAt;
 
+    /**
+     * True when the current password was set through a flow that proved control of the
+     * mailbox (invite link, reset link, or a session that signed in with an email code) and no
+     * admin has overwritten it since. Only then does a password sign-in count as mailbox proof
+     * for the signer inbox (admins can set users' passwords, so a password alone isn't proof).
+     */
+    private Boolean passwordMailboxVerified;
+
     /** Most-recent previous BCrypt password hashes, for re-use restriction. Newest first. */
     @Builder.Default
     private List<String> previousPasswords = new ArrayList<>();
@@ -98,7 +106,7 @@ public class AppUser {
     private LocalDateTime updatedAt;
 
     public enum Role {
-        PLATFORM_ADMIN, ORG_ADMIN, ADMIN, USER
+        PLATFORM_ADMIN, ORG_ADMIN, ADMIN, USER, SIGNER
     }
 
     public String getFullName() {

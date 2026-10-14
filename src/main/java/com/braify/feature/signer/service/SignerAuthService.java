@@ -84,11 +84,17 @@ public class SignerAuthService {
         }
         acc.setFailedLoginAttempts(0);
         acc.setLockedUntil(null);
-        return Optional.of(issueSession(acc, deviceInfo, ip));
+        return Optional.of(issueSession(acc, deviceInfo, ip, false));
     }
 
-    /** Opens a signer session for an already-verified account (OTP or password). */
-    public AuthService.LoginResult issueSession(SignerAccount acc, String deviceInfo, String ip) {
+    /**
+     * Opens a signer session for an already-authenticated account.
+     *
+     * @param viaEmailCode true when the sign-in used an emailed code — the session then counts
+     *                     as mailbox proof (e.g. may set a new password without the current one)
+     */
+    public AuthService.LoginResult issueSession(SignerAccount acc, String deviceInfo, String ip,
+                                                boolean viaEmailCode) {
         var sessionsCfg   = platformSettingsService.getSettings().getSecurity().getSessions();
         int maxConcurrent = sessionsCfg != null ? sessionsCfg.getMaxConcurrent()       : 3;
         int sessionHours  = sessionsCfg != null ? sessionsCfg.getSessionTimeoutHours() : 8;
@@ -114,7 +120,7 @@ public class SignerAuthService {
                 .deviceInfo(deviceInfo)
                 .ipAddress(ip)
                 .active(true)
-                .emailVerified(true)   // OTP, or a password the signer set inside a verified session
+                .emailVerified(viaEmailCode)
                 .expiresAt(LocalDateTime.now().plusHours(sessionHours))
                 .lastUsedAt(LocalDateTime.now())
                 .build());
@@ -144,20 +150,25 @@ public class SignerAuthService {
         return new AuthService.LoginResult(buildResponse(acc, token), rawRefresh);
     }
 
-    public LoginResponse me(String accountId) {
+    public LoginResponse me(String accountId, boolean sessionEmailVerified) {
         SignerAccount acc = accountRepository.findById(accountId)
                 .orElseThrow(() -> new IllegalArgumentException("Signer account not found"));
-        return buildResponse(acc, null);
+        LoginResponse r = buildResponse(acc, null);
+        r.setPasswordNeedsCurrent(acc.getPasswordHash() != null && !sessionEmailVerified);
+        return r;
     }
 
     /**
      * Sets or changes the signer's password. Changing an existing password requires the
      * current one; the first password can be set straight after an OTP sign-in.
      */
-    public void setPassword(String accountId, String currentPassword, String newPassword) {
+    public void setPassword(String accountId, String currentPassword, String newPassword,
+                            boolean sessionEmailVerified) {
         SignerAccount acc = accountRepository.findById(accountId)
                 .orElseThrow(() -> new IllegalArgumentException("Signer account not found"));
-        if (acc.getPasswordHash() != null
+        // The current password is required unless this session proved the mailbox (email code),
+        // which is the same proof a password-reset link gives.
+        if (acc.getPasswordHash() != null && !sessionEmailVerified
                 && (currentPassword == null || !passwordEncoder.matches(currentPassword, acc.getPasswordHash()))) {
             throw new IllegalArgumentException("Current password is incorrect");
         }
@@ -167,7 +178,7 @@ public class SignerAuthService {
         acc.setFailedLoginAttempts(0);
         acc.setLockedUntil(null);
         accountRepository.save(acc);
-        log.info("Signer '{}' {} a password", acc.getEmail(), currentPassword == null ? "set" : "changed");
+        log.info("Signer '{}' saved a password", acc.getEmail());
     }
 
     private void registerFailedAttempt(SignerAccount acc) {

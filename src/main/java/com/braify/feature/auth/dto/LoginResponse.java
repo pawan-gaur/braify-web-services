@@ -30,8 +30,14 @@ public class LoginResponse {
     @Builder.Default
     private String accountType = "USER";
 
-    /** Signer sessions only: whether the signer has set a password (else OTP-only). */
+    /** Whether the account has a usable password (false → email-code sign-in only). */
     private Boolean hasPassword;
+
+    /**
+     * /api/signer/me only: whether changing the password requires the current one. False when
+     * there is no usable password, or this session proved the mailbox with an email code.
+     */
+    private Boolean passwordNeedsCurrent;
 
     /**
      * Feature keys enabled for this user's organisation.

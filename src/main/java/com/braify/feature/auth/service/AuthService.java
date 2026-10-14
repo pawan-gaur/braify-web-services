@@ -113,7 +113,8 @@ public class AuthService {
                     .build(), null);
         }
         boolean mustSetupMfa = (mfaReq == MfaService.MfaRequirement.MUST_SETUP);
-        return issueSession(user, req.getDeviceInfo(), ipAddress, false, mustSetupMfa, "PASSWORD", false);
+        return issueSession(user, req.getDeviceInfo(), ipAddress, false, mustSetupMfa, "PASSWORD",
+                Boolean.TRUE.equals(user.getPasswordMailboxVerified()));
     }
 
     // ── Email OTP sign-in ─────────────────────────────────────────────────────
@@ -173,9 +174,17 @@ public class AuthService {
         if (signerAuthService.hasAccount(email) || signerInboxService.hasAnyDocuments(email)) {
             var account = signerAuthService.findOrCreate(email);
             if (!account.isActive()) throw new IllegalArgumentException("Account is disabled");
-            return signerAuthService.issueSession(account, deviceInfo, ipAddress);
+            return signerAuthService.issueSession(account, deviceInfo, ipAddress, true);
         }
         throw new IllegalArgumentException("Invalid or expired code. Request a new one.");
+    }
+
+    /**
+     * Whether the user has a password they can sign in with. False when none was ever stored,
+     * or when it is still the random placeholder of an unaccepted invite.
+     */
+    public static boolean hasUsablePassword(AppUser user) {
+        return user.getPassword() != null && !user.getPassword().isBlank() && !user.isMustChangePassword();
     }
 
     /** Exact match first (existing rows), then the normalized form. */
@@ -212,7 +221,8 @@ public class AuthService {
         boolean viaEmailOtp = "EMAIL_OTP".equals(
                 jwtUtil.parseToken(req.getMfaToken()).get("firstFactor", String.class));
         return issueSession(user, req.getDeviceInfo(), ipAddress, true, false,
-                viaEmailOtp ? "EMAIL_OTP+MFA" : "PASSWORD+MFA", viaEmailOtp);
+                viaEmailOtp ? "EMAIL_OTP+MFA" : "PASSWORD+MFA",
+                viaEmailOtp || Boolean.TRUE.equals(user.getPasswordMailboxVerified()));
     }
 
     /**
@@ -399,6 +409,7 @@ public class AuthService {
                 .organizationName(orgName)
                 .profilePicture(user.getProfilePicture())
                 .mustChangePassword(user.isMustChangePassword())
+                .hasPassword(hasUsablePassword(user))
                 .features(features)
                 .mustSetupMfa(mustSetupMfa)
                 .build();

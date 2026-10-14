@@ -2,6 +2,10 @@ package com.braify.feature.signer.controller;
 
 import com.braify.config.RequestLoggingFilter;
 import com.braify.feature.auth.dto.LoginResponse;
+import com.braify.feature.auth.service.AuthService;
+import com.braify.feature.auth.service.PasswordPolicyService;
+import com.braify.feature.user.model.AppUser;
+import com.braify.feature.user.repository.AppUserRepository;
 import com.braify.feature.session.model.UserSession;
 import com.braify.feature.session.repository.UserSessionRepository;
 import com.braify.feature.signer.EmailVerificationRequiredException;
@@ -23,6 +27,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -51,14 +56,19 @@ public class SignerController {
     private final SignerAuthService  signerAuthService;
     private final EmailOtpService    emailOtpService;
     private final UserSessionRepository sessionRepository;
+    private final AppUserRepository     userRepository;
+    private final PasswordEncoder       passwordEncoder;
+    private final PasswordPolicyService passwordPolicyService;
 
     @Operation(summary = "Current signer profile (signer-portal sessions)")
     @GetMapping("/me")
-    public ResponseEntity<LoginResponse> me(Authentication auth) {
+    public ResponseEntity<LoginResponse> me(Authentication auth, HttpServletRequest http) {
+        boolean sessionVerified = currentSession(http).isEmailVerified();
         if (auth.getPrincipal() instanceof SignerPrincipal sp) {
-            return ResponseEntity.ok(signerAuthService.me(sp.accountId()));
+            return ResponseEntity.ok(signerAuthService.me(sp.accountId(), sessionVerified));
         }
         UserDetailsImpl ud = (UserDetailsImpl) auth.getPrincipal();
+        boolean hasPassword = AuthService.hasUsablePassword(ud.getAppUser());
         return ResponseEntity.ok(LoginResponse.builder()
                 .userId(ud.getId())
                 .email(ud.getAppUser().getEmail())
@@ -66,6 +76,8 @@ public class SignerController {
                 .lastName(ud.getAppUser().getLastName())
                 .role(ud.getAppUser().getRole().name())
                 .accountType("USER")
+                .hasPassword(hasPassword)
+                .passwordNeedsCurrent(hasPassword && !sessionVerified)
                 .build());
     }
 
@@ -92,13 +104,32 @@ public class SignerController {
     }
 
     @Operation(summary = "Set or change the signer-portal password",
-               description = "Body: `{ currentPassword?, newPassword }`. `currentPassword` is required only when a password is already set. Braify users change their password from their profile instead.")
+               description = "Body: `{ currentPassword?, newPassword }`. `currentPassword` is required only when a password exists and this session did not sign in with an email code. Signer-portal accounts and SIGNER-role users only; other Braify users use their profile.")
     @PutMapping("/me/password")
-    public ResponseEntity<Map<String, String>> setPassword(@RequestBody Map<String, String> body, Authentication auth) {
-        if (!(auth.getPrincipal() instanceof SignerPrincipal sp)) {
-            throw new AccessDeniedException("Change your password from your profile.");
+    public ResponseEntity<Map<String, String>> setPassword(@RequestBody Map<String, String> body, Authentication auth,
+                                                           HttpServletRequest http) {
+        boolean sessionVerified = currentSession(http).isEmailVerified();
+        if (auth.getPrincipal() instanceof UserDetailsImpl ud) {
+            // Only SIGNER-role users manage their password here — they cannot reach /api/profile.
+            if (ud.getAppUser().getRole() != AppUser.Role.SIGNER) {
+                throw new AccessDeniedException("Change your password from your profile.");
+            }
+            AppUser user = ud.getAppUser();
+            String current = body.get("currentPassword");
+            // Current password required unless there is none yet, or this session proved the mailbox.
+            if (AuthService.hasUsablePassword(user) && !sessionVerified
+                    && (current == null || !passwordEncoder.matches(current, user.getPassword()))) {
+                throw new IllegalArgumentException("Current password is incorrect");
+            }
+            passwordPolicyService.applyNewPassword(user, body.get("newPassword"));
+            user.setMustChangePassword(false);
+            // Chosen inside a session that proved the mailbox → later password sign-ins count as proof.
+            if (sessionVerified) user.setPasswordMailboxVerified(true);
+            userRepository.save(user);
+            return ResponseEntity.ok(Map.of("message", "Password saved. You can now sign in with your email and password."));
         }
-        signerAuthService.setPassword(sp.accountId(), body.get("currentPassword"), body.get("newPassword"));
+        SignerPrincipal sp = (SignerPrincipal) auth.getPrincipal();
+        signerAuthService.setPassword(sp.accountId(), body.get("currentPassword"), body.get("newPassword"), sessionVerified);
         return ResponseEntity.ok(Map.of("message", "Password saved. You can now sign in with your email and password."));
     }
 
