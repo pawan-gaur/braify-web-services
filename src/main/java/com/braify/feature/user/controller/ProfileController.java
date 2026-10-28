@@ -32,6 +32,7 @@ public class ProfileController {
     private final UserService userService;
     private final com.braify.feature.auth.service.PasswordPolicyService passwordPolicyService;
     private final com.braify.feature.platform.service.PlatformSettingsService platformSettingsService;
+    private final com.braify.feature.session.repository.UserSessionRepository sessionRepository;
 
     private AppUser me(Authentication auth) {
         return ((UserDetailsImpl) auth.getPrincipal()).getAppUser();
@@ -77,7 +78,8 @@ public class ProfileController {
     /** PUT /api/profile/me/password — change own password (requires current password) */
     @PutMapping("/me/password")
     public ResponseEntity<Map<String, String>> changePassword(@RequestBody Map<String, String> body,
-                                                              Authentication auth) {
+                                                              Authentication auth,
+                                                              jakarta.servlet.http.HttpServletRequest http) {
         log.info("PUT /api/profile/me/password caller='{}'", me(auth).getEmail());
         String currentPassword = body.get("currentPassword");
         String newPassword     = body.get("newPassword");
@@ -98,6 +100,13 @@ public class ProfileController {
         // Enforce platform password policy (length / complexity / re-use) + history.
         passwordPolicyService.applyNewPassword(user, newPassword);
         user.setMustChangePassword(false);
+        // Changed inside a session that proved the mailbox (email code) → the new password is the
+        // user's own. Otherwise leave the flag as-is: whoever knew the old password may be changing it.
+        Object jti = http.getAttribute(com.braify.config.RequestLoggingFilter.SESSION_ID_ATTR);
+        if (jti instanceof String j && sessionRepository.findByJtiAndActiveTrue(j)
+                .map(com.braify.feature.session.model.UserSession::isEmailVerified).orElse(false)) {
+            user.setPasswordMailboxVerified(true);
+        }
         userRepository.save(user);
 
         auditLogService.log(

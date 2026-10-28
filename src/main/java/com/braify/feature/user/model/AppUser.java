@@ -51,10 +51,13 @@ public class AppUser {
     private LocalDateTime passwordChangedAt;
 
     /**
-     * True when the current password was set through a flow that proved control of the
-     * mailbox (invite link, reset link, or a session that signed in with an email code) and no
-     * admin has overwritten it since. Only then does a password sign-in count as mailbox proof
-     * for the signer inbox (admins can set users' passwords, so a password alone isn't proof).
+     * Who chose the current password, for signer-inbox access:
+     * <ul>
+     *   <li>{@code false} — set by an admin (user create/update with a password, seeded admin):
+     *       the admin knows it, so a password sign-in must confirm the mailbox with an email code.</li>
+     *   <li>{@code true} — set by the user via invite/reset link or in an email-verified session.</li>
+     *   <li>{@code null} — account predates this flag; treated as user-chosen.</li>
+     * </ul>
      */
     private Boolean passwordMailboxVerified;
 

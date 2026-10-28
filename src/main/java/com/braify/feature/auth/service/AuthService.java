@@ -114,7 +114,7 @@ public class AuthService {
         }
         boolean mustSetupMfa = (mfaReq == MfaService.MfaRequirement.MUST_SETUP);
         return issueSession(user, req.getDeviceInfo(), ipAddress, false, mustSetupMfa, "PASSWORD",
-                Boolean.TRUE.equals(user.getPasswordMailboxVerified()));
+                passwordProvesMailbox(user));
     }
 
     // ── Email OTP sign-in ─────────────────────────────────────────────────────
@@ -195,6 +195,16 @@ public class AuthService {
         return user.getPassword() != null && !user.getPassword().isBlank() && !user.isMustChangePassword();
     }
 
+    /**
+     * Whether signing in with this user's password also proves they own the mailbox (opens the
+     * signer inbox without an email code). Only passwords an admin set — and that the user hasn't
+     * since replaced through an email-verified flow — are excluded ({@code false}); passwords the
+     * user chose themselves ({@code true}) and pre-existing accounts ({@code null}) are trusted.
+     */
+    static boolean passwordProvesMailbox(AppUser user) {
+        return !Boolean.FALSE.equals(user.getPasswordMailboxVerified());
+    }
+
     /** Exact match first (existing rows), then the normalized form. */
     private Optional<AppUser> findUserByEmail(String email) {
         if (email == null) return Optional.empty();
@@ -230,7 +240,7 @@ public class AuthService {
                 jwtUtil.parseToken(req.getMfaToken()).get("firstFactor", String.class));
         return issueSession(user, req.getDeviceInfo(), ipAddress, true, false,
                 viaEmailOtp ? "EMAIL_OTP+MFA" : "PASSWORD+MFA",
-                viaEmailOtp || Boolean.TRUE.equals(user.getPasswordMailboxVerified()));
+                viaEmailOtp || passwordProvesMailbox(user));
     }
 
     /**

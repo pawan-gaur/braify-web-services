@@ -24,6 +24,7 @@ public class DataSeeder implements CommandLineRunner {
                     .lastName("Admin")
                     .role(AppUser.Role.PLATFORM_ADMIN)
                     .active(true)
+                    .passwordMailboxVerified(false)   // hard-coded password → never mailbox proof
                     .build();
             userRepository.save(admin);
         }

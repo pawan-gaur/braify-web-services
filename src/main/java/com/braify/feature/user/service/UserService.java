@@ -128,6 +128,9 @@ public class UserService {
                 .organizationId(orgId)
                 .active(true)
                 .mustChangePassword(mustChange)
+                // An admin-typed password is known to the admin → not proof of mailbox ownership.
+                // (A random invite placeholder is unknown to anyone; accepting the invite sets true.)
+                .passwordMailboxVerified(explicitPassword ? false : null)
                 .createdBy(currentUser.getId())
                 .build();
         user = userRepository.save(user);
