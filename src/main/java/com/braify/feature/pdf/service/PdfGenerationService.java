@@ -38,35 +38,125 @@ public class PdfGenerationService {
     private static final int RESOURCE_CONNECT_TIMEOUT_MS = 4000;
     private static final int RESOURCE_READ_TIMEOUT_MS    = 6000;
 
+    /** Hosts allowed even when internal (the app itself — e.g. the org logo URL in dev). */
+    @org.springframework.beans.factory.annotation.Value("${app.base-url:}")
+    private String appBaseUrl;
+    @org.springframework.beans.factory.annotation.Value("${app.frontend-url:}")
+    private String appFrontendUrl;
+    /** Extra trusted hosts, comma-separated (e.g. an internal CDN). */
+    @org.springframework.beans.factory.annotation.Value("${app.pdf.trusted-resource-hosts:}")
+    private String extraTrustedHosts;
+
+    private static final int MAX_REDIRECTS = 3;
+
     /**
-     * Timeout-bounded, fail-soft stream factory for http(s) resources.
+     * Timeout-bounded, fail-soft, SSRF-guarded stream factory for http(s) resources.
      *
-     * <p>openhtmltopdf's default resolves every remote {@code <img src="http…">}
-     * (or remote CSS) by opening a {@link java.net.URL} stream on the render
-     * thread with the JVM-global timeout, which is effectively infinite. A single
-     * slow or unreachable image host therefore blocks the entire PDF render (and
-     * the HTTP worker thread) indefinitely — the main cause of "PDF generation
-     * hangs / is slow". This caps each fetch and returns {@code null} on failure
-     * so openhtmltopdf simply skips the missing resource instead of blocking.
+     * <p>Timeouts: openhtmltopdf's default opens every remote {@code <img src="http…">} with the
+     * JVM-global (effectively infinite) timeout, so one slow host could block the whole render.
+     * Each fetch is capped and returns {@code null} on failure, so the resource is skipped.
+     *
+     * <p>SSRF: template HTML is user-authored, so a resource URL must resolve to a public address —
+     * loopback, private, link-local (incl. cloud metadata 169.254.169.254), CGNAT and multicast
+     * targets are refused, and redirects are followed manually with the same check on every hop.
+     * The app's own host is trusted so its public logo endpoint keeps working in every environment.
      */
-    private static final FSStreamFactory TIMEOUT_STREAM_FACTORY = (String uri) -> new FSStream() {
-        private InputStream open() {
+    private FSStreamFactory guardedStreamFactory() {
+        java.util.Set<String> trusted = trustedHosts();
+        return (String uri) -> new FSStream() {
+            private InputStream open() {
+                try {
+                    return fetchGuarded(uri, trusted);
+                } catch (Exception e) {
+                    log.warn("PDF resource fetch refused/failed, skipping {}: {}", uri, e.getMessage());
+                    return null;
+                }
+            }
+            @Override public InputStream getStream() { return open(); }
+            @Override public Reader getReader() {
+                InputStream is = open();
+                return is == null ? null : new InputStreamReader(is, StandardCharsets.UTF_8);
+            }
+        };
+    }
+
+    /** Refuses every non-http(s) protocol (file:, jar:, ftp: …) — local files must never be read. */
+    private static final FSStreamFactory BLOCKED_STREAM_FACTORY = (String uri) -> new FSStream() {
+        @Override public InputStream getStream() {
+            log.warn("PDF resource with blocked protocol skipped: {}", uri);
+            return null;
+        }
+        @Override public Reader getReader() { return null; }
+    };
+
+    private static InputStream fetchGuarded(String uri, java.util.Set<String> trusted) throws Exception {
+        String current = uri;
+        for (int hop = 0; hop <= MAX_REDIRECTS; hop++) {
+            URL url = new URL(current);
+            assertPublicTarget(url, trusted);
+            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+            conn.setInstanceFollowRedirects(false);   // each hop is re-checked below
+            conn.setConnectTimeout(RESOURCE_CONNECT_TIMEOUT_MS);
+            conn.setReadTimeout(RESOURCE_READ_TIMEOUT_MS);
+            int code = conn.getResponseCode();
+            if (code >= 300 && code < 400 && conn.getHeaderField("Location") != null) {
+                current = new URL(url, conn.getHeaderField("Location")).toString();
+                conn.disconnect();
+                continue;
+            }
+            return conn.getInputStream();
+        }
+        throw new java.io.IOException("Too many redirects");
+    }
+
+    private static void assertPublicTarget(URL url, java.util.Set<String> trusted) throws Exception {
+        String protocol = url.getProtocol();
+        if (!"http".equals(protocol) && !"https".equals(protocol)) {
+            throw new SecurityException("protocol not allowed: " + protocol);
+        }
+        String host = url.getHost() == null ? "" : url.getHost().toLowerCase();
+        if (host.isEmpty()) throw new SecurityException("missing host");
+        int port = url.getPort() != -1 ? url.getPort() : url.getDefaultPort();
+        if (trusted.contains(host + ":" + port)) return;
+        for (java.net.InetAddress addr : java.net.InetAddress.getAllByName(host)) {
+            if (isInternal(addr)) throw new SecurityException("internal address not allowed: " + host);
+        }
+    }
+
+    static boolean isInternal(java.net.InetAddress a) {
+        if (a.isAnyLocalAddress() || a.isLoopbackAddress() || a.isLinkLocalAddress()
+                || a.isSiteLocalAddress() || a.isMulticastAddress()) return true;
+        byte[] b = a.getAddress();
+        if (b.length == 4) {
+            int b0 = b[0] & 0xff, b1 = b[1] & 0xff;
+            return b0 == 0                                   // 0.0.0.0/8
+                || (b0 == 100 && b1 >= 64 && b1 <= 127)      // 100.64.0.0/10 carrier-grade NAT
+                || (b0 == 192 && b1 == 0 && (b[2] & 0xff) == 0);   // 192.0.0.0/24 IETF protocol
+        }
+        return (b[0] & 0xfe) == 0xfc;                         // fc00::/7 IPv6 unique-local
+    }
+
+    private java.util.Set<String> trustedHosts() {
+        java.util.Set<String> hosts = new java.util.HashSet<>();
+        for (String u : new String[]{ appBaseUrl, appFrontendUrl }) {
             try {
-                URLConnection conn = new URL(uri).openConnection();
-                conn.setConnectTimeout(RESOURCE_CONNECT_TIMEOUT_MS);
-                conn.setReadTimeout(RESOURCE_READ_TIMEOUT_MS);
-                return conn.getInputStream();
-            } catch (Exception e) {
-                log.warn("PDF resource fetch failed/timed out, skipping {}: {}", uri, e.getMessage());
-                return null;
+                if (u != null && !u.isBlank() && new URL(u).getHost() != null) {
+                    URL url = new URL(u);
+                    int port = url.getPort() != -1 ? url.getPort() : url.getDefaultPort();
+                    hosts.add(url.getHost().toLowerCase() + ":" + port);   // host AND port
+                }
+            } catch (Exception ignored) { /* malformed config — not trusted */ }
+        }
+        if (extraTrustedHosts != null) {
+            // Entries are "host" (https, 443) or "host:port".
+            for (String h : extraTrustedHosts.split(",")) {
+                if (h.isBlank()) continue;
+                String e = h.trim().toLowerCase();
+                hosts.add(e.contains(":") ? e : e + ":443");
             }
         }
-        @Override public InputStream getStream() { return open(); }
-        @Override public Reader getReader() {
-            InputStream is = open();
-            return is == null ? null : new InputStreamReader(is, StandardCharsets.UTF_8);
-        }
-    };
+        return hosts;
+    }
 
     // ── Public API ────────────────────────────────────────────────────────────
 
@@ -95,7 +185,8 @@ public class PdfGenerationService {
             PdfRendererBuilder builder = new PdfRendererBuilder();
             builder.useFastMode();
             // Bound remote image/CSS fetches so a slow host can't hang the render.
-            builder.useHttpStreamImplementation(TIMEOUT_STREAM_FACTORY);
+            builder.useHttpStreamImplementation(guardedStreamFactory());
+            builder.useProtocolsStreamImplementation(BLOCKED_STREAM_FACTORY, "file", "jar", "ftp");
             builder.useSVGDrawer(new BatikSVGDrawer());
 
             if (isFullHtmlDocument(rawTemplate)) {

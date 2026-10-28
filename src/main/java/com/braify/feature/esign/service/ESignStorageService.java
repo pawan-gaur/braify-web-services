@@ -6,6 +6,7 @@ import com.braify.feature.fileupload.cloud.CloudDownloadRequest;
 import com.braify.feature.fileupload.cloud.CloudUploadRequest;
 import com.braify.feature.fileupload.cloud.CloudUploader;
 import com.braify.feature.fileupload.cloud.CloudUploaderFactory;
+import com.braify.feature.fileupload.cloud.StorageConfigResolver;
 import com.braify.feature.esign.model.ESignDocument;
 import com.braify.feature.organization.model.Organization;
 import com.braify.feature.organization.repository.OrganizationRepository;
@@ -28,12 +29,14 @@ public class ESignStorageService {
     private final OrganizationRepository orgRepository;
     private final CloudUploaderFactory   uploaderFactory;
     private final EncryptionService      encryptionService;
+    private final StorageConfigResolver  storageResolver;
 
     /** Storage reference persisted on the e-sign document. */
     public record StoredPdf(String bucket, String storageKey, String provider) {}
 
+    /** True when the org can store e-sign PDFs (own bucket or managed storage). */
     public boolean isCloudConfigured(String orgId) {
-        try { requireConfig(orgId); return true; } catch (RuntimeException e) { return false; }
+        try { requireStorage(orgId); return true; } catch (RuntimeException e) { return false; }
     }
 
     // ── Document-aware resolvers (cloud key preferred, legacy embedded bytes fallback) ──
@@ -76,14 +79,14 @@ public class ESignStorageService {
 
     /** Downloads object bytes (server-side) — for signature stamping or email attachment. */
     public byte[] download(String orgId, String bucket, String storageKey) {
-        OrgCloudConfig cfg = requireConfig(orgId);
+        OrgCloudConfig cfg = readConfig(orgId, bucket);
         CloudUploader uploader = uploaderFactory.get(cfg.getCloud());
         return uploader.download(downloadRequest(cfg, bucket, storageKey, 0));
     }
 
     /** Generates a time-limited pre-signed URL for client-side viewing/download. */
     public String presignedUrl(String orgId, String bucket, String storageKey) {
-        OrgCloudConfig cfg = requireConfig(orgId);
+        OrgCloudConfig cfg = readConfig(orgId, bucket);
         int ttl = cfg.getPresignedUrlExpiration() != null
                 ? cfg.getPresignedUrlExpiration() * 60   // stored in minutes
                 : 3600;
@@ -95,7 +98,7 @@ public class ESignStorageService {
     public void deleteQuietly(String orgId, String bucket, String storageKey) {
         if (bucket == null || storageKey == null) return;
         try {
-            OrgCloudConfig cfg = requireConfig(orgId);
+            OrgCloudConfig cfg = readConfig(orgId, bucket);
             uploaderFactory.get(cfg.getCloud()).delete(downloadRequest(cfg, bucket, storageKey, 0));
         } catch (Exception e) {
             log.warn("E-sign PDF delete failed (key={}): {}", storageKey, e.getMessage());
@@ -105,7 +108,7 @@ public class ESignStorageService {
     // ── Internals ──────────────────────────────────────────────────────────────
 
     private StoredPdf upload(String orgId, String storageKey, byte[] bytes) {
-        OrgCloudConfig cfg = requireConfig(orgId);
+        OrgCloudConfig cfg = writeConfig(orgId);
         String accessKey = encryptionService.decryptSafe(cfg.getAccessKey());
         String secretKey = encryptionService.decryptSafe(cfg.getSecretKey());
 
@@ -120,6 +123,7 @@ public class ESignStorageService {
                 .awsSecretAccessKey(secretKey)
                 .azureConnectionString(accessKey)   // Azure: accessKey = connection string
                 .gcpServiceAccountJson(secretKey)   // GCP:   secretKey = service-account JSON
+                .useDefaultCredentials(cfg.isPlatformManaged())
                 .build();
 
         uploaderFactory.get(cfg.getCloud()).upload(req);
@@ -141,27 +145,37 @@ public class ESignStorageService {
                 .awsSecretAccessKey(secretKey)
                 .azureConnectionString(accessKey)
                 .gcpServiceAccountJson(secretKey)
+                .useDefaultCredentials(cfg.isPlatformManaged())
                 .build();
     }
 
     /** Object key: {@code <cfg.path>/<orgId>/esign/<docId>/<name>}. */
     private String key(String orgId, String docId, String name) {
-        OrgCloudConfig cfg = requireConfig(orgId);
+        OrgCloudConfig cfg = writeConfig(orgId);
         String base = (cfg.getPath() != null && !cfg.getPath().isBlank())
                 ? cfg.getPath().replaceAll("/$", "") + "/" + orgId
                 : orgId;
         return base + "/esign/" + docId + "/" + name;
     }
 
-    private OrgCloudConfig requireConfig(String orgId) {
+    /** Config for new objects: the org's own bucket, else managed (platform) storage. */
+    private OrgCloudConfig writeConfig(String orgId) {
+        return storageResolver.forWrite(requireStorage(orgId));
+    }
+
+    /** Config for an existing object, routed by the bucket recorded on it. */
+    private OrgCloudConfig readConfig(String orgId, String bucket) {
+        return storageResolver.forRead(requireStorage(orgId), bucket);
+    }
+
+    private Organization requireStorage(String orgId) {
         Organization org = orgRepository.findById(orgId)
                 .orElseThrow(() -> new RuntimeException("Organisation not found: " + orgId));
-        OrgCloudConfig cfg = org.getCloudConfig();
-        if (cfg == null || cfg.getCloud() == null || cfg.getBucket() == null) {
+        if (!storageResolver.isAvailable(org)) {
             throw new RuntimeException(
                     "Cloud storage is not configured for this organisation. " +
                     "Configure it under Settings → Cloud Storage before sending e-sign documents.");
         }
-        return cfg;
+        return org;
     }
 }

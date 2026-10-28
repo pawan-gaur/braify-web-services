@@ -53,4 +53,10 @@ public class CloudUploadRequest {
      * Ignored for AWS / Azure.
      */
     private String gcpServiceAccountJson;
+
+    /**
+     * True only for the platform's managed-storage bucket: use the AWS default credential chain
+     * (instance role). Org-configured buckets must always supply their own keys.
+     */
+    private boolean useDefaultCredentials;
 }

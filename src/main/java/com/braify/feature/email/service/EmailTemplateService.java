@@ -1,5 +1,6 @@
 package com.braify.feature.email.service;
 
+import org.springframework.security.access.AccessDeniedException;
 import com.braify.config.infra.email.CssInliner;
 import com.braify.config.infra.email.EmailDispatcher;
 import com.braify.feature.email.dto.SendEmailRequest;
@@ -337,7 +338,7 @@ public class EmailTemplateService {
     private void assertAccess(AppUser user, String resourceOrgId) {
         if (user.getRole() == AppUser.Role.PLATFORM_ADMIN) return;
         if (resourceOrgId != null && !resourceOrgId.equals(user.getOrganizationId())) {
-            throw new RuntimeException("Access denied");
+            throw new AccessDeniedException("Access denied");
         }
     }
 

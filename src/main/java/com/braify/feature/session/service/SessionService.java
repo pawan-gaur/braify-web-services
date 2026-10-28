@@ -1,5 +1,6 @@
 package com.braify.feature.session.service;
 
+import org.springframework.security.access.AccessDeniedException;
 import com.braify.feature.session.dto.SessionResponse;
 import com.braify.feature.user.model.AppUser;
 import com.braify.feature.audit.model.AuditLog;
@@ -193,17 +194,17 @@ public class SessionService {
             case ORG_ADMIN, ADMIN -> {
                 if (caller.getOrganizationId() == null ||
                     !caller.getOrganizationId().equals(session.getOrganizationId())) {
-                    throw new RuntimeException("Access denied: session belongs to a different organization");
+                    throw new AccessDeniedException("Access denied: session belongs to a different organization");
                 }
                 int targetRank = sessionOwnerRank(session);  // null-safe DB fallback
                 if (targetRank >= callerRank(caller)) {
-                    throw new RuntimeException("Access denied: you can only revoke sessions of users with a lower role");
+                    throw new AccessDeniedException("Access denied: you can only revoke sessions of users with a lower role");
                 }
             }
 
             default -> {  // USER
                 if (!caller.getId().equals(session.getUserId())) {
-                    throw new RuntimeException("Access denied: you can only revoke your own sessions");
+                    throw new AccessDeniedException("Access denied: you can only revoke your own sessions");
                 }
             }
         }

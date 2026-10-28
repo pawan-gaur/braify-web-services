@@ -42,6 +42,7 @@ public final class ESignEmailTemplates {
               <p style="margin:0 0 12px;font-size:12px;line-height:1.6;color:#94A3B8;">%s</p>
               {{footerContact}}
               <div style="margin-top:14px;font-size:11px;color:#CBD5E1;">Powered by <a href="https://braify.com/" style="color:#94A3B8;font-weight:700;text-decoration:none;">{{organizationName}} e-Sign</a> · 256-bit encrypted &amp; audit-logged</div>
+              {{growthCta}}
             </div>
             """.formatted(introParagraph);
     }

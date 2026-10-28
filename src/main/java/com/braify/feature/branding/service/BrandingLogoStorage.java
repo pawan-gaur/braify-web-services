@@ -5,6 +5,7 @@ import com.braify.feature.cloudconfig.model.OrgCloudConfig;
 import com.braify.feature.fileupload.cloud.CloudDownloadRequest;
 import com.braify.feature.fileupload.cloud.CloudUploadRequest;
 import com.braify.feature.fileupload.cloud.CloudUploaderFactory;
+import com.braify.feature.fileupload.cloud.StorageConfigResolver;
 import com.braify.feature.organization.model.Organization;
 import com.braify.feature.organization.repository.OrganizationRepository;
 import lombok.RequiredArgsConstructor;
@@ -24,17 +25,18 @@ public class BrandingLogoStorage {
     private final OrganizationRepository orgRepository;
     private final CloudUploaderFactory   uploaderFactory;
     private final EncryptionService      encryptionService;
+    private final StorageConfigResolver  storageResolver;
 
     /** Cloud reference for a stored logo. */
     public record StoredLogo(String bucket, String key, String provider, String contentType) {}
 
     public boolean isCloudConfigured(String orgId) {
-        try { requireConfig(orgId); return true; } catch (RuntimeException e) { return false; }
+        try { requireStorage(orgId); return true; } catch (RuntimeException e) { return false; }
     }
 
     /** Uploads the logo bytes to the org bucket at a stable key and returns its reference. */
     public StoredLogo upload(String orgId, byte[] bytes, String contentType, String ext) {
-        OrgCloudConfig cfg = requireConfig(orgId);
+        OrgCloudConfig cfg = storageResolver.forWrite(requireStorage(orgId));
         String key = keyBase(cfg, orgId) + "/branding/logo" + (ext != null && !ext.isBlank() ? "." + ext : "");
         String accessKey = encryptionService.decryptSafe(cfg.getAccessKey());
         String secretKey = encryptionService.decryptSafe(cfg.getSecretKey());
@@ -50,6 +52,7 @@ public class BrandingLogoStorage {
                 .awsSecretAccessKey(secretKey)
                 .azureConnectionString(accessKey)   // Azure: accessKey = connection string
                 .gcpServiceAccountJson(secretKey)   // GCP:   secretKey = service-account JSON
+                .useDefaultCredentials(cfg.isPlatformManaged())
                 .build();
 
         uploaderFactory.get(cfg.getCloud()).upload(req);
@@ -60,7 +63,7 @@ public class BrandingLogoStorage {
 
     /** Downloads the logo bytes (server-side) for the public streaming endpoint. */
     public byte[] download(String orgId, String bucket, String key) {
-        OrgCloudConfig cfg = requireConfig(orgId);
+        OrgCloudConfig cfg = storageResolver.forRead(requireStorage(orgId), bucket);
         return uploaderFactory.get(cfg.getCloud()).download(downloadRequest(cfg, bucket, key));
     }
 
@@ -68,7 +71,7 @@ public class BrandingLogoStorage {
     public void deleteQuietly(String orgId, String bucket, String key) {
         if (bucket == null || key == null) return;
         try {
-            OrgCloudConfig cfg = requireConfig(orgId);
+            OrgCloudConfig cfg = storageResolver.forRead(requireStorage(orgId), bucket);
             uploaderFactory.get(cfg.getCloud()).delete(downloadRequest(cfg, bucket, key));
         } catch (Exception e) {
             log.warn("Branding logo delete failed (key={}): {}", key, e.getMessage());
@@ -89,6 +92,7 @@ public class BrandingLogoStorage {
                 .awsSecretAccessKey(secretKey)
                 .azureConnectionString(accessKey)
                 .gcpServiceAccountJson(secretKey)
+                .useDefaultCredentials(cfg.isPlatformManaged())
                 .build();
     }
 
@@ -98,13 +102,13 @@ public class BrandingLogoStorage {
                 : orgId;
     }
 
-    private OrgCloudConfig requireConfig(String orgId) {
+    /** The org, if it can store objects (own bucket or managed storage). */
+    private Organization requireStorage(String orgId) {
         Organization org = orgRepository.findById(orgId)
                 .orElseThrow(() -> new RuntimeException("Organisation not found: " + orgId));
-        OrgCloudConfig cfg = org.getCloudConfig();
-        if (cfg == null || cfg.getCloud() == null || cfg.getBucket() == null) {
+        if (!storageResolver.isAvailable(org)) {
             throw new RuntimeException("Cloud storage is not configured for this organisation.");
         }
-        return cfg;
+        return org;
     }
 }

@@ -44,6 +44,7 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
     private static final ObjectMapper MAPPER      = new ObjectMapper();
 
     private final OrgApiKeyService orgApiKeyService;
+    private final com.braify.feature.quota.service.QuotaService quotaService;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request,
@@ -54,6 +55,14 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
 
         // No API key present — let the JWT filter handle it
         if (apiKey == null || apiKey.isBlank()) {
+            chain.doFilter(request, response);
+            return;
+        }
+
+        // API keys only authenticate the external API. Elsewhere the request stays anonymous
+        // (→ 401), so key holders can't reach user endpoints (which expect a user principal).
+        String servletPath = request.getServletPath() + (request.getPathInfo() != null ? request.getPathInfo() : "");
+        if (!servletPath.startsWith("/api/external/")) {
             chain.doFilter(request, response);
             return;
         }
@@ -101,7 +110,14 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
             // cleared by Spring Security before the outermost filter's finally block)
             request.setAttribute(RequestLoggingFilter.CALLER_ATTR, "key:" + key.getKeyPrefix());
 
-            // Async usage tracking — non-blocking
+            // Plan limit: monthly API calls (tracked below; was never enforced).
+            String limitMsg = quotaService.apiCallLimitMessage(key.getOrgId());
+            if (limitMsg != null) {
+                writeJson(response, 429, Map.of("error", limitMsg));
+                return;
+            }
+
+            // Async usage tracking — non-blocking (the only place API calls are counted)
             orgApiKeyService.trackUsage(
                     key.getOrgId(),
                     key.getId(),

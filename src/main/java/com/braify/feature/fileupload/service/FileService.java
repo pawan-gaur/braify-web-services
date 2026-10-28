@@ -9,6 +9,7 @@ import com.braify.feature.fileupload.cloud.CloudUploadRequest;
 import com.braify.feature.fileupload.cloud.CloudUploadResult;
 import com.braify.feature.fileupload.cloud.CloudUploader;
 import com.braify.feature.fileupload.cloud.CloudUploaderFactory;
+import com.braify.feature.fileupload.cloud.StorageConfigResolver;
 import com.braify.feature.fileupload.dto.FileDownloadResponse;
 import com.braify.feature.fileupload.dto.FileListResponse;
 import com.braify.feature.fileupload.dto.FileMetadataRequest;
@@ -76,6 +77,7 @@ public class FileService {
     private final QuotaService           quotaService;
     private final AuditLogService        auditLogService;
     private final FileIdGenerator        fileIdGenerator;
+    private final StorageConfigResolver  storageResolver;
 
     // ── Upload ────────────────────────────────────────────────────────────────
 
@@ -95,7 +97,7 @@ public class FileService {
                                      String uploader,
                                      String createdById) {
         Organization org = requireOrg(orgId);
-        OrgCloudConfig cfg = requireCloudConfig(org);
+        OrgCloudConfig cfg = requireCloudConfig(org);   // own bucket, else managed storage
 
         // ── Validate file ─────────────────────────────────────────────────────
         validateFile(file, cfg);
@@ -200,7 +202,9 @@ public class FileService {
         OrgFile file = requireFile(orgId, fileId);
 
         Organization org = requireOrg(orgId);
-        OrgCloudConfig cfg = requireCloudConfig(org);
+        // Route by the bucket the file was stored in (own vs managed storage).
+        if (!storageResolver.isAvailable(org)) throw new RuntimeException(CLOUD_NOT_CONFIGURED);
+        OrgCloudConfig cfg = storageResolver.forRead(org, file.getBucket());
 
         int ttlSeconds = cfg.getPresignedUrlExpiration() != null
                 ? cfg.getPresignedUrlExpiration() * 60   // stored as minutes
@@ -455,12 +459,16 @@ public class FileService {
                 .orElseThrow(() -> new RuntimeException("Organization not found: " + orgId));
     }
 
+    /** Config for new uploads: the org's own bucket, else managed (platform) storage. */
     private OrgCloudConfig requireCloudConfig(Organization org) {
-        OrgCloudConfig cfg = org.getCloudConfig();
-        if (cfg == null || cfg.getCloud() == null) {
+        OrgCloudConfig own = org.getCloudConfig();
+        if (own != null && own.getCloud() != null && !StorageConfigResolver.hasOwnStorage(org)) {
+            return own;   // pre-existing behaviour for a partially configured own bucket
+        }
+        if (!storageResolver.isAvailable(org)) {
             throw new RuntimeException(CLOUD_NOT_CONFIGURED);
         }
-        return cfg;
+        return storageResolver.forWrite(org);
     }
 
     private OrgFile requireFile(String orgId, String fileId) {
@@ -542,6 +550,7 @@ public class FileService {
                 .awsSecretAccessKey(plainSecretKey)
                 .azureConnectionString(plainAccessKey)    // Azure: accessKey = connection string
                 .gcpServiceAccountJson(plainSecretKey)    // GCP:   secretKey = SA JSON
+                .useDefaultCredentials(cfg.isPlatformManaged())
                 .build();
     }
 
@@ -559,6 +568,7 @@ public class FileService {
                 .awsSecretAccessKey(plainSecretKey)
                 .azureConnectionString(plainAccessKey)
                 .gcpServiceAccountJson(plainSecretKey)
+                .useDefaultCredentials(cfg.isPlatformManaged())
                 .build();
     }
 

@@ -191,6 +191,17 @@ public class GlobalExceptionHandler {
                 .body(errorBody(HttpStatus.FORBIDDEN, ex.getMessage()));
     }
 
+    /** Plan doesn't include the feature — client shows an upgrade prompt. */
+    @ExceptionHandler(com.braify.feature.billing.UpgradeRequiredException.class)
+    public ResponseEntity<Map<String, Object>> handleUpgradeRequired(com.braify.feature.billing.UpgradeRequiredException ex) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("status",    HttpStatus.FORBIDDEN.value());
+        body.put("reason",    "UPGRADE_REQUIRED");
+        body.put("message",   ex.getMessage());
+        body.put("timestamp", Instant.now().toString());
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
+    }
+
     /** Signer inbox opened by a session that hasn't proven the mailbox — client offers the code step. */
     @ExceptionHandler(com.braify.feature.signer.EmailVerificationRequiredException.class)
     public ResponseEntity<Map<String, Object>> handleEmailVerificationRequired(
@@ -201,6 +212,21 @@ public class GlobalExceptionHandler {
         body.put("message",   ex.getMessage());
         body.put("timestamp", Instant.now().toString());
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(body);
+    }
+
+    /**
+     * Explicit status set by a controller (e.g. the external file API's 413 / 415 / 422 / 429).
+     * Must be declared: {@link ResponseStatusException} extends {@link RuntimeException}, whose
+     * handler would otherwise rewrite it to 404 / 500.
+     */
+    @ExceptionHandler(org.springframework.web.server.ResponseStatusException.class)
+    public ResponseEntity<Map<String, Object>> handleResponseStatus(
+            org.springframework.web.server.ResponseStatusException ex) {
+        HttpStatus status = HttpStatus.resolve(ex.getStatusCode().value());
+        if (status == null) status = HttpStatus.INTERNAL_SERVER_ERROR;
+        if (status.is5xxServerError()) log.error("ResponseStatusException {}: {}", status.value(), ex.getReason(), ex);
+        else log.warn("ResponseStatusException {}: {}", status.value(), ex.getReason());
+        return ResponseEntity.status(status).body(errorBody(status, ex.getReason()));
     }
 
     /** Resource not found — RuntimeException thrown by services. */

@@ -57,6 +57,7 @@ public class ESignDocumentService {
     private final ESignBulkBatchRepository      batchRepo;
     private final ESignSignatureFieldRepository fieldRepo;
     private final TemplateRepository            templateRepo;
+    private final com.braify.feature.pdf.service.PdfGenerationService pdfGenerationService;
     private final ESignTokenService             tokenService;
     private final ESignEmailService             emailService;
     private final ESignAuditService             auditService;
@@ -95,10 +96,25 @@ public class ESignDocumentService {
         } else if ("TEMPLATE".equalsIgnoreCase(req.getSourceType())) {
             if (req.getTemplateId() == null || req.getTemplateId().isBlank())
                 throw new IllegalArgumentException("templateId is required for TEMPLATE source type");
-            Template tpl = templateRepo.findById(req.getTemplateId())
+            // The template must belong to the caller's organisation (Platform Admins: any).
+            boolean platformAdmin = principal.getAppUser().getRole() == AppUser.Role.PLATFORM_ADMIN;
+            Template tpl = (platformAdmin
+                    ? templateRepo.findByIdAndDeletedFalse(req.getTemplateId())
+                    : templateRepo.findByIdAndOrganizationIdAndDeletedFalse(req.getTemplateId(), principal.getOrgId()))
                     .orElseThrow(() -> new IllegalArgumentException("Template not found: " + req.getTemplateId()));
-            // For now, use the template's htmlContent as a placeholder (integrate PdfGenerationService if needed)
-            pdfBytes = tpl.getHtmlContent() != null ? tpl.getHtmlContent().getBytes() : new byte[0];
+            if (req.getPdfBase64() != null && !req.getPdfBase64().isBlank()) {
+                // The builder already rendered the template (via /preview-pdf) — use that PDF.
+                pdfBytes = decodeBase64Pdf(req.getPdfBase64());
+            } else {
+                // API callers that only pass templateId: render it here (counts as a generated document).
+                try {
+                    pdfBytes = pdfGenerationService.generate(tpl, java.util.Map.of());
+                } catch (com.braify.feature.quota.exception.QuotaExceededException e) {
+                    throw e;
+                } catch (Exception e) {
+                    throw new IllegalStateException("Could not render template '" + tpl.getName() + "' to PDF: " + e.getMessage(), e);
+                }
+            }
         } else {
             throw new IllegalArgumentException("sourceType must be UPLOAD or TEMPLATE");
         }

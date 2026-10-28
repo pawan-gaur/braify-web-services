@@ -27,7 +27,9 @@ import java.util.List;
 @AllArgsConstructor
 @Document(collection = "organizations")
 @CompoundIndexes({
-    @CompoundIndex(name = "idx_deleted_name", def = "{'deleted': 1, 'name': 1}")
+    @CompoundIndex(name = "idx_deleted_name", def = "{'deleted': 1, 'name': 1}"),
+    // Billing webhooks resolve the org by payment-provider customer id.
+    @CompoundIndex(name = "idx_billing_customer", def = "{'billing.customerId': 1}", sparse = true)
 })
 public class Organization {
 
@@ -81,6 +83,12 @@ public class Organization {
      * When set, QuotaService will fall back to FREE limits after this date.
      */
     private LocalDateTime planExpiresAt;
+
+    /**
+     * Self-serve billing state (trial / paid subscription). {@code null} for organisations whose
+     * plan is managed manually by a Platform Admin — those are never changed automatically.
+     */
+    private com.braify.feature.billing.model.OrgBilling billing;
 
     // ── Branding ──────────────────────────────────────────────────────────────
 

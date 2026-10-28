@@ -37,6 +37,13 @@ public class OrgCloudConfig {
     /** Bucket or container name in the cloud provider. */
     private String bucket;
 
+    /**
+     * Not persisted. True only on the in-memory config {@code StorageConfigResolver} builds for
+     * the platform's managed bucket — the only config allowed to use the platform's AWS identity.
+     */
+    @org.springframework.data.annotation.Transient
+    private boolean platformManaged;
+
     /** Path prefix within the bucket (e.g. {@code "acme/docs"}). */
     private String path;
 

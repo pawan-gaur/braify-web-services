@@ -466,6 +466,20 @@ public class ESignEmailService implements InternalTemplateProvider {
                 .orElse(null);
     }
 
+    /**
+     * "Send your own documents…" line in e-sign email footers — only for orgs on the Free plan
+     * (paid plans send without Braify promotion). Empty string otherwise.
+     */
+    private String growthCta(String orgId) {
+        boolean free = orgId == null || orgRepo.findById(orgId)
+                .map(o -> o.getSubscriptionPlan() == null || o.getSubscriptionPlan() == com.braify.shared.SubscriptionPlan.FREE)
+                .orElse(true);
+        if (!free) return "";
+        String url = baseUrl.replaceAll("/$", "") + "/get-started?ref=esign-email";
+        return "<div style=\"margin-top:6px;font-size:11px;color:#94A3B8;\">Need signatures on your own documents? "
+                + "<a href=\"" + url + "\" style=\"color:#94A3B8;font-weight:700;text-decoration:underline;\">Try Braify free</a></div>";
+    }
+
     /** Converts {@code #RRGGBB}/{@code #RGB} to an {@code rgba(...)} string with the given alpha. */
     private String hexToRgba(String hex, double alpha) {
         try {
@@ -504,6 +518,7 @@ public class ESignEmailService implements InternalTemplateProvider {
         m.put("accentSoft",       hexToRgba(accent, 0.10));
         m.put("accentBorder",     hexToRgba(accent, 0.55));
         m.put("footerContact",    buildFooterContact(b, accent));
+        m.put("growthCta",        growthCta(orgId));
         return m;
     }
 
@@ -581,7 +596,7 @@ public class ESignEmailService implements InternalTemplateProvider {
                         buildInvitationHtml(),
                         List.of("organizationName", "brandMark", "accent", "accentSoft", "accentBorder",
                                 "signerName", "signerEmail", "documentName", "expiryDate", "expiresIn",
-                                "signingLink", "portalLink", "footerContact")),
+                                "signingLink", "portalLink", "footerContact", "growthCta")),
                 new InternalTemplateSeed(
                         InternalTemplateCodes.ESIGN_SIGNING_REMINDER,
                         "System — E-Sign: Signing Reminder",
@@ -589,7 +604,7 @@ public class ESignEmailService implements InternalTemplateProvider {
                         buildReminderHtml(),
                         List.of("organizationName", "brandMark", "accent", "accentSoft", "accentBorder",
                                 "signerName", "signerEmail", "documentName", "expiryDate", "expiresIn",
-                                "signingLink", "unsubscribeLink", "portalLink", "footerContact")),
+                                "signingLink", "unsubscribeLink", "portalLink", "footerContact", "growthCta")),
                 new InternalTemplateSeed(
                         InternalTemplateCodes.ESIGN_COMPLETION_SIGNER,
                         "System — E-Sign: Document Signed",
@@ -597,21 +612,21 @@ public class ESignEmailService implements InternalTemplateProvider {
                         buildCompletionHtml(),
                         List.of("organizationName", "brandMark", "accent", "accentSoft", "accentBorder",
                                 "signerName", "signerEmail", "documentName", "signedOn", "documentHashBlock",
-                                "verifyLink", "footerContact")),
+                                "verifyLink", "footerContact", "growthCta")),
                 new InternalTemplateSeed(
                         InternalTemplateCodes.ESIGN_CC_NOTIFICATION,
                         "System — E-Sign: CC Notification",
                         "For your information: {{documentName}} sent for signature",
                         buildCcNotificationHtml(),
                         List.of("organizationName", "brandMark", "accent", "accentSoft", "ccName",
-                                "signerName", "signerEmail", "documentName", "sentOn", "viewLink", "footerContact")),
+                                "signerName", "signerEmail", "documentName", "sentOn", "viewLink", "footerContact", "growthCta")),
                 new InternalTemplateSeed(
                         InternalTemplateCodes.ESIGN_CC_COMPLETION,
                         "System — E-Sign: CC Completion",
                         "Signed: {{documentName}}",
                         buildCcCompletionHtml(),
                         List.of("organizationName", "brandMark", "accent", "accentSoft", "accentBorder",
-                                "documentName", "signedOn", "viewLink", "footerContact"))
+                                "documentName", "signedOn", "viewLink", "footerContact", "growthCta"))
         );
     }
 }

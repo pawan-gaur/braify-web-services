@@ -3,6 +3,8 @@ package com.braify.feature.fileupload.cloud;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.regions.Region;
@@ -30,7 +32,7 @@ public class AwsS3Uploader implements CloudUploader {
 
     @Override
     public CloudUploadResult upload(CloudUploadRequest req) {
-        try (S3Client s3 = buildClient(req.getAwsRegion(), req.getAwsAccessKeyId(), req.getAwsSecretAccessKey())) {
+        try (S3Client s3 = buildClient(req.getAwsRegion(), req.getAwsAccessKeyId(), req.getAwsSecretAccessKey(), req.isUseDefaultCredentials())) {
 
             PutObjectRequest putReq = PutObjectRequest.builder()
                     .bucket(req.getBucket())
@@ -63,7 +65,8 @@ public class AwsS3Uploader implements CloudUploader {
     public String generatePresignedUrl(CloudDownloadRequest req) {
         try (S3Presigner presigner = buildPresigner(req.getAwsRegion(),
                                                     req.getAwsAccessKeyId(),
-                                                    req.getAwsSecretAccessKey())) {
+                                                    req.getAwsSecretAccessKey(),
+                                                    req.isUseDefaultCredentials())) {
 
             GetObjectRequest getReq = GetObjectRequest.builder()
                     .bucket(req.getBucket())
@@ -90,7 +93,7 @@ public class AwsS3Uploader implements CloudUploader {
 
     @Override
     public byte[] download(CloudDownloadRequest req) {
-        try (S3Client s3 = buildClient(req.getAwsRegion(), req.getAwsAccessKeyId(), req.getAwsSecretAccessKey())) {
+        try (S3Client s3 = buildClient(req.getAwsRegion(), req.getAwsAccessKeyId(), req.getAwsSecretAccessKey(), req.isUseDefaultCredentials())) {
             GetObjectRequest getReq = GetObjectRequest.builder()
                     .bucket(req.getBucket())
                     .key(req.getStorageKey())
@@ -108,7 +111,7 @@ public class AwsS3Uploader implements CloudUploader {
 
     @Override
     public void delete(CloudDownloadRequest req) {
-        try (S3Client s3 = buildClient(req.getAwsRegion(), req.getAwsAccessKeyId(), req.getAwsSecretAccessKey())) {
+        try (S3Client s3 = buildClient(req.getAwsRegion(), req.getAwsAccessKeyId(), req.getAwsSecretAccessKey(), req.isUseDefaultCredentials())) {
             s3.deleteObject(DeleteObjectRequest.builder()
                     .bucket(req.getBucket())
                     .key(req.getStorageKey())
@@ -122,20 +125,32 @@ public class AwsS3Uploader implements CloudUploader {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private S3Client buildClient(String region, String accessKeyId, String secretKey) {
+    private S3Client buildClient(String region, String accessKeyId, String secretKey, boolean useDefault) {
         return S3Client.builder()
                 .region(Region.of(region != null ? region : "us-east-1"))
-                .credentialsProvider(StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create(accessKeyId, secretKey)))
+                .credentialsProvider(credentials(accessKeyId, secretKey, useDefault))
                 .build();
     }
 
-    private S3Presigner buildPresigner(String region, String accessKeyId, String secretKey) {
+    private S3Presigner buildPresigner(String region, String accessKeyId, String secretKey, boolean useDefault) {
         return S3Presigner.builder()
                 .region(Region.of(region != null ? region : "us-east-1"))
-                .credentialsProvider(StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create(accessKeyId, secretKey)))
+                .credentialsProvider(credentials(accessKeyId, secretKey, useDefault))
                 .build();
+    }
+
+    /**
+     * The AWS default credential chain (env vars / EC2 instance role) is used ONLY for the
+     * platform's managed-storage bucket ({@code useDefault}), and only when it has no explicit
+     * keys. Org-configured buckets always use their own keys — a keyless org config fails, so an
+     * org can never borrow the platform's identity to reach other buckets.
+     */
+    private static AwsCredentialsProvider credentials(String accessKeyId, String secretKey, boolean useDefault) {
+        boolean noKeys = accessKeyId == null || accessKeyId.isBlank() || secretKey == null || secretKey.isBlank();
+        if (useDefault && noKeys) {
+            return DefaultCredentialsProvider.create();
+        }
+        return StaticCredentialsProvider.create(AwsBasicCredentials.create(accessKeyId, secretKey));
     }
 
     /** Strips ASCII control characters and non-ASCII from metadata header values. */

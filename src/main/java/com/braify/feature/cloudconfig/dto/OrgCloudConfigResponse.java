@@ -27,6 +27,12 @@ public class OrgCloudConfigResponse {
     /** {@code true} if a cloud config record exists for this organisation. */
     private boolean configured;
 
+    /**
+     * True when the org has no bucket of its own and its files / e-sign PDFs are stored in
+     * the platform's managed storage (no setup needed).
+     */
+    private boolean managedStorage;
+
     /** Cloud provider: AWS | AZURE | GCP */
     private String cloud;
 

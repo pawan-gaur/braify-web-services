@@ -1,5 +1,6 @@
 package com.braify.feature.user.service;
 
+import org.springframework.security.access.AccessDeniedException;
 import com.braify.feature.user.dto.UserRequest;
 import com.braify.feature.user.dto.UserResponse;
 import com.braify.feature.user.model.AppUser;
@@ -268,7 +269,7 @@ public class UserService {
     private void assertSameOrg(AppUser currentUser, String targetOrgId) {
         if (currentUser.getRole() == AppUser.Role.PLATFORM_ADMIN) return;
         if (!currentUser.getOrganizationId().equals(targetOrgId)) {
-            throw new RuntimeException("Access denied: different organization");
+            throw new AccessDeniedException("Access denied: different organization");
         }
     }
 

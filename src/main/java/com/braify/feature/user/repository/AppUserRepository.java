@@ -13,6 +13,9 @@ public interface AppUserRepository extends MongoRepository<AppUser, String> {
 
     Optional<AppUser> findByEmail(String email);
 
+    /** Case-insensitive exact match (quoted, anchored regex) — emails were never normalized on save. */
+    java.util.List<AppUser> findByEmailIgnoreCase(String email);
+
     /** Active only — used for session scope, counts, etc. */
     List<AppUser> findByOrganizationIdAndActiveTrue(String organizationId);
     List<AppUser> findAllByActiveTrue();

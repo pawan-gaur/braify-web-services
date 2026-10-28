@@ -214,6 +214,19 @@ public class QuotaService {
 
     // ── Read ─────────────────────────────────────────────────────────────────
 
+    /**
+     * Read-only check of the monthly API-call allowance (-1 = unlimited). Returns a user-facing
+     * message when the limit is reached, otherwise {@code null}.
+     */
+    public String apiCallLimitMessage(String orgId) {
+        int limit = getConfig(orgId).getMaxApiCallsPerMonth();
+        if (limit == -1) return null;
+        long used = getCurrentUsage(orgId).getApiCalls();
+        return used >= limit
+                ? "Monthly API call limit reached (" + used + "/" + limit + "). Upgrade your plan for more."
+                : null;
+    }
+
     public OrgQuotaConfig getConfig(String orgId) {
         return quotaConfigRepo.findByOrganizationId(orgId)
                 .orElseGet(() -> {

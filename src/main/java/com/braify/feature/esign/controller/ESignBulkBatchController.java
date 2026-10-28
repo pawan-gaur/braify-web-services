@@ -27,6 +27,7 @@ import org.springframework.web.bind.annotation.*;
 public class ESignBulkBatchController {
 
     private final ESignDocumentService documentService;
+    private final com.braify.feature.billing.service.PlanAccessService planAccessService;
 
     /** Inline request body for initBatch. */
     @Data static class InitBatchRequest  {
@@ -48,6 +49,7 @@ public class ESignBulkBatchController {
     public ResponseEntity<BulkBatchResponse> initBatch(
             @RequestBody InitBatchRequest req,
             @AuthenticationPrincipal UserDetailsImpl principal) {
+        planAccessService.requireBulk(principal.getOrgId());   // paid feature (grandfathered orgs keep it)
         log.info("POST /api/esign/batches/init label='{}' total={} allowClientUpload={} allowedTypes={} by '{}'",
                 req.getLabel(), req.getTotalRequested(), req.isAllowClientUpload(),
                 req.getAllowedClientUploadFileTypes(), principal.getUsername());

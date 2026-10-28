@@ -23,6 +23,8 @@ import java.util.List;
     // Signer inbox: "documents where this email is a signatory / legacy client / CC"
     @CompoundIndex(name = "idx_signatories_email", def = "{'signatories.email':1}"),
     @CompoundIndex(name = "idx_client_email",      def = "{'clientEmail':1}"),
+    @CompoundIndex(name = "idx_cc_emails",         def = "{'ccEmails':1}"),
+    @CompoundIndex(name = "idx_completion_cc",     def = "{'completionCcEmails':1}"),
 })
 public class ESignDocument {
 

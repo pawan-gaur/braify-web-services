@@ -54,6 +54,7 @@ import java.util.Map;
 public class BulkEmailService {
 
     private final BulkEmailJobRepository       jobRepo;
+    private final com.braify.feature.billing.service.PlanAccessService planAccessService;
     private final BulkEmailJobStore            jobStore;
     private final BulkEmailRecipientStore      recipientStore;
     private final BulkEmailRowMigrationService migrationService;
@@ -113,6 +114,7 @@ public class BulkEmailService {
     // ── Create & start job ───────────────────────────────────────────────────
 
     public BulkEmailJobResponse createJob(BulkEmailJobRequest req, UserDetailsImpl principal) {
+        planAccessService.requireBulk(principal.getOrgId());   // paid feature (grandfathered orgs keep it)
 
         // Validate email template
         EmailTemplate emailTemplate = emailTemplateRepo

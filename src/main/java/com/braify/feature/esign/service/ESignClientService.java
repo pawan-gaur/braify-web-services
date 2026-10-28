@@ -563,6 +563,9 @@ public class ESignClientService {
      * revoked, and the expiry scheduler only runs hourly.
      */
     private void requireOpenForSigning(ESignDocument doc) {
+        if (doc.getStatus() == null) {
+            throw new SigningLinkException(SigningLinkException.Reason.INVALID, "This signing link isn't valid.");
+        }
         switch (doc.getStatus()) {
             case PENDING, IN_REVIEW, PARTIALLY_SIGNED -> { /* open */ }
             case CANCELLED -> throw new SigningLinkException(SigningLinkException.Reason.CANCELLED,
@@ -599,6 +602,9 @@ public class ESignClientService {
         if (doc == null) {
             return new SigningLinkException(SigningLinkException.Reason.INVALID,
                     "This signing link isn't valid.");
+        }
+        if (doc.getStatus() == null) {
+            return new SigningLinkException(SigningLinkException.Reason.INVALID, "This signing link isn't valid.");
         }
 
         switch (doc.getStatus()) {

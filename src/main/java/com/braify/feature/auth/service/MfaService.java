@@ -128,10 +128,10 @@ public class MfaService {
     /** Verify the first code against the pending secret, enable MFA, return recovery codes (once). */
     public List<String> enable(AppUser user, String code) {
         if (user.getMfaPendingSecret() == null)
-            throw new RuntimeException("Start MFA setup first");
+            throw new IllegalArgumentException("Start MFA setup first");
         String pending = encryptionService.decrypt(user.getMfaPendingSecret());
         if (code == null || !codeVerifier.isValidCode(pending, code.trim()))
-            throw new RuntimeException("Invalid verification code");
+            throw new IllegalArgumentException("Invalid verification code");
 
         user.setMfaSecret(user.getMfaPendingSecret());
         user.setMfaPendingSecret(null);
@@ -149,11 +149,11 @@ public class MfaService {
     /** User self-disable — rejected when the org policy is REQUIRED. Clears the secret. */
     public void disable(AppUser user, String code) {
         if (effectivePolicy(user) == Organization.MfaPolicy.REQUIRED)
-            throw new RuntimeException("MFA is required by policy and cannot be disabled");
+            throw new IllegalArgumentException("MFA is required by policy and cannot be disabled");
         if (!user.isMfaEnabled())
-            throw new RuntimeException("MFA is not enabled");
+            throw new IllegalArgumentException("MFA is not enabled");
         if (!verifyCode(user, code))
-            throw new RuntimeException("Invalid code");
+            throw new IllegalArgumentException("Invalid code");
 
         user.setMfaEnabled(false);
         user.setMfaSecret(null);
@@ -177,7 +177,7 @@ public class MfaService {
     /** Re-verify then issue a fresh set of recovery codes (old ones invalidated). */
     public List<String> regenerateRecoveryCodes(AppUser user, String code) {
         if (!user.isMfaEnabled() || !verifyCode(user, code))
-            throw new RuntimeException("Invalid code");
+            throw new IllegalArgumentException("Invalid code");
         List<String> plain = generateRecoveryCodes();
         user.setMfaRecoveryCodes(new ArrayList<>(plain.stream().map(passwordEncoder::encode).toList()));
         userRepository.save(user);

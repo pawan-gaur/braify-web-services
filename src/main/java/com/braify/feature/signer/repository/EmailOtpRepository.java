@@ -6,7 +6,6 @@ import org.springframework.stereotype.Repository;
 
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Optional;
 
 @Repository
 public interface EmailOtpRepository extends MongoRepository<EmailOtp, String> {
@@ -16,6 +15,4 @@ public interface EmailOtpRepository extends MongoRepository<EmailOtp, String> {
 
     /** Codes issued since {@code since} — used for the per-hour send cap. */
     long countByEmailAndCreatedAtAfter(String email, LocalDateTime since);
-
-    Optional<EmailOtp> findFirstByEmailOrderByCreatedAtDesc(String email);
 }
