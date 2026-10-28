@@ -12,7 +12,7 @@ import com.braify.feature.email.model.EmailTemplate;
 import com.braify.feature.email.model.EmailTemplateVersion;
 import com.braify.feature.email.repository.EmailTemplateRepository;
 import com.braify.feature.pdf.service.PlaceholderService;
-import com.resend.services.emails.model.CreateEmailResponse;
+import com.braify.config.infra.email.EmailSendResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -300,7 +300,7 @@ public class EmailTemplateService {
 
         final String finalSubject = subject;
         final String finalHtml = cssInliner.inline(template.getHtmlContent(), template.getCssContent());
-        CreateEmailResponse resendResponse =
+        EmailSendResult resendResponse =
                 emailLogService.recorded(
                         com.braify.feature.emaillog.model.EmailLog.builder()
                                 .orgId(template.getOrganizationId())
@@ -313,7 +313,7 @@ public class EmailTemplateService {
                                 .createdBy(caller.getId())
                                 .build(),
                         () -> emailDispatcher.sendHtmlEmail(
-                                req.getTo(), finalSubject, finalHtml, placeholders));
+                                template.getOrganizationId(), req.getTo(), finalSubject, finalHtml, placeholders));
 
         // Audit the send event
         auditLogService.log(

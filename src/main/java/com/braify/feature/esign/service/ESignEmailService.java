@@ -130,6 +130,7 @@ public class ESignEmailService implements InternalTemplateProvider {
             emailLogService.recorded(
                     esignLog(doc, EmailLog.Category.ESIGN_INVITATION, recipientEmail, null, subject, orgName),
                     () -> emailDispatcher.sendHtmlEmail(
+                            doc.getOrgId(),
                             recipientEmail,
                             subject,
                             html,
@@ -165,7 +166,7 @@ public class ESignEmailService implements InternalTemplateProvider {
                 try {
                     emailLogService.recorded(
                             esignLog(doc, EmailLog.Category.ESIGN_CC, cc, null, ccR.subject(), orgName),
-                            () -> emailDispatcher.sendHtmlEmail(cc, ccR.subject(), ccR.html(), ccVars, orgName));
+                            () -> emailDispatcher.sendHtmlEmail(doc.getOrgId(), cc, ccR.subject(), ccR.html(), ccVars, orgName));
                     log.info("CC notification sent to {} for doc {}", cc, doc.getId());
                 } catch (Exception e) {
                     log.error("Failed to send CC notification to {} for doc {}: {}", cc, doc.getId(), e.getMessage());
@@ -208,7 +209,7 @@ public class ESignEmailService implements InternalTemplateProvider {
         try {
             emailLogService.recorded(
                     esignLog(doc, EmailLog.Category.ESIGN_REMINDER, signatory.getEmail(), null, r.subject(), orgName),
-                    () -> emailDispatcher.sendHtmlEmail(signatory.getEmail(), r.subject(), r.html(), vars, orgName));
+                    () -> emailDispatcher.sendHtmlEmail(doc.getOrgId(), signatory.getEmail(), r.subject(), r.html(), vars, orgName));
             log.info("Signing reminder sent to {} for doc {}", signatory.getEmail(), doc.getId());
             return true;
         } catch (Exception e) {
@@ -342,7 +343,7 @@ public class ESignEmailService implements InternalTemplateProvider {
         try {
             emailLogService.recorded(
                     esignLog(doc, EmailLog.Category.ESIGN_COMPLETION, to, null, ccR.subject(), orgName),
-                    () -> emailDispatcher.sendHtmlEmail(to, ccR.subject(), ccR.html(), ccVars, orgName));
+                    () -> emailDispatcher.sendHtmlEmail(doc.getOrgId(), to, ccR.subject(), ccR.html(), ccVars, orgName));
             log.info("Completion view-notice sent to CC {} for doc {}", to, doc.getId());
             return true;
         } catch (Exception e) {
@@ -410,7 +411,7 @@ public class ESignEmailService implements InternalTemplateProvider {
             emailLogService.recorded(
                     esignLog(doc, EmailLog.Category.ESIGN_COMPLETION, to, null, r.subject(), orgName),
                     () -> emailDispatcher.sendHtmlEmailWithAttachment(
-                            to, r.subject(), r.html(), vars, signedPdfBytes, filename, orgName));
+                            doc.getOrgId(), to, r.subject(), r.html(), vars, signedPdfBytes, filename, orgName));
             log.info("Completion email sent to {} for doc {}", to, doc.getId());
             return true;
         } catch (Exception e) {

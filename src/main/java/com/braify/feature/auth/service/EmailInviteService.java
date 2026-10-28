@@ -196,11 +196,11 @@ public class EmailInviteService implements InternalTemplateProvider {
         try {
             // EmailDispatcher substitutes {{tokens}} in subject + html using vars.
             emailLogService.recorded(logSpec,
-                    () -> emailDispatcher.sendHtmlEmail(to, subject, htmlBody, vars));
-            log.info("Email sent via Resend → {}", to);
+                    () -> emailDispatcher.sendHtmlEmail(logSpec.getOrgId(), to, subject, htmlBody, vars));
+            log.info("Email sent → {}", to);
         } catch (Exception e) {
             // Don't let email failure break the user-creation / reset flow
-            log.warn("Could not send email to {} via Resend: {}", to, e.getMessage());
+            log.warn("Could not send email to {}: {}", to, e.getMessage());
         }
     }
 

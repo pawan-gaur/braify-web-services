@@ -8,7 +8,7 @@ import com.braify.feature.organization.model.Organization;
 import com.braify.feature.organization.repository.OrganizationRepository;
 import com.braify.feature.user.model.AppUser;
 import com.braify.security.UserDetailsImpl;
-import com.resend.services.emails.model.CreateEmailResponse;
+import com.braify.config.infra.email.EmailSendResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageImpl;
@@ -56,9 +56,9 @@ public class EmailLogService {
      * On failure the row is saved as FAILED and the original exception is rethrown so the caller's
      * existing error handling is unchanged.
      */
-    public CreateEmailResponse recorded(EmailLog spec, Supplier<CreateEmailResponse> action) {
+    public EmailSendResult recorded(EmailLog spec, Supplier<EmailSendResult> action) {
         try {
-            CreateEmailResponse resp = action.get();
+            EmailSendResult resp = action.get();
             spec.setStatus(EmailLog.Status.SENT);
             spec.setProviderMessageId(resp != null ? resp.getId() : null);
             record(spec);

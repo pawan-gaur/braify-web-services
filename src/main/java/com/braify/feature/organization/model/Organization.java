@@ -3,6 +3,8 @@ package com.braify.feature.organization.model;
 import com.braify.feature.branding.model.OrgBranding;
 import com.braify.feature.cloudconfig.model.OrgCloudConfig;
 import com.braify.feature.esign.model.EsignReminderPolicy;
+import com.braify.feature.emailconfig.model.OrgEmailConfig;
+import com.braify.feature.smsconfig.model.OrgSmsConfig;
 import com.braify.shared.SubscriptionPlan;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -119,6 +121,25 @@ public class Organization {
     public EsignReminderPolicy effectiveReminderPolicy() {
         return esignReminderPolicy != null ? esignReminderPolicy : EsignReminderPolicy.defaults();
     }
+    // ── Email provider ────────────────────────────────────────────────────────
+
+    /**
+     * Outbound email provider configuration (Resend / SendGrid / Mailgun / SMTP).
+     * Stored as an embedded BSON object; null until the org configures its own
+     * provider, in which case sends fall back to the platform-admin default.
+     * Sensitive credential fields are masked in all API responses.
+     */
+    private OrgEmailConfig emailConfig;
+
+    // ── SMS provider ──────────────────────────────────────────────────────────
+
+    /**
+     * Outbound SMS provider configuration (Twilio / Vonage).
+     * Stored as an embedded BSON object; null until the org configures its own
+     * provider, in which case sends fall back to the platform-admin default.
+     * Sensitive credential fields are masked in all API responses.
+     */
+    private OrgSmsConfig smsConfig;
 
     // ── Status ────────────────────────────────────────────────────────────────
 

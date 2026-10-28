@@ -14,9 +14,11 @@ import org.springframework.stereotype.Component;
  * <ul>
  *   <li><b>Own storage</b> — an org that configured its own bucket (Settings → Cloud Storage)
  *       keeps using it, exactly as before.</li>
- *   <li><b>Managed storage</b> — every other org uses the platform's S3 bucket
- *       ({@code app.platform-storage.*}), under a per-org key prefix. Disabled unless a bucket
- *       is configured, in which case behaviour is unchanged ("cloud storage is not configured").</li>
+ *   <li><b>Managed storage</b> — every other org uses the platform bucket, under a per-org key
+ *       prefix. The platform bucket is the Platform-Admin default ({@code platform_provider_defaults},
+ *       any provider, with keys) when one is set, else the env-configured S3 bucket
+ *       ({@code app.platform-storage.*}, may use the instance role). With neither, behaviour is
+ *       unchanged ("cloud storage is not configured").</li>
  * </ul>
  *
  * <p>Reads are routed by the bucket recorded on the stored object, so objects stay readable
@@ -32,6 +34,7 @@ public class StorageConfigResolver {
             + "Configure it under Settings → Cloud Storage.";
 
     private final EncryptionService encryptionService;
+    private final com.braify.feature.platform.repository.PlatformProviderDefaultsRepository platformDefaultsRepository;
 
     @Value("${app.platform-storage.bucket:}")
     private String bucket;
@@ -55,14 +58,36 @@ public class StorageConfigResolver {
     @Value("${app.platform-storage.url-expiry-minutes:15}")
     private int urlExpiryMinutes;
 
-    /** True when {@code name} is the platform's managed bucket (orgs may not configure it as their own). */
+    /** True when {@code name} is a platform bucket (orgs may not configure it as their own). */
     public boolean isPlatformBucket(String name) {
-        return platformEnabled() && name != null && bucket.trim().equalsIgnoreCase(name.trim());
+        if (name == null || name.isBlank()) return false;
+        OrgCloudConfig admin = adminDefault();
+        return (admin != null && admin.getBucket().trim().equalsIgnoreCase(name.trim()))
+            || (envEnabled() && bucket.trim().equalsIgnoreCase(name.trim()));
     }
 
-    /** True when the platform bucket is configured (managed storage available). */
+    /** True when managed storage is available (admin default or env bucket). */
     public boolean platformEnabled() {
+        return adminDefault() != null || envEnabled();
+    }
+
+    private boolean envEnabled() {
         return bucket != null && !bucket.isBlank();
+    }
+
+    /** The Platform-Admin default cloud config, when complete (provider, bucket and keys). */
+    private OrgCloudConfig adminDefault() {
+        OrgCloudConfig c = platformDefaultsRepository
+                .findById(com.braify.feature.platform.model.PlatformProviderDefaults.SINGLETON_ID)
+                .map(com.braify.feature.platform.model.PlatformProviderDefaults::getCloud)
+                .orElse(null);
+        return c != null && c.getCloud() != null && !blank(c.getBucket()) && !blank(c.getAccessKey()) ? c : null;
+    }
+
+    /** The platform config used for new objects: admin default first, else the env bucket. */
+    private OrgCloudConfig platformConfig() {
+        OrgCloudConfig admin = adminDefault();
+        return admin != null ? admin : envConfig();
     }
 
     /** True when the org configured its own bucket (same test the services always used). */
@@ -94,11 +119,18 @@ public class StorageConfigResolver {
      * bucket), otherwise the org's own config — the pre-existing behaviour.
      */
     public OrgCloudConfig forRead(Organization org, String objectBucket) {
-        boolean inPlatformBucket = platformEnabled() && bucket.equals(objectBucket);
+        // Which platform bucket (if any) holds the object: admin default or env bucket.
+        OrgCloudConfig admin = adminDefault();
+        OrgCloudConfig platformForObject =
+                admin != null && admin.getBucket().equals(objectBucket) ? admin
+              : envEnabled() && bucket.equals(objectBucket)            ? envConfig()
+              : null;
         if (hasOwnStorage(org)) {
-            boolean ownIsPlatform = bucket != null && bucket.equals(org.getCloudConfig().getBucket());
-            return inPlatformBucket && !ownIsPlatform ? platformConfig() : org.getCloudConfig();
+            boolean ownIsThatBucket = platformForObject != null
+                    && platformForObject.getBucket().equals(org.getCloudConfig().getBucket());
+            return platformForObject != null && !ownIsThatBucket ? platformForObject : org.getCloudConfig();
         }
+        if (platformForObject != null) return platformForObject;
         if (platformEnabled()) return platformConfig();
         throw new IllegalStateException(NOT_CONFIGURED);
     }
@@ -108,7 +140,7 @@ public class StorageConfigResolver {
      * (key building, upload, presign, size/type checks) works unchanged. Credentials are
      * stored encrypted like org credentials, because callers decrypt with {@code decryptSafe}.
      */
-    private OrgCloudConfig platformConfig() {
+    private OrgCloudConfig envConfig() {
         return OrgCloudConfig.builder()
                 .cloud(OrgCloudConfig.CloudProvider.AWS)
                 .bucket(bucket.trim())

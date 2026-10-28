@@ -251,7 +251,9 @@ public class OnboardingRequestService implements InternalTemplateProvider {
                 .build();
         try {
             // EmailDispatcher substitutes {{tokens}} in subject + html using vars.
-            emailLogService.recorded(spec, () -> emailDispatcher.sendHtmlEmail(to, subject, html, vars));
+            // Onboarding is pre-org (applicant has no organisation yet) → orgId null
+            // resolves to the platform default provider.
+            emailLogService.recorded(spec, () -> emailDispatcher.sendHtmlEmail(null, to, subject, html, vars));
             log.info("Email sent → {}", to);
         } catch (Exception e) {
             log.warn("Could not send email to {}: {}", to, e.getMessage());

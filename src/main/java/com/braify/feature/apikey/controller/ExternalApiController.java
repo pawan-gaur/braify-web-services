@@ -190,7 +190,7 @@ public class ExternalApiController {
                             .relatedId(template.getId())
                             .build(),
                     () -> emailDispatcher.sendHtmlEmail(
-                            to, resolvedSubject, template.getHtmlContent(), data));
+                            orgId, to, resolvedSubject, template.getHtmlContent(), data));
 
             return ResponseEntity.ok(Map.of(
                     "success",   true,

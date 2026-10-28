@@ -300,13 +300,13 @@ public class BulkEmailProcessor {
                             : null;
 
             final List<String> ccFinal = ccRecipients;
-            Callable<com.resend.services.emails.model.CreateEmailResponse> sendOnce =
+            Callable<com.braify.config.infra.email.EmailSendResult> sendOnce =
                     () -> attachments.isEmpty()
                         ? emailDispatcher.sendHtmlEmail(
-                                r.getRecipientEmail(), ccFinal, subject,
+                                job.getOrgId(), r.getRecipientEmail(), ccFinal, subject,
                                 job.getEmailTemplateHtml(), emailPlaceholders, senderName, tracking)
                         : emailDispatcher.sendHtmlEmailWithAttachments(
-                                r.getRecipientEmail(), ccFinal, subject,
+                                job.getOrgId(), r.getRecipientEmail(), ccFinal, subject,
                                 job.getEmailTemplateHtml(), emailPlaceholders,
                                 attachments, senderName, tracking);
 
@@ -384,8 +384,8 @@ public class BulkEmailProcessor {
      * (429 / 5xx / timeouts / connection resets) with exponential backoff + jitter.
      * Permanent failures (e.g. a rejected address) fail fast without retry.
      */
-    private com.resend.services.emails.model.CreateEmailResponse sendWithRetry(
-            Callable<com.resend.services.emails.model.CreateEmailResponse> send,
+    private com.braify.config.infra.email.EmailSendResult sendWithRetry(
+            Callable<com.braify.config.infra.email.EmailSendResult> send,
             BulkEmailRecipient r, String jobId) throws Exception {
 
         int attempts = Math.max(1, maxSendAttempts);

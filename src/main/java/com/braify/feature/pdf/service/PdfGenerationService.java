@@ -124,17 +124,9 @@ public class PdfGenerationService {
     }
 
     static boolean isInternal(java.net.InetAddress a) {
-        if (a.isAnyLocalAddress() || a.isLoopbackAddress() || a.isLinkLocalAddress()
-                || a.isSiteLocalAddress() || a.isMulticastAddress()) return true;
-        byte[] b = a.getAddress();
-        if (b.length == 4) {
-            int b0 = b[0] & 0xff, b1 = b[1] & 0xff;
-            return b0 == 0                                   // 0.0.0.0/8
-                || (b0 == 100 && b1 >= 64 && b1 <= 127)      // 100.64.0.0/10 carrier-grade NAT
-                || (b0 == 192 && b1 == 0 && (b[2] & 0xff) == 0);   // 192.0.0.0/24 IETF protocol
-        }
-        return (b[0] & 0xfe) == 0xfc;                         // fc00::/7 IPv6 unique-local
+        return com.braify.config.infra.net.OutboundTargetGuard.isInternal(a);
     }
+
 
     private java.util.Set<String> trustedHosts() {
         java.util.Set<String> hosts = new java.util.HashSet<>();
