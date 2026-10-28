@@ -161,10 +161,19 @@ public class JwtUtil {
      * POST /api/auth/login/mfa.
      */
     public String generateMfaChallengeToken(AppUser user) {
+        return generateMfaChallengeToken(user, "PASSWORD");
+    }
+
+    /**
+     * @param firstFactor how the first step was passed ({@code PASSWORD} or {@code EMAIL_OTP}) —
+     *                    carried through so the resulting session knows whether the mailbox was proven.
+     */
+    public String generateMfaChallengeToken(AppUser user, String firstFactor) {
         return Jwts.builder()
                 .id(UUID.randomUUID().toString())
                 .subject(user.getId())
                 .claim("type", "MFA_CHALLENGE")
+                .claim("firstFactor", firstFactor)
                 .claim("email", user.getEmail())
                 .issuedAt(new Date())
                 .expiration(new Date(System.currentTimeMillis() + mfaChallengeMinutes * 60_000L))
@@ -176,6 +185,35 @@ public class JwtUtil {
     public boolean isValidMfaChallengeToken(String token) {
         try {
             return "MFA_CHALLENGE".equals(parseToken(token).get("type", String.class));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // ── Signer-portal session token ─────────────────────────────────────────
+
+    /**
+     * Access token for a signer-portal session (an external e-sign recipient with no
+     * AppUser account). Carries {@code type = "SIGNER"}, the {@code SignerAccount} id as
+     * subject and the normalized email. Backed by a {@code UserSession} exactly like a user
+     * token, but {@link JwtAuthFilter} only honours it on {@code /api/signer/**}.
+     */
+    public String generateSignerToken(String signerAccountId, String email) {
+        return Jwts.builder()
+                .id(UUID.randomUUID().toString())
+                .subject(signerAccountId)
+                .claim("type", "SIGNER")
+                .claim("email", email)
+                .issuedAt(new Date())
+                .expiration(new Date(System.currentTimeMillis() + accessMinutes * 60_000L))
+                .signWith(key())
+                .compact();
+    }
+
+    /** Returns true only if the token is valid AND carries {@code type = "SIGNER"}. */
+    public boolean isValidSignerToken(String token) {
+        try {
+            return "SIGNER".equals(parseToken(token).get("type", String.class));
         } catch (Exception e) {
             return false;
         }
@@ -209,11 +247,11 @@ public class JwtUtil {
         }
     }
 
-    /** Returns true if the token is a USER auth token (not an e-sign signing or view token). */
+    /** Returns true if the token is a USER auth token (not an e-sign signing/view or signer-portal token). */
     public boolean isUserToken(String token) {
         try {
             String type = parseToken(token).get("type", String.class);
-            return !"ESIGN".equals(type) && !"ESIGN_VIEW".equals(type);
+            return !"ESIGN".equals(type) && !"ESIGN_VIEW".equals(type) && !"SIGNER".equals(type);
         } catch (Exception e) {
             return false;
         }

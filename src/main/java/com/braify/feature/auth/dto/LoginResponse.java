@@ -24,6 +24,22 @@ public class LoginResponse {
     private boolean mustChangePassword;
 
     /**
+     * {@code USER} for a full Braify account session, {@code SIGNER} for a signer-portal
+     * session (external e-sign recipient — may only call {@code /api/signer/**}).
+     */
+    @Builder.Default
+    private String accountType = "USER";
+
+    /** Whether the account has a usable password (false → email-code sign-in only). */
+    private Boolean hasPassword;
+
+    /**
+     * /api/signer/me only: whether changing the password requires the current one. False when
+     * there is no usable password, or this session proved the mailbox with an email code.
+     */
+    private Boolean passwordNeedsCurrent;
+
+    /**
      * Feature keys enabled for this user's organisation.
      * Frontend uses this to show/hide modules immediately after login.
      * PLATFORM_ADMIN users receive all feature keys.

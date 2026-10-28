@@ -37,8 +37,26 @@ public class UserSession {
     /** Org the user belongs to — used for role-scoped session listing */
     private String organizationId;
 
-    /** Role of the user — used for role-scoped session listing */
+    /** Role of the user — used for role-scoped session listing ("SIGNER" for signer-portal sessions) */
     private String userRole;
+
+    /**
+     * Which identity {@link #userId} refers to: {@code USER} (AppUser — default, also
+     * when null on legacy rows) or {@code SIGNER} (SignerAccount, signer-portal session).
+     */
+    private String principalType;
+
+    /** Email of the session owner — set for signer sessions (no AppUser to look up). */
+    private String principalEmail;
+
+    /**
+     * True when THIS session proved control of the account's mailbox — signed in with an
+     * emailed code, or confirmed one later. Required for a Braify user to open the signer
+     * inbox: a password alone is not enough, because admins can set users' passwords.
+     * Signer-portal sessions are always verified (their credentials are owned by the signer).
+     */
+    @Builder.Default
+    private boolean emailVerified = false;
 
     private String deviceInfo;
     private String ipAddress;

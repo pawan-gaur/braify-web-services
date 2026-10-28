@@ -7,6 +7,9 @@ import com.braify.feature.auth.dto.MfaRecoveryCodesResponse;
 import com.braify.feature.auth.dto.MfaSetupResponse;
 import com.braify.feature.auth.dto.MfaStatusResponse;
 import com.braify.feature.auth.dto.MfaVerifyRequest;
+import com.braify.feature.auth.dto.OtpRequest;
+import com.braify.feature.auth.dto.OtpVerifyRequest;
+import com.braify.feature.signer.service.EmailOtpService;
 import com.braify.feature.auth.service.MfaService;
 import com.braify.feature.user.dto.UserResponse;
 import com.braify.feature.user.model.AppUser;
@@ -52,6 +55,7 @@ public class AuthController {
     private final UserService userService;
     private final MfaService mfaService;
     private final com.braify.feature.auth.service.PasswordPolicyService passwordPolicyService;
+    private final EmailOtpService emailOtpService;
 
     /** Name of the httpOnly refresh-token cookie. Scoped to /api/auth so it is only ever sent to auth endpoints. */
     private static final String REFRESH_COOKIE = "refresh_token";
@@ -94,6 +98,39 @@ public class AuthController {
                     "message",   "Session expired. Please log in again.",
                     "timestamp", Instant.now().toString()));
         }
+    }
+
+    // ── Email OTP sign-in ────────────────────────────────────────────────────
+
+    /**
+     * Emails a one-time sign-in code. Public. Always answers 200 with the same body so the
+     * endpoint never reveals whether the email belongs to an account or a signer.
+     */
+    @PostMapping("/otp/request")
+    public ResponseEntity<Map<String, Object>> requestOtp(@Valid @RequestBody OtpRequest req,
+                                                          HttpServletRequest httpReq) {
+        log.info("POST /api/auth/otp/request email='{}'", req.getEmail());
+        authService.requestLoginOtp(req.getEmail(), extractClientIp(httpReq), httpReq.getHeader("User-Agent"));
+        return ResponseEntity.ok(Map.of(
+                "message", "If this email can sign in, a code is on its way.",
+                "resendAfterSeconds", emailOtpService.getResendSeconds(),
+                "ttlMinutes", emailOtpService.getTtlMinutes()));
+    }
+
+    /**
+     * Completes an email-OTP sign-in. Same response contract as {@code /login}: a session
+     * (token + refresh cookie), or {@code mfaRequired} + {@code mfaToken} for a Braify user
+     * whose MFA policy applies. {@code accountType} tells the client which app to open.
+     */
+    @PostMapping("/otp/verify")
+    public ResponseEntity<LoginResponse> verifyOtp(@Valid @RequestBody OtpVerifyRequest req,
+                                                   HttpServletRequest httpReq,
+                                                   HttpServletResponse httpRes) {
+        log.info("POST /api/auth/otp/verify email='{}'", req.getEmail());
+        AuthService.LoginResult result = authService.loginWithOtp(
+                req.getEmail(), req.getCode(), req.getDeviceInfo(), extractClientIp(httpReq));
+        setRefreshCookie(httpRes, result.refreshToken());
+        return ResponseEntity.ok(result.response());
     }
 
     // ── MFA ───────────────────────────────────────────────────────────────────
@@ -271,6 +308,7 @@ public class AuthController {
         // Enforce platform password policy (length / complexity / re-use) + history.
         passwordPolicyService.applyNewPassword(user, newPassword);
         user.setMustChangePassword(false);
+        user.setPasswordMailboxVerified(true);   // set via an emailed link
         userRepository.save(user);
 
         it.setUsed(true);
@@ -327,6 +365,7 @@ public class AuthController {
         // Enforce platform password policy (length / complexity / re-use) + history.
         passwordPolicyService.applyNewPassword(user, newPassword);
         user.setMustChangePassword(false);
+        user.setPasswordMailboxVerified(true);   // set via an emailed link
         userRepository.save(user);
 
         it.setUsed(true);

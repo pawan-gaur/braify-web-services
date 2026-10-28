@@ -50,6 +50,17 @@ public class AppUser {
     /** When the password was last set/changed — used for expiry enforcement. */
     private LocalDateTime passwordChangedAt;
 
+    /**
+     * Who chose the current password, for signer-inbox access:
+     * <ul>
+     *   <li>{@code false} — set by an admin (user create/update with a password, seeded admin):
+     *       the admin knows it, so a password sign-in must confirm the mailbox with an email code.</li>
+     *   <li>{@code true} — set by the user via invite/reset link or in an email-verified session.</li>
+     *   <li>{@code null} — account predates this flag; treated as user-chosen.</li>
+     * </ul>
+     */
+    private Boolean passwordMailboxVerified;
+
     /** Most-recent previous BCrypt password hashes, for re-use restriction. Newest first. */
     @Builder.Default
     private List<String> previousPasswords = new ArrayList<>();
@@ -98,7 +109,7 @@ public class AppUser {
     private LocalDateTime updatedAt;
 
     public enum Role {
-        PLATFORM_ADMIN, ORG_ADMIN, ADMIN, USER
+        PLATFORM_ADMIN, ORG_ADMIN, ADMIN, USER, SIGNER
     }
 
     public String getFullName() {

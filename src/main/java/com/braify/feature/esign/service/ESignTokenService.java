@@ -179,6 +179,18 @@ public class ESignTokenService {
         }
     }
 
+    /** Revokes every still-active signing token of a document (e.g. when it is cancelled). */
+    public int revokeAllForDocument(String documentId) {
+        LocalDateTime now = LocalDateTime.now();
+        List<ESignSigningToken> active = tokenRepo.findAllByDocumentIdAndUsedFalseAndRevokedAtIsNull(documentId);
+        active.forEach(t -> {
+            t.setRevokedAt(now);
+            tokenRepo.save(t);
+        });
+        if (!active.isEmpty()) log.info("Revoked {} signing token(s) for document='{}'", active.size(), documentId);
+        return active.size();
+    }
+
     /** Marks the token as used after successful document submission. */
     public void markUsed(String jti) {
         tokenRepo.findByJti(jti).ifPresent(t -> {

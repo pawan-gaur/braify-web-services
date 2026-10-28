@@ -1211,6 +1211,8 @@ public class ESignDocumentService {
         ESignDocument doc = getAccessibleDoc(docId, principal);
         doc.setStatus(ESignDocument.Status.CANCELLED);
         docRepo.save(doc);
+        // Kill outstanding signing links so the cancelled document can no longer be signed.
+        tokenService.revokeAllForDocument(docId);
         auditService.log(docId, principal.getUsername(),
                 ESignAuditEvent.ActorType.CREATOR,
                 ESignAuditEvent.EventType.DOCUMENT_CANCELLED, ip, ua, null);

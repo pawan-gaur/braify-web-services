@@ -15,6 +15,9 @@ public interface ESignSigningTokenRepository extends MongoRepository<ESignSignin
 
     Optional<ESignSigningToken> findByDocumentIdAndUsedFalseAndRevokedAtIsNull(String documentId);
 
+    /** Every active (unused, unrevoked) token of a document — revoked when the document is cancelled. */
+    List<ESignSigningToken> findAllByDocumentIdAndUsedFalseAndRevokedAtIsNull(String documentId);
+
     /** Active (unused, unrevoked) token for a specific signatory of a document. */
     Optional<ESignSigningToken> findByDocumentIdAndSignatoryIdAndUsedFalseAndRevokedAtIsNull(
             String documentId, String signatoryId);

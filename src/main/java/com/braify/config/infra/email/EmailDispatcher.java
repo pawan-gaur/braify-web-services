@@ -33,6 +33,14 @@ public class EmailDispatcher {
     @Value("${resend.from-email:}")
     private String fromEmail;
 
+    /**
+     * Optional sender for transactional mail (sign-in codes). Use an address on a separate
+     * subdomain from bulk/marketing mail (e.g. {@code "Braify <no-reply@notify.example.com>"}) so
+     * Gmail doesn't learn campaign sending patterns onto it. Falls back to {@code resend.from-email}.
+     */
+    @Value("${resend.transactional-from-email:}")
+    private String transactionalFromEmail;
+
     @Value("${emailDispatcher.template-bucket-url:}")
     private String templateBucketUrl;
 
@@ -236,6 +244,42 @@ public class EmailDispatcher {
         return send(email, renderedSubject, renderedHtml, attachments);
     }
 
+    /**
+     * Sends a transactional email (e.g. a sign-in code): HTML plus a plain-text part, from the
+     * transactional sender when configured, with a unique {@code X-Entity-Ref-ID} so Gmail never
+     * threads successive codes together. No CC, attachments or tracking.
+     */
+    public CreateEmailResponse sendTransactionalEmail(String email,
+                                                      String subject,
+                                                      String html,
+                                                      String text,
+                                                      Map<String, Object> placeholders,
+                                                      String senderDisplayName) {
+        validateEmailSettings();
+        if (isBlank(email)) throw new IllegalArgumentException("Recipient email is required");
+        if (isBlank(html))  throw new IllegalArgumentException("Email HTML content is required");
+
+        Map<String, Object> values = safePlaceholders(placeholders);
+        String from = buildFrom(isBlank(transactionalFromEmail) ? fromEmail : transactionalFromEmail, senderDisplayName);
+
+        CreateEmailOptions.Builder builder = CreateEmailOptions.builder()
+                .from(from)
+                .to(email)
+                .subject(replacePlaceholders(isBlank(subject) ? DEFAULT_SUBJECT : subject, values))
+                .html(replacePlaceholders(html, values))
+                .headers(Map.of("X-Entity-Ref-ID", java.util.UUID.randomUUID().toString()));
+        if (!isBlank(text)) builder.text(replacePlaceholders(text, values));
+
+        try {
+            CreateEmailResponse response = new Resend(apiKey).emails().send(builder.build());
+            log.info("Transactional email sent to {} with Resend id {}", email, response != null ? response.getId() : null);
+            return response;
+        } catch (ResendException e) {
+            log.error("Transactional email failed to {} with Resend error : {}", email, e.getMessage());
+            throw new IllegalStateException("Could not send email to " + email + ": " + e.getMessage(), e);
+        }
+    }
+
     private CreateEmailResponse send(String email,
                                      String subject,
                                      String html,
@@ -349,14 +393,18 @@ public class EmailDispatcher {
      * </pre>
      */
     private String buildFrom(String displayName) {
-        if (isBlank(displayName)) return fromEmail;
+        return buildFrom(fromEmail, displayName);
+    }
+
+    private String buildFrom(String sender, String displayName) {
+        if (isBlank(displayName)) return sender;
 
         // Extract the bare email address from "Display Name <addr>" or "addr"
         String address;
-        if (fromEmail.contains("<") && fromEmail.contains(">")) {
-            address = fromEmail.substring(fromEmail.indexOf('<') + 1, fromEmail.lastIndexOf('>')).trim();
+        if (sender.contains("<") && sender.contains(">")) {
+            address = sender.substring(sender.indexOf('<') + 1, sender.lastIndexOf('>')).trim();
         } else {
-            address = fromEmail.trim();
+            address = sender.trim();
         }
         return displayName.trim() + " <" + address + ">";
     }
