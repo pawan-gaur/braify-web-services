@@ -72,9 +72,18 @@ public class ESignStorageService {
         return upload(orgId, key(orgId, docId, "source.pdf"), bytes);
     }
 
-    /** Uploads the signed PDF and returns its storage reference. */
-    public StoredPdf uploadSignedPdf(String orgId, String docId, byte[] bytes) {
-        return upload(orgId, key(orgId, docId, "signed.pdf"), bytes);
+    /**
+     * Uploads the signed PDF next to the document's source PDF — same bucket and folder — so both
+     * are read with the one {@code pdfBucket} recorded on the document, even if the org switched
+     * between managed storage and its own bucket while the document was out for signing.
+     */
+    public StoredPdf uploadSignedPdf(ESignDocument doc, byte[] bytes) {
+        String src = doc.getSourcePdfKey();
+        if (doc.getPdfBucket() == null || src == null || !src.endsWith("/source.pdf")) {
+            return upload(doc.getOrgId(), key(doc.getOrgId(), doc.getId(), "signed.pdf"), bytes);   // legacy embedded source
+        }
+        String signedKey = src.substring(0, src.length() - "source.pdf".length()) + "signed.pdf";
+        return upload(readConfig(doc.getOrgId(), doc.getPdfBucket()), doc.getOrgId(), signedKey, bytes);
     }
 
     /** Downloads object bytes (server-side) — for signature stamping or email attachment. */
@@ -108,7 +117,10 @@ public class ESignStorageService {
     // ── Internals ──────────────────────────────────────────────────────────────
 
     private StoredPdf upload(String orgId, String storageKey, byte[] bytes) {
-        OrgCloudConfig cfg = writeConfig(orgId);
+        return upload(writeConfig(orgId), orgId, storageKey, bytes);
+    }
+
+    private StoredPdf upload(OrgCloudConfig cfg, String orgId, String storageKey, byte[] bytes) {
         String accessKey = encryptionService.decryptSafe(cfg.getAccessKey());
         String secretKey = encryptionService.decryptSafe(cfg.getSecretKey());
 

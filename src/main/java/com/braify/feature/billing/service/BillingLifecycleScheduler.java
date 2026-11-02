@@ -16,6 +16,7 @@ public class BillingLifecycleScheduler {
     @Scheduled(fixedDelayString = "${app.billing.lifecycle-interval-ms:3600000}", initialDelay = 120_000)
     public void run() {
         try {
+            billingService.notifyTrialsEnding();
             int n = billingService.downgradeExpired();
             if (n > 0) log.info("Billing lifecycle: {} organisation(s) moved to Free", n);
         } catch (Exception e) {

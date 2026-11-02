@@ -121,6 +121,8 @@ public class DocumentResponse {
         private String  id;
         private String  name;
         private String  email;
+        /** Only filled on the creator's detail view (never in signer-facing responses). */
+        private String  phone;
         private int     signingOrder;
         private String  status;
         private LocalDateTime viewedAt;

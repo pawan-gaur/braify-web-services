@@ -43,6 +43,25 @@ public class PlanAccessService {
         }
     }
 
+    /** Outgoing webhooks / integrations: same rule as bulk features (paid plan or grandfathered). */
+    public boolean webhooksEnabled(Organization org) {
+        return bulkEnabled(org);
+    }
+
+    /** SMS reminders: same rule as bulk features (paid plan or grandfathered). */
+    public boolean smsEnabled(Organization org) {
+        return bulkEnabled(org);
+    }
+
+    public void requireWebhooks(String orgId) {
+        if (orgId == null) return;
+        Organization org = orgRepository.findById(orgId).orElse(null);
+        if (!webhooksEnabled(org)) {
+            throw new UpgradeRequiredException(
+                    "Webhooks and integrations (Zapier, Make, your own systems) are available on the Pro plan.");
+        }
+    }
+
     /** Whole days left in a trial (0 when none / ended). */
     public static long trialDaysLeft(Organization org) {
         OrgBilling b = org.getBilling();

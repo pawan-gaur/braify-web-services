@@ -27,6 +27,10 @@ import java.util.concurrent.Executor;
 @Configuration
 public class AsyncConfig implements AsyncConfigurer {
 
+    /** Pool for long-running bulk jobs (bulk email, bulk PDF): {@code @Async(AsyncConfig.BULK_EXECUTOR)}. */
+    public static final String BULK_EXECUTOR = "bulkExecutor";
+
+    /** Default {@code @Async} pool — short tasks (e-sign finalisation, audit writes, API-key usage). */
     @Override
     @Bean(name = "taskExecutor")
     public Executor getAsyncExecutor() {
@@ -34,7 +38,24 @@ public class AsyncConfig implements AsyncConfigurer {
         executor.setCorePoolSize(4);
         executor.setMaxPoolSize(8);
         executor.setQueueCapacity(50);
-        executor.setThreadNamePrefix("bulk-email-");
+        executor.setThreadNamePrefix("async-");
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(60);
+        executor.initialize();
+        return executor;
+    }
+
+    /**
+     * Separate pool so hours-long bulk jobs can never starve the short tasks above (a signed
+     * document's finalisation would otherwise wait behind four running campaigns).
+     */
+    @Bean(name = BULK_EXECUTOR)
+    public Executor bulkExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(4);
+        executor.setMaxPoolSize(4);
+        executor.setQueueCapacity(100);
+        executor.setThreadNamePrefix("bulk-job-");
         executor.setWaitForTasksToCompleteOnShutdown(true);
         executor.setAwaitTerminationSeconds(60);
         executor.initialize();

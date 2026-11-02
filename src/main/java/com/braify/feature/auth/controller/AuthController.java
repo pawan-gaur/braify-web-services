@@ -362,7 +362,8 @@ public class AuthController {
     public ResponseEntity<Map<String, String>> forgotPassword(@RequestBody Map<String, String> body) {
         log.info("POST /api/auth/forgot-password");
         String email = body.get("email");
-        userRepository.findByEmail(email).ifPresent(user -> {
+        // Case-insensitive, like login and code sign-in (a mixed-case stored email still gets its link).
+        authService.findUserByEmail(email).ifPresent(user -> {
             if (user.isActive()) {
                 emailInviteService.sendPasswordReset(user);
             }

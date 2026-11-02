@@ -33,6 +33,9 @@ public class OrgProvisioningService {
                 .features(features)
                 .active(true)
                 .deleted(false)
+                .billing(com.braify.feature.billing.model.OrgBilling.builder()
+                        .managedBy(com.braify.feature.billing.model.OrgBilling.ManagedBy.MANUAL).status("NONE")
+                        .bulkGrandfathered(false).updatedAt(java.time.LocalDateTime.now()).build())   // new org: not grandfathered
                 .build();
         org = orgRepository.save(org);
         log.info("Organisation created: id={} code={} name='{}'", org.getId(), org.getCode(), name);

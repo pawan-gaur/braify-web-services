@@ -39,10 +39,14 @@ public class OrgBilling {
     private LocalDateTime trialEndsAt;
 
     /**
-     * Organisations that existed before plan-gated features were introduced keep using them
-     * on the Free plan (set once by {@code BillingBackfillRunner}).
+     * Organisations that existed before plan-gated features were introduced keep using them on
+     * the Free plan. A {@code null} billing block means "predates billing" and is treated as
+     * grandfathered; every organisation created since gets an explicit block with this false.
      */
     private boolean bulkGrandfathered;
+
+    /** The "trial ends soon" notification was sent (once per trial). */
+    private boolean trialReminderSent;
 
     private LocalDateTime updatedAt;
 }

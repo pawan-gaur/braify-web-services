@@ -54,12 +54,14 @@ import java.util.Map;
 public class ESignDocumentService {
 
     private final ESignDocumentRepository       docRepo;
+    private final ESignEvents                   esignEvents;
     private final ESignBulkBatchRepository      batchRepo;
     private final ESignSignatureFieldRepository fieldRepo;
     private final TemplateRepository            templateRepo;
     private final com.braify.feature.pdf.service.PdfGenerationService pdfGenerationService;
     private final ESignTokenService             tokenService;
     private final ESignEmailService             emailService;
+    private final ESignSmsService               smsService;
     private final ESignAuditService             auditService;
     private final AuditLogService               auditLogService;
     private final QuotaService                  quotaService;
@@ -86,6 +88,16 @@ public class ESignDocumentService {
                                             UserDetailsImpl principal,
                                             String ip,
                                             String ua) {
+        // Validate everything cheap BEFORE rendering anything (a template render is real work).
+        // E-sign PDFs are stored in the org's cloud bucket (not embedded in Mongo).
+        if (!esignStorage.isCloudConfigured(principal.getOrgId())) {
+            throw new IllegalStateException("Cloud storage is not configured for this organisation. " +
+                    "Configure it under Settings → Cloud Storage before creating e-sign documents.");
+        }
+        // Build the signatory list (always ≥1). Single-signer/bulk requests derive one
+        // signatory from the client fields; multi-party requests use req.signatories.
+        List<ESignDocument.Signatory> signatories = buildSignatories(req);
+
         byte[] pdfBytes;
 
         if ("UPLOAD".equalsIgnoreCase(req.getSourceType())) {
@@ -106,9 +118,10 @@ public class ESignDocumentService {
                 // The builder already rendered the template (via /preview-pdf) — use that PDF.
                 pdfBytes = decodeBase64Pdf(req.getPdfBase64());
             } else {
-                // API callers that only pass templateId: render it here (counts as a generated document).
+                // API callers that only pass templateId: render it here. Not counted as a generated
+                // document — the e-sign send is what counts against the monthly limit.
                 try {
-                    pdfBytes = pdfGenerationService.generate(tpl, java.util.Map.of());
+                    pdfBytes = pdfGenerationService.preview(tpl, java.util.Map.of(), null);
                 } catch (com.braify.feature.quota.exception.QuotaExceededException e) {
                     throw e;
                 } catch (Exception e) {
@@ -131,16 +144,6 @@ public class ESignDocumentService {
             }
         }
 
-        // E-sign PDFs are stored in the org's cloud bucket (not embedded in Mongo).
-        // Fail fast if the org hasn't configured cloud storage.
-        if (!esignStorage.isCloudConfigured(principal.getOrgId())) {
-            throw new RuntimeException("Cloud storage is not configured for this organisation. " +
-                    "Configure it under Settings → Cloud Storage before creating e-sign documents.");
-        }
-
-        // Build the signatory list (always ≥1). Single-signer/bulk requests derive one
-        // signatory from the client fields; multi-party requests use req.signatories.
-        List<ESignDocument.Signatory> signatories = buildSignatories(req);
         ESignDocument.Signatory primary = signatories.get(0);   // mirrored into clientEmail/clientName
         ESignDocument.SigningMode signingMode = parseSigningMode(req.getSigningMode());
 
@@ -452,6 +455,7 @@ public class ESignDocumentService {
                        "signatories", sigs.size(),
                        "signingMode", doc.getSigningMode().name(),
                        "tokenValidDays", tokenValidDays));
+        esignEvents.sent(doc);
 
         // Unified audit log entry
         auditLogService.log(
@@ -826,9 +830,15 @@ public class ESignDocumentService {
         return !base.plusHours(waitHours).isAfter(now);
     }
 
-    /** Emails one reminder and advances the signatory's counters in memory (caller persists). */
+    /**
+     * Emails one reminder (and texts it when the org's policy turns SMS on and the signatory has a
+     * phone) and advances the signatory's counters in memory (caller persists).
+     */
     private boolean dispatchReminder(ESignDocument doc, ESignDocument.Signatory s) {
         boolean ok = emailService.sendReminder(doc, s);
+        if (s.getPhone() != null && resolveReminderPolicy(doc.getOrgId()).isSmsEnabled()) {
+            ok |= smsService.sendReminderSms(doc, s);
+        }
         if (ok) {
             s.setLastReminderAt(LocalDateTime.now());
             s.setReminderCount(s.getReminderCount() + 1);
@@ -1064,6 +1074,12 @@ public class ESignDocumentService {
         // Include PDF bytes/URLs ONLY for flow participants; others still get metadata
         // (Overview, Audit Trail) but no document content.
         DocumentResponse resp = DocumentResponse.from(doc, fields, pdfAccess);
+        // Phone numbers are for the sender's eyes only (SMS reminders) — added here, not in from().
+        if (doc.getSignatories() != null && resp.getSignatories() != null) {
+            Map<String, String> phones = new java.util.HashMap<>();
+            doc.getSignatories().forEach(s -> { if (s.getPhone() != null) phones.put(s.getId(), s.getPhone()); });
+            resp.getSignatories().forEach(s -> s.setPhone(phones.get(s.getId())));
+        }
         if (pdfAccess) {
             resp.setSourcePdfUrl(esignStorage.sourcePresignedUrl(doc));
             resp.setSignedPdfUrl(esignStorage.signedPresignedUrl(doc));
@@ -1225,8 +1241,14 @@ public class ESignDocumentService {
     public DocumentResponse cancelDocument(String docId, UserDetailsImpl principal,
                                            String ip, String ua) {
         ESignDocument doc = getAccessibleDoc(docId, principal);
+        // Signed / completed documents are final; a second cancel would re-fire the webhook event.
+        if (doc.getStatus() == ESignDocument.Status.SIGNED || doc.getStatus() == ESignDocument.Status.COMPLETED
+                || doc.getStatus() == ESignDocument.Status.CANCELLED) {
+            throw new IllegalStateException("This document can't be cancelled (status: " + doc.getStatus() + ").");
+        }
         doc.setStatus(ESignDocument.Status.CANCELLED);
         docRepo.save(doc);
+        esignEvents.cancelled(doc);
         // Kill outstanding signing links so the cancelled document can no longer be signed.
         tokenService.revokeAllForDocument(docId);
         auditService.log(docId, principal.getUsername(),
@@ -1350,6 +1372,7 @@ public class ESignDocumentService {
                         .id(java.util.UUID.randomUUID().toString())
                         .name(s.getName().trim())
                         .email(s.getEmail().trim())
+                        .phone(ESignSmsService.normalizePhone(s.getPhone()))
                         .signingOrder(s.getSigningOrder() != null ? s.getSigningOrder() : i)
                         .status(ESignDocument.SignatoryStatus.PENDING)
                         .build());

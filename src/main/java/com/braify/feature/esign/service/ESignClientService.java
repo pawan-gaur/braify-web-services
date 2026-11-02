@@ -29,6 +29,7 @@ import java.util.UUID;
 public class ESignClientService {
 
     private final ESignDocumentRepository      docRepo;
+    private final ESignEvents                  esignEvents;
     private final ESignSignatureFieldRepository fieldRepo;
     private final AppUserRepository            userRepo;
     private final ESignTokenService            tokenService;
@@ -66,6 +67,7 @@ public class ESignClientService {
             auditService.log(doc.getId(), token.getClientEmail(),
                     ESignAuditEvent.ActorType.CLIENT,
                     ESignAuditEvent.EventType.DOCUMENT_VIEWED, ip, ua, null);
+            esignEvents.viewed(doc, signatory);
         }
 
         List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(doc.getId());
@@ -244,11 +246,13 @@ public class ESignClientService {
             doc.setStatus(ESignDocument.Status.SIGNED);
             doc.setSubmittedAt(LocalDateTime.now());
             docRepo.save(doc);
+            esignEvents.signed(doc, signatory);   // after the status change, so the payload is current
             // Stamp ALL signatories' fields into the final PDF + send completion emails
             finalizeDocumentAsync(doc, allFields, ip, ua);
         } else {
             doc.setStatus(ESignDocument.Status.PARTIALLY_SIGNED);
             docRepo.save(doc);
+            esignEvents.signed(doc, signatory);
             // Sequential mode: hand the document to the next signatory in order
             if (doc.getSigningMode() == ESignDocument.SigningMode.SEQUENTIAL) {
                 inviteNextSignatory(doc, ip, ua);
@@ -309,7 +313,7 @@ public class ESignClientService {
             String hash = pdfService.sha256Hex(signedBytes);
 
             // 2. Upload the signed PDF to cloud storage; keep only the reference.
-            ESignStorageService.StoredPdf ref = esignStorage.uploadSignedPdf(doc.getOrgId(), doc.getId(), signedBytes);
+            ESignStorageService.StoredPdf ref = esignStorage.uploadSignedPdf(doc, signedBytes);
             doc.setSignedPdfKey(ref.storageKey());
             doc.setSignedPdfHash(hash);
             if (doc.getPdfBucket() == null)        doc.setPdfBucket(ref.bucket());
@@ -318,6 +322,7 @@ public class ESignClientService {
             doc.setCompletedAt(LocalDateTime.now());
             doc.setFinalizeError(null);   // clear any prior failure
             docRepo.save(doc);
+            esignEvents.completed(doc);
 
             auditService.log(doc.getId(), "SYSTEM",
                     ESignAuditEvent.ActorType.SYSTEM,

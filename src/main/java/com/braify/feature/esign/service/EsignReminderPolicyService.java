@@ -38,6 +38,9 @@ public class EsignReminderPolicyService {
                 .firstReminderAfterHours(req.getFirstReminderAfterHours())
                 .repeatEveryHours(req.getRepeatEveryHours())
                 .maxReminders(req.getMaxReminders())
+                .smsEnabled(req.getSmsEnabled() != null
+                        ? req.getSmsEnabled()
+                        : org.effectiveReminderPolicy().isSmsEnabled())
                 .build();
 
         org.setEsignReminderPolicy(policy);

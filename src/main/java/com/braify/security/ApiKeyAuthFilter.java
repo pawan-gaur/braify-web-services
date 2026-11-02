@@ -111,9 +111,15 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
             request.setAttribute(RequestLoggingFilter.CALLER_ATTR, "key:" + key.getKeyPrefix());
 
             // Plan limit: monthly API calls (tracked below; was never enforced).
-            String limitMsg = quotaService.apiCallLimitMessage(key.getOrgId());
+            // A usage-lookup failure must not turn into "invalid API key" — fail open and log.
+            String limitMsg = null;
+            try {
+                limitMsg = quotaService.apiCallLimitMessage(key.getOrgId());
+            } catch (Exception e) {
+                log.warn("API call limit check failed for org {}: {}", key.getOrgId(), e.getMessage());
+            }
             if (limitMsg != null) {
-                writeJson(response, 429, Map.of("error", limitMsg));
+                writeJson(response, 429, Map.of("status", 429, "error", limitMsg, "message", limitMsg));
                 return;
             }
 

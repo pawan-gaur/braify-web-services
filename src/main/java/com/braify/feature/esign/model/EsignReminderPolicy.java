@@ -32,6 +32,13 @@ public class EsignReminderPolicy {
     @Builder.Default
     private int maxReminders = 10;
 
+    /**
+     * Also text each reminder to signatories who have a phone number (Pro plan; needs an SMS
+     * provider — the org's own or the platform default). Off unless the org turns it on.
+     */
+    @Builder.Default
+    private boolean smsEnabled = false;
+
     public static EsignReminderPolicy defaults() {
         return EsignReminderPolicy.builder().build();
     }

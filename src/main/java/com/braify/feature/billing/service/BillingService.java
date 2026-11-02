@@ -22,6 +22,7 @@ import org.springframework.stereotype.Service;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -41,6 +42,8 @@ public class BillingService {
     private final StripeClient           stripe;
     private final MongoTemplate          mongoTemplate;
     private final AuditLogService        auditLogService;
+    private final com.braify.feature.notification.service.NotificationService notificationService;
+    private final com.braify.feature.user.repository.AppUserRepository userRepository;
 
     @Value("${app.billing.enabled:true}")
     private boolean enabled;
@@ -147,6 +150,16 @@ public class BillingService {
             return;
         }
 
+        try {
+            dispatch(eventId, type, obj);
+        } catch (RuntimeException e) {
+            // Un-mark the event so Stripe's retry is processed instead of being skipped as a duplicate.
+            mongoTemplate.remove(new Query(Criteria.where("_id").is(eventId)), BillingWebhookEvent.class);
+            throw e;
+        }
+    }
+
+    private void dispatch(String eventId, String type, JsonNode obj) {
         switch (type) {
             case "checkout.session.completed" -> {
                 String orgId = text(obj.path("client_reference_id"));
@@ -164,7 +177,10 @@ public class BillingService {
                 if (orgId != null) org = orgRepository.findById(orgId).orElse(null);
                 if (org == null) org = findByCustomer(text(obj.path("customer")));
                 if (org == null) { log.warn("{} for unknown customer {} ({})", type, text(obj.path("customer")), eventId); return; }
-                applySubscription(org, obj, type);
+                // Stripe doesn't guarantee event order: apply the subscription's CURRENT state, not the
+                // event's snapshot (a late "updated: active" must not undo a "deleted").
+                String subId = text(obj.path("id"));
+                applySubscription(org, subId != null ? stripe.getSubscription(subId) : obj, type);
             }
             default -> log.debug("Ignoring Stripe event {} ({})", type, eventId);
         }
@@ -177,6 +193,16 @@ public class BillingService {
     void applySubscription(Organization org, JsonNode sub, String source) {
         OrgBilling b = ensureBilling(org);
         String status   = sub.path("status").asText("");
+        // Manually managed (a Platform Admin's plan, or Free before any purchase): only a completed
+        // checkout hands the org to Stripe automation; other subscription events just record status.
+        if (b.getManagedBy() == OrgBilling.ManagedBy.MANUAL && !"checkout.session.completed".equals(source)) {
+            b.setStatus(status.isEmpty() ? b.getStatus() : status.toUpperCase());
+            b.setUpdatedAt(LocalDateTime.now());
+            orgRepository.save(org);
+            log.info("Billing: org {} is manually managed — recorded Stripe status {} ({}) without changing the plan",
+                    org.getId(), b.getStatus(), source);
+            return;
+        }
         String priceId  = text(sub.path("items").path("data").path(0).path("price").path("id"));
         String interval = text(sub.path("items").path("data").path(0).path("price").path("recurring").path("interval"));
         // current_period_end lives on the subscription (older API versions) or its items (newer).
@@ -210,6 +236,25 @@ public class BillingService {
         orgRepository.save(org);
         log.info("Billing: org {} subscription {} → status={} plan={}", org.getId(), b.getSubscriptionId(),
                 b.getStatus(), org.getSubscriptionPlan());
+    }
+
+    /** Notifies org admins once, ~3 days before their trial ends. */
+    public int notifyTrialsEnding() {
+        LocalDateTime now = LocalDateTime.now();
+        Query q = new Query(Criteria.where("billing.managedBy").is("TRIAL")
+                .and("billing.trialReminderSent").ne(true)
+                .and("billing.trialEndsAt").gt(now).lte(now.plusDays(3)));
+        int n = 0;
+        for (Organization org : mongoTemplate.find(q, Organization.class)) {
+            long days = PlanAccessService.trialDaysLeft(org);
+            String title = "Your Pro trial ends in " + days + " day" + (days == 1 ? "" : "s") + " — upgrade to keep Pro features";
+            userRepository.findByOrganizationIdAndActiveTrueAndRoleIn(org.getId(), List.of(AppUser.Role.ORG_ADMIN))
+                    .forEach(u -> notificationService.notify(org.getId(), u.getId(), "billing.trial.ending", title, "/settings/billing"));
+            mongoTemplate.updateFirst(new Query(Criteria.where("_id").is(org.getId())),
+                    new org.springframework.data.mongodb.core.query.Update().set("billing.trialReminderSent", true), Organization.class);
+            n++;
+        }
+        return n;
     }
 
     /** Ends expired trials and lapsed Stripe subscriptions (safety net behind webhooks). */

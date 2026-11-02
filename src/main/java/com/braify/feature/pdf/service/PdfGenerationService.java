@@ -163,6 +163,18 @@ public class PdfGenerationService {
     public byte[] generate(Template template, Map<String, Object> data, OrgBranding branding) throws Exception {
         // Enforce monthly document quota
         quotaService.checkAndIncrementDocs(template.getOrganizationId());
+        return render(template, data, branding);
+    }
+
+    /**
+     * Same rendering as {@link #generate} but NOT counted as a generated document: builder previews,
+     * and e-sign documents rendered from a template (those count once, as an e-sign send).
+     */
+    public byte[] preview(Template template, Map<String, Object> data, OrgBranding branding) throws Exception {
+        return render(template, data, branding);
+    }
+
+    private byte[] render(Template template, Map<String, Object> data, OrgBranding branding) throws Exception {
 
         // Layer org-level global placeholders under the caller-supplied data
         // (explicit non-blank values win; globals fill everything else).

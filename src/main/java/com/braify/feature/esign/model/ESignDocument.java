@@ -183,6 +183,8 @@ public class ESignDocument {
         private String id;              // stable UUID; referenced by ESignSignatureField.signatoryId
         private String name;
         private String email;
+        /** Optional mobile number (E.164, e.g. +250788123456) for SMS reminders. Creator-only — never shown to co-signers. */
+        private String phone;
         private int    signingOrder;    // 1-based; drives SEQUENTIAL invitations
         @Builder.Default
         private SignatoryStatus status = SignatoryStatus.PENDING;

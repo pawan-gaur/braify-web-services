@@ -186,6 +186,12 @@ public class QuotaService {
         incrementField(orgId, "apiCalls");
     }
 
+    /** Meters one outbound SMS for the org's current month. */
+    public void incrementSms(String orgId) {
+        if (orgId == null) return;
+        incrementField(orgId, "smsSent");
+    }
+
     /**
      * Atomically adds {@code additionalMb} to the current month's storage counter.
      * No enforcement — storage limit is checked before upload in {@code FileService}.
@@ -289,6 +295,7 @@ public class QuotaService {
                         .esignSent(u.getEsignSent())
                         .storageMb(u.getStorageMb())
                         .apiCalls(u.getApiCalls())
+                        .smsSent(u.getSmsSent())
                         .build())
                 .collect(Collectors.toList());
     }

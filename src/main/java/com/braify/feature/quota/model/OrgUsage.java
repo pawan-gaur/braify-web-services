@@ -52,6 +52,9 @@ public class OrgUsage {
     /** Number of public API calls this month. */
     @Builder.Default
     private long apiCalls = 0;
+    /** SMS messages sent this month (e-sign reminders). Metered, not limited. */
+    @Builder.Default
+    private long smsSent = 0;
 
     /**
      * Id of the actor whose action first created this month's usage record.

@@ -16,4 +16,5 @@ public class UsageResponse {
     private long esignSent;
     private long storageMb;
     private long apiCalls;
+    private long smsSent;
 }

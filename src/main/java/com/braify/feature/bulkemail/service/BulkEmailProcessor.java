@@ -63,6 +63,7 @@ public class BulkEmailProcessor {
 
     // ── Dependencies ──────────────────────────────────────────────────────────
     private final BulkEmailJobRepository       jobRepo;
+    private final com.braify.feature.events.EventPublisher eventPublisher;
     private final BulkEmailJobStore            jobStore;
     private final BulkEmailRecipientStore      recipientStore;
     private final BulkEmailRowMigrationService migrationService;
@@ -86,15 +87,26 @@ public class BulkEmailProcessor {
     @Value("${bulkemail.max-send-attempts:3}")
     private int maxSendAttempts;
 
-    /** Shared RestTemplate — thread-safe; reused across all jobs. */
-    private final RestTemplate restTemplate = new RestTemplate();
+    /**
+     * Shared RestTemplate — thread-safe; reused across all jobs. Redirects are NOT followed, so a
+     * public URL can't bounce the request to an internal address after the SSRF check.
+     */
+    private final RestTemplate restTemplate = new RestTemplate(new org.springframework.http.client.SimpleClientHttpRequestFactory() {
+        @Override
+        protected void prepareConnection(java.net.HttpURLConnection connection, String httpMethod) throws java.io.IOException {
+            super.prepareConnection(connection, httpMethod);
+            connection.setInstanceFollowRedirects(false);
+            connection.setConnectTimeout(10_000);
+            connection.setReadTimeout(60_000);
+        }
+    });
 
     /** Campaigns being sent in this JVM — a second start of the same job is ignored. */
     private final Set<String> running = ConcurrentHashMap.newKeySet();
 
     // ── Entry point ───────────────────────────────────────────────────────────
 
-    @Async
+    @Async(com.braify.config.AsyncConfig.BULK_EXECUTOR)
     public void processJobAsync(String jobId) {
         if (!running.add(jobId)) {
             log.info("BulkEmailJob '{}' is already being processed — ignoring duplicate start", jobId);
@@ -216,6 +228,20 @@ public class BulkEmailProcessor {
         if (jobStore.transition(jobId, List.of(JobStatus.PROCESSING), finalStatus,
                 new Update().set("completedAt", LocalDateTime.now()))) {
             jobStore.pushAudit(jobId, event, description);
+            BulkEmailJob done = jobRepo.findById(jobId).orElse(null);
+            if (done != null) {
+                java.util.Map<String, Object> data = new java.util.LinkedHashMap<>();
+                data.put("jobId", jobId);
+                data.put("label", done.getLabel());
+                data.put("status", finalStatus.name());
+                data.put("total", c.total());
+                data.put("sent", c.sent());
+                data.put("failed", c.failed());
+                eventPublisher.publish(com.braify.feature.events.PlatformEvent.of(
+                        com.braify.feature.events.PlatformEventTypes.BULK_EMAIL_FINISHED, done.getOrgId(), done.getCreatedBy(),
+                        "Campaign “" + (done.getLabel() != null ? done.getLabel() : "Bulk email") + "” finished: " + description,
+                        "/bulk-email/" + jobId, data));
+            }
         }
         log.info("BulkEmailJob '{}' done: sent={} failed={} status={}", jobId, c.sent(), c.failed(), finalStatus);
     }
@@ -430,6 +456,8 @@ public class BulkEmailProcessor {
     private byte[] fetchExternalPdf(BulkEmailJob job, Map<String, String> data) {
         String url    = substituteVars(job.getExternalApiUrl(), data);
         String method = job.getExternalApiMethod() != null ? job.getExternalApiMethod().toUpperCase() : "GET";
+        // Tenant-supplied URL: public http(s) hosts only (blocks cloud metadata / internal services).
+        com.braify.config.infra.net.OutboundTargetGuard.assertPublicHttpUrl(url);
 
         HttpHeaders headers = new HttpHeaders();
         headers.setAccept(List.of(MediaType.APPLICATION_PDF, MediaType.APPLICATION_OCTET_STREAM));

@@ -64,6 +64,8 @@ public class CreateDocumentRequest {
         private String name;
         @NotBlank @Email
         private String email;
+        /** Optional mobile number in international format (+countrycode…) for SMS reminders. */
+        private String phone;
         /** 1-based signing order; used for SEQUENTIAL mode. Defaults to list position if omitted. */
         private Integer signingOrder;
     }

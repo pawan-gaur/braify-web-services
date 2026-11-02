@@ -71,6 +71,7 @@ public class FileService {
     private static final String CLOUD_NOT_CONFIGURED = "Cloud setup not exists";
 
     private final OrganizationRepository orgRepository;
+    private final com.braify.feature.events.EventPublisher eventPublisher;
     private final OrgFileRepository      fileRepository;
     private final CloudUploaderFactory   uploaderFactory;
     private final EncryptionService      encryptionService;
@@ -108,17 +109,37 @@ public class FileService {
         } catch (Exception e) {
             throw new RuntimeException("Failed to read file bytes: " + e.getMessage(), e);
         }
+        return store(org, cfg, bytes, file.getOriginalFilename(), file.getContentType(),
+                meta, uploader, createdById, true);
+    }
 
+    /**
+     * Stores a file Braify generated itself (e.g. a bulk-PDF ZIP) in the org's Files.
+     * Unlike {@link #upload}, it does not count as a generated document (the PDFs inside were
+     * already counted) and skips the org's upload type / size allow-list; storage quota still applies.
+     */
+    public FileUploadResponse storeGenerated(String orgId, byte[] bytes, String filename, String contentType,
+                                             FileMetadataRequest meta, String uploader, String createdById) {
+        Organization org = requireOrg(orgId);
+        OrgCloudConfig cfg = requireCloudConfig(org);
+        return store(org, cfg, bytes, filename, contentType, meta, uploader, createdById, false);
+    }
+
+    private FileUploadResponse store(Organization org, OrgCloudConfig cfg, byte[] bytes,
+                                     String originalFilename, String contentType,
+                                     FileMetadataRequest meta, String uploader, String createdById,
+                                     boolean countAsDocument) {
+        String orgId = org.getId();
         long   fileSizeBytes = bytes.length;
         double fileSizeMb    = Math.round((fileSizeBytes / (1024.0 * 1024.0)) * 1000.0) / 1000.0;
 
         // ── Quota checks ──────────────────────────────────────────────────────
-        quotaService.checkAndIncrementDocs(orgId);
+        if (countAsDocument) quotaService.checkAndIncrementDocs(orgId);
         checkStorageQuota(orgId, fileSizeMb);
 
         // ── Build storage key ─────────────────────────────────────────────────
         String fileId     = fileIdGenerator.next();
-        String basePath   = buildBasePath(cfg, orgId, fileId, file.getOriginalFilename());
+        String basePath   = buildBasePath(cfg, orgId, fileId, originalFilename);
 
         // ── Decrypt credentials ───────────────────────────────────────────────
         String plainAccessKey = encryptionService.decryptSafe(cfg.getAccessKey());
@@ -127,7 +148,7 @@ public class FileService {
         // ── Upload to cloud ───────────────────────────────────────────────────
         CloudUploader uploader2 = uploaderFactory.get(cfg.getCloud());
         CloudUploadRequest uploadReq = buildUploadRequest(cfg, basePath, bytes,
-                file.getContentType(), file.getOriginalFilename(),
+                contentType, originalFilename,
                 plainAccessKey, plainSecretKey);
         CloudUploadResult result = uploader2.upload(uploadReq);
 
@@ -137,11 +158,11 @@ public class FileService {
                 .organizationId(orgId)
                 .uploadedBy(uploader)
                 .createdBy(createdById)
-                .originalFilename(file.getOriginalFilename())
+                .originalFilename(originalFilename)
                 .storageKey(result.getStorageKey())
                 .bucket(result.getBucket())
                 .cloudProvider(toModelProvider(cfg.getCloud()))
-                .contentType(file.getContentType())
+                .contentType(contentType)
                 .fileSizeBytes(fileSizeBytes)
                 .fileSizeMb(fileSizeMb)
                 .folder(meta != null ? meta.getFolder() : null)
@@ -153,6 +174,13 @@ public class FileService {
                 .build();
 
         OrgFile saved = fileRepository.save(orgFile);
+        eventPublisher.publish(com.braify.feature.events.PlatformEvent.of(
+                com.braify.feature.events.PlatformEventTypes.FILE_UPLOADED, orgId, createdById,
+                "Uploaded " + saved.getOriginalFilename(), "/files",
+                java.util.Map.of("fileId", saved.getFileId(),
+                        "filename", saved.getOriginalFilename() != null ? saved.getOriginalFilename() : "",
+                        "sizeBytes", fileSizeBytes,
+                        "uploadedBy", uploader != null ? uploader : "")));
 
         // ── Increment storage quota ───────────────────────────────────────────
         quotaService.incrementStorage(orgId, fileSizeMb);
@@ -164,7 +192,7 @@ public class FileService {
                 1,
                 Map.of("action",   "FILE_UPLOADED",
                        "fileId",   fileId,
-                       "filename", file.getOriginalFilename() != null ? file.getOriginalFilename() : "",
+                       "filename", originalFilename != null ? originalFilename : "",
                        "sizeMb",   String.valueOf(fileSizeMb),
                        "cloud",    cfg.getCloud().name()),
                 uploader,
@@ -172,7 +200,7 @@ public class FileService {
         );
 
         log.info("File uploaded: org={} fileId={} filename={} size={}MB cloud={}",
-                orgId, fileId, file.getOriginalFilename(), fileSizeMb, cfg.getCloud());
+                orgId, fileId, originalFilename, fileSizeMb, cfg.getCloud());
 
         return FileUploadResponse.from(saved);
     }

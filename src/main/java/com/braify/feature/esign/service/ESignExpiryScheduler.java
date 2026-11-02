@@ -23,6 +23,7 @@ import java.util.Map;
 public class ESignExpiryScheduler {
 
     private final ESignTokenService       tokenService;
+    private final ESignEvents             esignEvents;
     private final ESignDocumentRepository docRepo;
     private final ESignAuditService       auditService;
 
@@ -50,6 +51,7 @@ public class ESignExpiryScheduler {
                     ESignAuditEvent.EventType.LINK_EXPIRED, null, null,
                     Map.of("expiredAt", LocalDateTime.now().toString()));
             log.info("[ESignExpiry] Document {} marked EXPIRED", doc.getId());
+            esignEvents.expired(doc);
         });
     }
 }
