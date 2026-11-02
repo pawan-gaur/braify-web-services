@@ -313,11 +313,8 @@ public class ESignClientService {
             String hash = pdfService.sha256Hex(signedBytes);
 
             // 2. Upload the signed PDF to cloud storage; keep only the reference.
-            ESignStorageService.StoredPdf ref = esignStorage.uploadSignedPdf(doc, signedBytes);
-            doc.setSignedPdfKey(ref.storageKey());
+            doc.setSignedFileId(esignStorage.storeSignedPdf(doc, signedBytes));
             doc.setSignedPdfHash(hash);
-            if (doc.getPdfBucket() == null)        doc.setPdfBucket(ref.bucket());
-            if (doc.getPdfCloudProvider() == null) doc.setPdfCloudProvider(ref.provider());
             doc.setStatus(ESignDocument.Status.COMPLETED);
             doc.setCompletedAt(LocalDateTime.now());
             doc.setFinalizeError(null);   // clear any prior failure
@@ -420,12 +417,14 @@ public class ESignClientService {
             }
         }
 
-        // Build and persist attachment
+        // Store the file; the document keeps only metadata + the file id
+        String fileId = esignStorage.storeAttachment(doc, file.getBytes(), file.getOriginalFilename(),
+                file.getContentType(), "signer:" + doc.getClientEmail());
         ESignDocument.ClientAttachment attachment = ESignDocument.ClientAttachment.builder()
                 .id(UUID.randomUUID().toString())
                 .fileName(file.getOriginalFilename())
                 .contentType(file.getContentType())
-                .data(file.getBytes())
+                .fileId(fileId)
                 .fileSize(file.getSize())
                 .uploadedAt(LocalDateTime.now())
                 .uploadedFromIp(ip)

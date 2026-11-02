@@ -31,22 +31,18 @@ import java.util.Map;
 @AllArgsConstructor
 public class OrgBranding {
 
-    /**
-     * Base64 data-URL of the organisation logo. Used for in-app display and as the source
-     * for a new upload. When the org has cloud storage, the logo is offloaded to the bucket
-     * on save and this may be cleared in favour of {@link #logoUrl}. Data URLs do NOT render
-     * in email clients (Gmail blocks {@code data:} images) — emails use {@link #logoUrl}.
-     */
-    private String logoBase64;
+    /** StoredFile id of the uploaded logo (see StorageService). Null for an external URL or no logo. */
+    private String logoFileId;
 
     /**
-     * Stable, public https URL for the logo, served by the backend
-     * ({@code /api/public/branding/{orgId}/logo}) which streams the bytes from cloud storage.
-     * This is what renders in emails. Null when no logo is set.
+     * Stable, public https URL for the logo — {@code /api/public/branding/{orgId}/logo} for an
+     * uploaded logo (streams it from storage), or an external URL. This is what renders in
+     * emails. Null when no logo is set.
      */
     private String logoUrl;
 
-    // Cloud storage reference for the offloaded logo bytes (null when logo lives only as base64).
+    // LEGACY logo storage — read only until LegacyFileMigration moves it to logoFileId.
+    private String logoBase64;       // inline data URL
     private String logoBucket;
     private String logoKey;
     private String logoProvider;     // AWS | AZURE | GCP

@@ -104,10 +104,7 @@ public class ESignTemplateService {
                 .build());
 
         try {
-            ESignStorageService.StoredPdf ref = esignStorage.uploadSourcePdf(orgId, "templates/" + tpl.getId(), pdf);
-            tpl.setPdfBucket(ref.bucket());
-            tpl.setPdfKey(ref.storageKey());
-            tpl.setPdfProvider(ref.provider());
+            tpl.setPdfFileId(esignStorage.storeTemplatePdf(orgId, tpl.getId(), pdf, principal.getId()));
             return templateRepo.save(tpl);
         } catch (RuntimeException e) {
             templateRepo.deleteById(tpl.getId());   // no half-saved templates without a PDF
@@ -128,7 +125,7 @@ public class ESignTemplateService {
 
     public byte[] pdf(String id, UserDetailsImpl principal) {
         ESignTemplate tpl = get(id, principal);
-        return esignStorage.download(tpl.getOrgId(), tpl.getPdfBucket(), tpl.getPdfKey());
+        return esignStorage.templatePdf(tpl);
     }
 
     public ESignTemplate update(String id, UpdateRequest req, UserDetailsImpl principal) {
@@ -149,7 +146,7 @@ public class ESignTemplateService {
         ESignTemplate tpl = get(id, principal);
         assertCanManage(tpl, principal);
         templateRepo.delete(tpl);
-        esignStorage.deleteQuietly(tpl.getOrgId(), tpl.getPdfBucket(), tpl.getPdfKey());
+        esignStorage.deleteTemplatePdf(tpl);
     }
 
     // ── Use ─────────────────────────────────────────────────────────────────
@@ -172,7 +169,7 @@ public class ESignTemplateService {
             p.setSigningOrder(i + 1);
         }
 
-        byte[] pdf = esignStorage.download(tpl.getOrgId(), tpl.getPdfBucket(), tpl.getPdfKey());
+        byte[] pdf = esignStorage.templatePdf(tpl);
 
         CreateDocumentRequest create = new CreateDocumentRequest();
         create.setTitle(req.title() != null && !req.title().isBlank() ? trim(req.title(), 200) : tpl.getDocumentTitle());

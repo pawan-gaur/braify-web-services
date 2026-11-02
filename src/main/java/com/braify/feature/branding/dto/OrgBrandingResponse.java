@@ -13,7 +13,6 @@ public class OrgBrandingResponse {
     private String organizationId;
     private String organizationName;
 
-    private String logoBase64;
     /** Stable public URL for the logo (served from cloud); what emails/PDFs use. Null when no logo. */
     private String logoUrl;
     private String primaryColor;

@@ -33,7 +33,7 @@ public class ESignFinalizationRetryScheduler {
         LocalDateTime cutoff = LocalDateTime.now().minusMinutes(2);
 
         List<ESignDocument> stuck = docRepo.findByStatus(ESignDocument.Status.SIGNED).stream()
-                .filter(d -> d.getSignedPdfKey() == null && d.getSignedPdfData() == null)   // finalization incomplete
+                .filter(d -> d.getSignedFileId() == null && d.getSignedPdfKey() == null && d.getSignedPdfData() == null)   // finalization incomplete
                 .filter(d -> d.getFinalizeAttempts() < ESignClientService.MAX_FINALIZE_ATTEMPTS)
                 .filter(d -> d.getSubmittedAt() == null || d.getSubmittedAt().isBefore(cutoff))
                 .toList();

@@ -14,6 +14,9 @@ import com.braify.feature.quota.service.QuotaService;
 import com.braify.feature.esign.model.ESignAuditEvent;
 import com.braify.feature.esign.model.ESignBulkBatch;
 import com.braify.feature.esign.model.ESignDocument;
+import com.braify.feature.storage.model.StoragePurpose;
+import com.braify.feature.storage.model.StoredFile;
+import com.braify.feature.storage.service.StorageService;
 import com.braify.feature.esign.model.ESignSignatureField;
 import com.braify.feature.pdf.model.Template;
 import com.braify.feature.esign.repository.ESignBulkBatchRepository;
@@ -66,6 +69,7 @@ public class ESignDocumentService {
     private final AuditLogService               auditLogService;
     private final QuotaService                  quotaService;
     private final ESignStorageService           esignStorage;
+    private final StorageService                storageService;
     private final ESignClientService            clientService;
     private final OrgContactService             contactService;
     private final AppUserRepository             userRepo;
@@ -99,11 +103,19 @@ public class ESignDocumentService {
         List<ESignDocument.Signatory> signatories = buildSignatories(req);
 
         byte[] pdfBytes;
+        StoredFile uploadedSource = null;   // set when the PDF was uploaded first and passed by id
 
         if ("UPLOAD".equalsIgnoreCase(req.getSourceType())) {
-            if (req.getPdfBase64() == null || req.getPdfBase64().isBlank())
-                throw new IllegalArgumentException("pdfBase64 is required for UPLOAD source type");
-            pdfBytes = decodeBase64Pdf(req.getPdfBase64());
+            if (req.getSourceFileId() != null && !req.getSourceFileId().isBlank()) {
+                uploadedSource = storageService.getForUser(
+                        req.getSourceFileId(), StoragePurpose.ESIGN_SOURCE, principal.getAppUser());
+                pdfBytes = storageService.read(uploadedSource);
+            } else if (req.getPdfBase64() != null && !req.getPdfBase64().isBlank()) {
+                pdfBytes = decodeBase64Pdf(req.getPdfBase64());
+            } else {
+                throw new IllegalArgumentException("sourceFileId or pdfBase64 is required for UPLOAD source type");
+            }
+            if (!isPdf(pdfBytes)) throw new IllegalArgumentException("The uploaded file is not a PDF");
 
         } else if ("TEMPLATE".equalsIgnoreCase(req.getSourceType())) {
             if (req.getTemplateId() == null || req.getTemplateId().isBlank())
@@ -169,11 +181,10 @@ public class ESignDocumentService {
 
         doc = docRepo.save(doc);
 
-        // Upload the source PDF to cloud storage; keep only the reference on the document.
-        ESignStorageService.StoredPdf ref = esignStorage.uploadSourcePdf(principal.getOrgId(), doc.getId(), pdfBytes);
-        doc.setSourcePdfKey(ref.storageKey());
-        doc.setPdfBucket(ref.bucket());
-        doc.setPdfCloudProvider(ref.provider());
+        // Keep the source PDF in storage; the document holds only its file id.
+        doc.setSourceFileId(uploadedSource != null
+                ? esignStorage.adoptSourcePdf(uploadedSource, pdfBytes, doc.getId())
+                : esignStorage.storeSourcePdf(principal.getOrgId(), doc.getId(), pdfBytes, principal.getId()));
         doc = docRepo.save(doc);
 
         // Remember every recipient in the org address book (best-effort; never blocks creation).
@@ -1419,6 +1430,14 @@ public class ESignDocumentService {
     private byte[] decodeBase64Pdf(String base64) {
         String data = base64.contains(",") ? base64.substring(base64.indexOf(',') + 1) : base64;
         return Base64.getDecoder().decode(data.trim());
+    }
+
+    /** PDF header ("%PDF-") within the first 1024 bytes — what PDF readers accept. */
+    private static boolean isPdf(byte[] b) {
+        if (b == null) return false;
+        for (int i = 0, end = Math.min(b.length - 5, 1024); i <= end; i++)
+            if (b[i] == '%' && b[i + 1] == 'P' && b[i + 2] == 'D' && b[i + 3] == 'F' && b[i + 4] == '-') return true;
+        return false;
     }
 
     private String sha256Hex(byte[] data) {

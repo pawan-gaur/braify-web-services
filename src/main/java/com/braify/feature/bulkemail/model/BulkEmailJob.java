@@ -79,7 +79,8 @@ public class BulkEmailJob {
     private AttachmentType attachmentType = AttachmentType.NONE;
 
     // UPLOAD — same PDF for all recipients
-    private byte[]  uploadedPdfData;
+    private String  uploadedPdfFileId;   // StoredFile id (purpose BULK_EMAIL_ATTACHMENT)
+    private byte[]  uploadedPdfData;     // LEGACY embedded bytes — see LegacyFileMigration
     private String  uploadedPdfName;
 
     // PDF_TEMPLATE — generate per-recipient from a PDF template

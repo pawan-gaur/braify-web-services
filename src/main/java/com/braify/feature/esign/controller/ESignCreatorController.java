@@ -35,6 +35,7 @@ import java.util.Map;
 public class ESignCreatorController {
 
     private final ESignDocumentService documentService;
+    private final com.braify.feature.esign.service.ESignStorageService esignStorage;
     private final com.braify.feature.billing.service.PlanAccessService planAccessService;
     private final ESignAuditService    auditService;
 
@@ -422,7 +423,7 @@ public class ESignCreatorController {
                 .header("Content-Type", ct)
                 .header("Content-Disposition",
                         "attachment; filename=\"" + sanitize(att.getFileName()) + "\"")
-                .body(att.getData());
+                .body(esignStorage.attachmentBytes(att));
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

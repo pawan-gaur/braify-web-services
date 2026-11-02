@@ -33,10 +33,11 @@ public class ESignTemplate {
     private String documentTitle;
 
     /* ── Source PDF (copied into org storage; independent of the original document) ── */
-    private String pdfBucket;
-    private String pdfKey;
-    private String pdfProvider;
+    private String pdfFileId;       // StoredFile id (see StorageService)
     private String pdfHash;
+    private String pdfBucket;       // LEGACY raw cloud ref — see LegacyFileMigration
+    private String pdfKey;          // LEGACY
+    private String pdfProvider;     // LEGACY
 
     @Builder.Default
     private ESignDocument.SigningMode signingMode = ESignDocument.SigningMode.PARALLEL;

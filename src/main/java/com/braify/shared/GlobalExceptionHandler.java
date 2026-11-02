@@ -229,6 +229,24 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(status).body(errorBody(status, ex.getReason()));
     }
 
+    /** Multipart upload over spring.servlet.multipart.max-file-size / max-request-size. */
+    @ExceptionHandler(org.springframework.web.multipart.MaxUploadSizeExceededException.class)
+    public ResponseEntity<Map<String, Object>> handleMaxUpload(
+            org.springframework.web.multipart.MaxUploadSizeExceededException ex) {
+        log.warn("Upload rejected — too large: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
+                .body(errorBody(HttpStatus.PAYLOAD_TOO_LARGE, "The file is too large to upload (max 10 MB)."));
+    }
+
+    /** Bad path/query parameter, e.g. an unknown enum value. */
+    @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<Map<String, Object>> handleTypeMismatch(
+            org.springframework.web.method.annotation.MethodArgumentTypeMismatchException ex) {
+        String msg = "Invalid value '" + ex.getValue() + "' for parameter '" + ex.getName() + "'";
+        log.warn(msg);
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(errorBody(HttpStatus.BAD_REQUEST, msg));
+    }
+
     /** Resource not found — RuntimeException thrown by services. */
     @ExceptionHandler(RuntimeException.class)
     public ResponseEntity<Map<String, Object>> handleRuntime(RuntimeException ex) {

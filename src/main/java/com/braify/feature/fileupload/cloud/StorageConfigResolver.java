@@ -135,6 +135,20 @@ public class StorageConfigResolver {
         throw new IllegalStateException(NOT_CONFIGURED);
     }
 
+    /** Config to WRITE objects that belong to no organisation (e.g. a Platform Admin's avatar). */
+    public OrgCloudConfig forPlatformWrite() {
+        if (platformEnabled()) return platformConfig();
+        throw new IllegalStateException("Platform storage is not configured.");
+    }
+
+    /** Config to READ/DELETE a no-organisation object recorded in {@code objectBucket}. */
+    public OrgCloudConfig forPlatformRead(String objectBucket) {
+        OrgCloudConfig admin = adminDefault();
+        if (admin != null && admin.getBucket().equals(objectBucket)) return admin;
+        if (envEnabled() && bucket.equals(objectBucket))           return envConfig();
+        return forPlatformWrite();
+    }
+
     /**
      * The managed-storage config, shaped like an org config so every existing code path
      * (key building, upload, presign, size/type checks) works unchanged. Credentials are

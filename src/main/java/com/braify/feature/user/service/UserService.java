@@ -307,7 +307,7 @@ public class UserService {
                 .organizationName(orgName)
                 .active(u.isActive())
                 .mustChangePassword(u.isMustChangePassword())
-                .profilePicture(u.getProfilePicture())
+                .profilePicture(u.avatarUrl())
                 .bio(u.getBio())
                 .createdAt(u.getCreatedAt())
                 .updatedAt(u.getUpdatedAt())

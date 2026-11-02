@@ -33,6 +33,7 @@ public class PdfGenerationService {
     private final PlaceholderService placeholderService;
     private final QuotaService       quotaService;
     private final com.braify.feature.placeholder.service.GlobalPlaceholderService globalPlaceholderService;
+    private final com.braify.feature.storage.service.StorageService storageService;
 
     // Timeouts for fetching remote resources (images / CSS) during rendering.
     private static final int RESOURCE_CONNECT_TIMEOUT_MS = 4000;
@@ -78,6 +79,39 @@ public class PdfGenerationService {
                 return is == null ? null : new InputStreamReader(is, StandardCharsets.UTF_8);
             }
         };
+    }
+
+    /** {@code /api/public/files/<uuid>} — relative, or absolute on any host. */
+    private static final java.util.regex.Pattern STORED_FILE_URL = java.util.regex.Pattern.compile(
+            "(?:https?://[^\\s\"'()<>]+)?/api/public/files/([0-9a-fA-F-]{36})");
+
+    /**
+     * Replaces links to public stored files (template images uploaded in the builder) with inline
+     * data URIs read straight from storage. The renderer has no base URI for relative links, and this
+     * avoids an HTTP round-trip to ourselves; the bytes live only in this render's memory.
+     * A file that can't be read is left as-is (the renderer then skips it).
+     */
+    private String inlineStoredImages(String html) {
+        if (html == null || !html.contains("/api/public/files/")) return html;
+        java.util.Map<String, String> cache = new java.util.HashMap<>();
+        java.util.regex.Matcher m = STORED_FILE_URL.matcher(html);
+        StringBuilder out = new StringBuilder();
+        while (m.find()) {
+            String dataUri = cache.computeIfAbsent(m.group(1), id -> {
+                try {
+                    com.braify.feature.storage.model.StoredFile f = storageService.get(id);
+                    if (!f.getPurpose().publicRead()) return null;
+                    return "data:" + f.getContentType() + ";base64,"
+                            + java.util.Base64.getEncoder().encodeToString(storageService.read(f));
+                } catch (RuntimeException e) {
+                    log.warn("Stored image {} not inlined: {}", id, e.getMessage());
+                    return null;
+                }
+            });
+            m.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(dataUri != null ? dataUri : m.group()));
+        }
+        m.appendTail(out);
+        return out.toString();
     }
 
     /** Refuses every non-http(s) protocol (file:, jar:, ftp: …) — local files must never be read. */
@@ -180,7 +214,7 @@ public class PdfGenerationService {
         // (explicit non-blank values win; globals fill everything else).
         Map<String, Object> merged = globalPlaceholderService.mergeForOrg(template.getOrganizationId(), data);
         String rawTemplate = template.getHtmlContent();
-        String html        = placeholderService.replacePlaceholders(rawTemplate, merged);
+        String html        = inlineStoredImages(placeholderService.replacePlaceholders(rawTemplate, merged));
 
         log.debug("Generating PDF for template: {} (standalone={})",
                 template.getId(), isFullHtmlDocument(rawTemplate));
@@ -207,7 +241,8 @@ public class PdfGenerationService {
                 // Legacy path: template stores a body fragment (+ separate cssContent); wrap it in
                 // the system document shell and apply org branding (logo / footer / brand colour).
                 String cleaned  = sanitizeHtml(html);
-                String fullHtml = buildHtmlDocument(cleaned, template, branding);
+                // Inline again: the template's separate cssContent (background images) is added here.
+                String fullHtml = inlineStoredImages(buildHtmlDocument(cleaned, template, branding));
                 builder.withHtmlContent(fullHtml, null);
             }
 

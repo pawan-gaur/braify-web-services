@@ -13,7 +13,12 @@ public class CreateDocumentRequest {
     @NotBlank
     private String sourceType;   // "TEMPLATE" | "UPLOAD"
     private String templateId;   // required when sourceType == TEMPLATE
-    private String pdfBase64;    // required when sourceType == UPLOAD
+    /**
+     * UPLOAD source: id of a PDF uploaded via {@code POST /api/storage/upload?purpose=ESIGN_SOURCE}
+     * (preferred — no size-limited JSON body), or {@link #pdfBase64}. One of the two is required.
+     */
+    private String sourceFileId;
+    private String pdfBase64;    // UPLOAD alternative to sourceFileId (API clients); also TEMPLATE's pre-rendered PDF
 
     /**
      * Single-signer client (legacy / bulk). Optional when {@link #signatories} is provided —

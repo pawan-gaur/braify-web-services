@@ -1,5 +1,8 @@
 package com.braify.feature.bulkemail.service;
 
+import com.braify.feature.storage.model.StoragePurpose;
+import com.braify.feature.storage.model.StoredFile;
+import com.braify.feature.storage.service.StorageService;
 import com.braify.config.infra.email.CssInliner;
 import com.braify.feature.audit.model.AuditLog;
 import com.braify.feature.audit.service.AuditLogService;
@@ -64,6 +67,7 @@ public class BulkEmailService {
     private final CssInliner                   cssInliner;
     private final AuditLogService              auditLogService;
     private final MongoTemplate                mongoTemplate;
+    private final StorageService               storageService;
     private final com.braify.feature.bulkemail.repository.EmailSuppressionRepository suppressionRepo;
     private final com.braify.feature.bulkemail.repository.BulkEmailEventRepository   eventRepo;
 
@@ -186,14 +190,22 @@ public class BulkEmailService {
         BulkEmailJob.AttachmentType attType =
                 req.getAttachmentType() != null ? req.getAttachmentType() : BulkEmailJob.AttachmentType.NONE;
 
-        byte[] uploadedPdfData = null;
+        // UPLOAD: the PDF lives in storage; the job keeps its file id.
+        StoredFile uploadedPdf = null;
         if (attType == BulkEmailJob.AttachmentType.UPLOAD) {
-            if (req.getUploadedPdfBase64() == null || req.getUploadedPdfBase64().isBlank())
+            if (req.getUploadedPdfFileId() != null && !req.getUploadedPdfFileId().isBlank()) {
+                uploadedPdf = storageService.getForUser(req.getUploadedPdfFileId(),
+                        StoragePurpose.BULK_EMAIL_ATTACHMENT, principal.getAppUser());
+            } else if (req.getUploadedPdfBase64() != null && !req.getUploadedPdfBase64().isBlank()) {
+                String b64 = req.getUploadedPdfBase64().contains(",")
+                        ? req.getUploadedPdfBase64().split(",")[1]
+                        : req.getUploadedPdfBase64();
+                uploadedPdf = storageService.store(principal.getOrgId(), StoragePurpose.BULK_EMAIL_ATTACHMENT,
+                        java.util.Base64.getDecoder().decode(b64), req.getUploadedPdfName(),
+                        "application/pdf", principal.getId());
+            } else {
                 throw new IllegalArgumentException("Uploaded PDF is required for UPLOAD attachment type");
-            String b64 = req.getUploadedPdfBase64().contains(",")
-                    ? req.getUploadedPdfBase64().split(",")[1]
-                    : req.getUploadedPdfBase64();
-            uploadedPdfData = java.util.Base64.getDecoder().decode(b64);
+            }
         }
 
         String pdfTemplateName = null;
@@ -248,7 +260,7 @@ public class BulkEmailService {
                 .columnMapping(req.getColumnMapping())
                 .ccColumns(req.getCcColumns() != null ? req.getCcColumns() : List.of())
                 .attachmentType(attType)
-                .uploadedPdfData(uploadedPdfData)
+                .uploadedPdfFileId(uploadedPdf != null ? uploadedPdf.getId() : null)
                 .uploadedPdfName(req.getUploadedPdfName())
                 .pdfTemplateId(req.getPdfTemplateId())
                 .pdfTemplateName(pdfTemplateName)
@@ -725,6 +737,7 @@ public class BulkEmailService {
                     .columnMapping(src.getColumnMapping())
                     .ccColumns(src.getCcColumns() != null ? src.getCcColumns() : List.of())
                     .attachmentType(src.getAttachmentType())
+                    .uploadedPdfFileId(src.getUploadedPdfFileId())   // resends share the original's file
                     .uploadedPdfData(src.getUploadedPdfData())
                     .uploadedPdfName(src.getUploadedPdfName())
                     .pdfTemplateId(src.getPdfTemplateId())

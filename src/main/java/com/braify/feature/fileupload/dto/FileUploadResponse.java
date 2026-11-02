@@ -23,8 +23,6 @@ public class FileUploadResponse {
     private String organizationId;
     private String uploadedBy;
     private String originalFilename;
-    private String storageKey;
-    private String bucket;
     private String cloudProvider;
     private String contentType;
     private long   fileSizeBytes;
@@ -45,8 +43,6 @@ public class FileUploadResponse {
                 .organizationId(f.getOrganizationId())
                 .uploadedBy(f.getUploadedBy())
                 .originalFilename(f.getOriginalFilename())
-                .storageKey(f.getStorageKey())
-                .bucket(f.getBucket())
                 .cloudProvider(f.getCloudProvider() != null ? f.getCloudProvider().name() : null)
                 .contentType(f.getContentType())
                 .fileSizeBytes(f.getFileSizeBytes())

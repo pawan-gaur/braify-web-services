@@ -73,6 +73,7 @@ public class BulkEmailProcessor {
     private final EmailTrackingService         emailTrackingService;
     private final EmailRateLimiter             rateLimiter;
     private final PdfGenerationService         pdfGenerationService;
+    private final com.braify.feature.storage.service.StorageService storageService;
     private final GlobalPlaceholderService     globalPlaceholderService;
 
     /** Parallel workers per campaign. Keep low on small instances (e.g. 2–3 on a t3.micro). */
@@ -136,6 +137,18 @@ public class BulkEmailProcessor {
                     new Update().set("startedAt", LocalDateTime.now()));
         }
         jobStore.pushAudit(jobId, EventType.PROCESSING_STARTED, "Email dispatch started");
+
+        // Load an uploaded PDF from storage once; workers attach it from memory (the job is never saved here).
+        if (job.getAttachmentType() == BulkEmailJob.AttachmentType.UPLOAD && job.getUploadedPdfFileId() != null) {
+            try {
+                job.setUploadedPdfData(storageService.read(job.getUploadedPdfFileId()));
+            } catch (RuntimeException e) {
+                log.error("Uploaded PDF {} unreadable — failing job {}: {}", job.getUploadedPdfFileId(), jobId, e.getMessage());
+                recipientStore.failAllPending(jobId, "Attachment PDF could not be loaded");
+                finish(jobId, false);
+                return;
+            }
+        }
 
         // Pre-load the PDF template once (shared read-only across workers).
         Template pdfTemplate = null;

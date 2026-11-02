@@ -44,12 +44,13 @@ public class ESignDocument {
     public enum SourceType { TEMPLATE, UPLOAD }
     private SourceType sourceType;
     private String     templateId;       // set when sourceType == TEMPLATE
-    private byte[]     sourcePdfData;    // LEGACY embedded bytes (older docs); null for cloud-stored docs
-    private String     sourcePdfKey;     // cloud storage key for the source PDF (preferred)
+    private String     sourceFileId;     // StoredFile id of the source PDF (see StorageService)
     private String     sourcePdfHash;    // SHA-256 of the source PDF
 
-    /* ── Cloud storage reference (shared by source + signed PDFs) ───────── */
-    private String     pdfBucket;         // cloud bucket holding this doc's PDFs (null = legacy embedded)
+    /* ── LEGACY storage refs — read only until LegacyFileMigration moves them to sourceFileId/signedFileId ── */
+    private byte[]     sourcePdfData;     // embedded bytes (oldest docs)
+    private String     sourcePdfKey;      // raw cloud key (pre-StoredFile docs)
+    private String     pdfBucket;         // bucket for sourcePdfKey / signedPdfKey
     private String     pdfCloudProvider;  // AWS | AZURE | GCP
 
     /* ── State machine ─────────────────────────────────────────────────── */
@@ -100,8 +101,9 @@ public class ESignDocument {
     private List<Signatory> signatories = new ArrayList<>();
 
     /* ── Signed output ─────────────────────────────────────────────────── */
-    private byte[] signedPdfData;        // LEGACY embedded bytes (older docs); null for cloud-stored docs
-    private String signedPdfKey;         // cloud storage key for the signed PDF (preferred)
+    private String signedFileId;         // StoredFile id of the signed PDF
+    private byte[] signedPdfData;        // LEGACY embedded bytes — see LegacyFileMigration
+    private String signedPdfKey;         // LEGACY raw cloud key — see LegacyFileMigration
     private String signedPdfHash;        // SHA-256 — tamper-proof verification
 
     /* ── Email template ────────────────────────────────────────────────── */
@@ -213,7 +215,8 @@ public class ESignDocument {
         private String        id;           // UUID
         private String        fileName;     // original file name
         private String        contentType;  // MIME type
-        private byte[]        data;         // raw bytes
+        private String        fileId;       // StoredFile id (purpose ESIGN_ATTACHMENT)
+        private byte[]        data;         // LEGACY raw bytes — see LegacyFileMigration
         private long          fileSize;     // bytes
         private LocalDateTime uploadedAt;
         private String        uploadedFromIp;

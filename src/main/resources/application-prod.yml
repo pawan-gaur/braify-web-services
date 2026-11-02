@@ -23,7 +23,7 @@ spring:
   servlet:
     multipart:
       max-file-size: 10MB
-      max-request-size: 10MB
+      max-request-size: 11MB   # file cap stays 10MB; headroom for the multipart envelope
 
   # MVC
   mvc:

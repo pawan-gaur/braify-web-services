@@ -454,7 +454,7 @@ public class AuthService {
                 .role(user.getRole().name())
                 .organizationId(user.getOrganizationId())
                 .organizationName(orgName)
-                .profilePicture(user.getProfilePicture())
+                .profilePicture(user.avatarUrl())
                 .mustChangePassword(user.isMustChangePassword())
                 .hasPassword(hasUsablePassword(user))
                 .features(features)

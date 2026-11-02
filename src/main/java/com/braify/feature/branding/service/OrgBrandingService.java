@@ -1,5 +1,8 @@
 package com.braify.feature.branding.service;
 
+import com.braify.feature.storage.model.StoragePurpose;
+import com.braify.feature.storage.model.StoredFile;
+import com.braify.feature.storage.service.StorageService;
 import com.braify.feature.branding.dto.OrgBrandingRequest;
 import com.braify.feature.branding.dto.OrgBrandingResponse;
 import com.braify.feature.user.model.AppUser;
@@ -25,7 +28,7 @@ public class OrgBrandingService {
 
     private final OrganizationRepository orgRepository;
     private final AuditLogService        auditLogService;
-    private final BrandingLogoStorage    logoStorage;
+    private final StorageService         storage;
 
     @org.springframework.beans.factory.annotation.Value("${app.base-url:http://localhost:5173}")
     private String baseUrl;
@@ -70,15 +73,17 @@ public class OrgBrandingService {
                 ? existing.getCreatedBy()
                 : caller.getId();
 
-        LogoResult logo = resolveLogo(orgId, existing, req);
+        LogoResult logo = resolveLogo(orgId, existing, req, caller);
 
+        OrgBranding kept = logo.legacy();   // an unchanged logo still stored the old way keeps its fields
         OrgBranding branding = OrgBranding.builder()
-                .logoBase64(logo.base64())
+                .logoFileId(logo.fileId())
                 .logoUrl(logo.url())
-                .logoBucket(logo.bucket())
-                .logoKey(logo.key())
-                .logoProvider(logo.provider())
-                .logoContentType(logo.contentType())
+                .logoBase64(kept != null ? kept.getLogoBase64() : null)
+                .logoBucket(kept != null ? kept.getLogoBucket() : null)
+                .logoKey(kept != null ? kept.getLogoKey() : null)
+                .logoProvider(kept != null ? kept.getLogoProvider() : null)
+                .logoContentType(kept != null ? kept.getLogoContentType() : null)
                 .primaryColor(req.getPrimaryColor())
                 .accentColor(req.getAccentColor())
                 .emailSenderName(req.getEmailSenderName())
@@ -102,89 +107,112 @@ public class OrgBrandingService {
         return toResponse(org);
     }
 
-    // ── Logo storage ────────────────────────────────────────────────────────────
+    // ── Logo storage ──────────────────────────────────────────────────────────
 
-    private record LogoResult(String base64, String url, String bucket, String key,
-                              String provider, String contentType) {}
-    private record DecodedImage(byte[] bytes, String contentType, String ext) {}
+    /** {@code legacy}: the existing branding when its old-style logo (base64 / raw key) is kept unchanged. */
+    private record LogoResult(String fileId, String url, OrgBranding legacy) {
+        static final LogoResult NONE = new LogoResult(null, null, null);
+        LogoResult(String fileId, String url) { this(fileId, url, null); }
+    }
 
-    /** Public logo bytes for the streaming endpoint (from cloud, else decoded base64), or null. */
+    /** Public logo bytes for the streaming endpoint, or null when the org has no stored logo. */
     public record LogoData(byte[] bytes, String contentType) {}
 
     public LogoData getLogoData(String orgId) {
-        Organization org = orgRepository.findById(orgId).orElse(null);
-        if (org == null || org.getBranding() == null) return null;
+        Organization org = findOrg(orgId);
         OrgBranding b = org.getBranding();
-        if (b.getLogoKey() != null) {
-            byte[] bytes = logoStorage.download(orgId, b.getLogoBucket(), b.getLogoKey());
+        if (b == null) return null;
+        if (b.getLogoFileId() != null) {
+            StoredFile f = storage.get(b.getLogoFileId());
+            return new LogoData(storage.read(f), f.getContentType());
+        }
+        if (b.getLogoKey() != null) {   // LEGACY — until LegacyFileMigration runs
+            byte[] bytes = storage.read(legacyLogo(orgId, b));
             return new LogoData(bytes, b.getLogoContentType() != null ? b.getLogoContentType() : "image/png");
         }
-        DecodedImage d = decodeDataUrl(b.getLogoBase64());
+        DecodedImage d = decodeDataUrl(b.getLogoBase64());   // LEGACY inline logo
         return d != null ? new LogoData(d.bytes(), d.contentType()) : null;
     }
 
     private String logoEndpointUrl(String orgId) {
-        // Stable endpoint + a version query param so a re-upload busts the browser / email-proxy
-        // cache (the URL path is identical every time, otherwise the old image keeps showing).
+        // Absolute URL so it works inside emails. Cache-busted so a new upload shows immediately.
         return baseUrl.replaceAll("/$", "") + "/api/public/branding/" + orgId + "/logo?v=" + System.currentTimeMillis();
     }
 
     /**
-     * Decides the logo fields to persist:
+     * Decides the logo to keep:
      * <ul>
-     *   <li>new data-URL → offload bytes to the org cloud bucket (fallback: keep inline base64),
-     *       serve via the public endpoint;</li>
-     *   <li>unchanged (client echoed {@code logoUrl}) → keep existing fields;</li>
-     *   <li>nothing → remove the logo (best-effort delete of any cloud object).</li>
+     *   <li>new upload ({@code logoFileId} from {@code POST /api/storage/upload?purpose=BRANDING_LOGO}) → adopt it;</li>
+     *   <li>unchanged (client echoed {@code logoUrl}) → keep the existing logo;</li>
+     *   <li>an external http(s) URL → use it as-is;</li>
+     *   <li>nothing → remove the logo.</li>
      * </ul>
+     * A replaced or removed stored logo is deleted from storage.
      */
-    private LogoResult resolveLogo(String orgId, OrgBranding existing, OrgBrandingRequest req) {
-        String reqLogo = req.getLogoBase64();
-        log.info("resolveLogo org={} newUpload={} logoUrl='{}'",
-                orgId, reqLogo != null && reqLogo.startsWith("data:"), req.getLogoUrl());
+    private LogoResult resolveLogo(String orgId, OrgBranding existing, OrgBrandingRequest req, AppUser caller) {
+        String reqFileId = req.getLogoFileId() != null ? req.getLogoFileId().trim() : "";
+        String reqUrl    = req.getLogoUrl()    != null ? req.getLogoUrl().trim()    : "";
+        log.info("resolveLogo org={} newFileId='{}' logoUrl='{}'", orgId, reqFileId, reqUrl);
 
-        if (reqLogo != null && reqLogo.startsWith("data:")) {
-            DecodedImage d = decodeDataUrl(reqLogo);
-            if (d != null && logoStorage.isCloudConfigured(orgId)) {
-                try {
-                    if (existing != null && existing.getLogoKey() != null)
-                        logoStorage.deleteQuietly(orgId, existing.getLogoBucket(), existing.getLogoKey());
-                    var s = logoStorage.upload(orgId, d.bytes(), d.contentType(), d.ext());
-                    return new LogoResult(null, logoEndpointUrl(orgId),
-                            s.bucket(), s.key(), s.provider(), s.contentType());
-                } catch (Exception e) {
-                    log.warn("Logo cloud offload failed for org {} — keeping inline base64: {}", orgId, e.getMessage());
-                }
-            }
-            // No cloud (or offload failed): keep the data URL, still served via the endpoint.
-            return new LogoResult(reqLogo, logoEndpointUrl(orgId), null, null, null,
-                    d != null ? d.contentType() : null);
+        // Older clients still send a data URL — store it like a new upload (never kept in Mongo).
+        DecodedImage legacyUpload = decodeDataUrl(req.getLogoBase64());
+        if (reqFileId.isEmpty() && legacyUpload != null) {
+            String fileId = storage.store(orgId, StoragePurpose.BRANDING_LOGO, legacyUpload.bytes(), "logo." + legacyUpload.ext(),
+                    legacyUpload.contentType(), caller.getId(), "branding-logo:" + orgId).getId();
+            deleteStoredLogo(orgId, existing);
+            return new LogoResult(fileId, logoEndpointUrl(orgId));
         }
 
-        String reqUrl = req.getLogoUrl() != null ? req.getLogoUrl().trim() : "";
-        if (!reqUrl.isBlank()) {
-            // Unchanged uploaded logo — client echoed our own endpoint URL back; keep as-is.
-            if (existing != null && reqUrl.equals(existing.getLogoUrl())
-                    && (existing.getLogoKey() != null || existing.getLogoBase64() != null)) {
-                return new LogoResult(existing.getLogoBase64(), existing.getLogoUrl(),
-                        existing.getLogoBucket(), existing.getLogoKey(),
-                        existing.getLogoProvider(), existing.getLogoContentType());
-            }
-            // A directly-provided external image URL — store it as-is (no cloud upload).
+        if (!reqFileId.isEmpty()) {
+            if (existing != null && reqFileId.equals(existing.getLogoFileId()))
+                return new LogoResult(existing.getLogoFileId(), existing.getLogoUrl());
+            StoredFile upload = storage.getForUser(reqFileId, StoragePurpose.BRANDING_LOGO, caller);
+            if (!orgId.equals(upload.getOrganizationId()))
+                throw new IllegalArgumentException("The logo file belongs to another organisation");
+            String fileId = storage.claim(upload, "branding-logo:" + orgId).getId();
+            deleteStoredLogo(orgId, existing);
+            return new LogoResult(fileId, logoEndpointUrl(orgId));
+        }
+
+        if (!reqUrl.isEmpty()) {
+            // Unchanged logo — client echoed our own endpoint URL back; keep as-is.
+            if (existing != null && hasStoredLogo(existing)
+                    && (reqUrl.equals(existing.getLogoUrl()) || isOwnLogoEndpoint(reqUrl, orgId)))
+                return new LogoResult(existing.getLogoFileId(),
+                        existing.getLogoUrl() != null ? existing.getLogoUrl() : logoEndpointUrl(orgId),
+                        existing.getLogoFileId() == null ? existing : null);
             if (reqUrl.startsWith("http://") || reqUrl.startsWith("https://")) {
-                if (existing != null && existing.getLogoKey() != null)   // drop any prior cloud object
-                    logoStorage.deleteQuietly(orgId, existing.getLogoBucket(), existing.getLogoKey());
+                deleteStoredLogo(orgId, existing);
                 log.info("Branding logo set to external URL for org {} -> {}", orgId, reqUrl);
-                return new LogoResult(null, reqUrl, null, null, null, null);
+                return new LogoResult(null, reqUrl);
             }
-            throw new RuntimeException("Logo URL must start with http:// or https://");
+            throw new IllegalArgumentException("Logo URL must start with http:// or https://");
         }
 
-        // Removed.
-        if (existing != null && existing.getLogoKey() != null)
-            logoStorage.deleteQuietly(orgId, existing.getLogoBucket(), existing.getLogoKey());
-        return new LogoResult(null, null, null, null, null, null);
+        deleteStoredLogo(orgId, existing);
+        return LogoResult.NONE;
     }
+
+    private static boolean isOwnLogoEndpoint(String url, String orgId) {
+        return url.contains("/api/public/branding/" + orgId + "/logo");
+    }
+
+    private static boolean hasStoredLogo(OrgBranding b) {
+        return b.getLogoFileId() != null || b.getLogoKey() != null || b.getLogoBase64() != null;
+    }
+
+    private void deleteStoredLogo(String orgId, OrgBranding existing) {
+        if (existing == null) return;
+        if (existing.getLogoFileId() != null) storage.deleteQuietly(existing.getLogoFileId());
+        else if (existing.getLogoKey() != null) storage.deleteObjectQuietly(legacyLogo(orgId, existing));
+    }
+
+    /** Unsaved reference to a pre-registry logo object, routed by its bucket. */
+    private static StoredFile legacyLogo(String orgId, OrgBranding b) {
+        return StoredFile.builder().organizationId(orgId).bucket(b.getLogoBucket()).storageKey(b.getLogoKey()).build();
+    }
+
+    private record DecodedImage(byte[] bytes, String contentType, String ext) {}
 
     private DecodedImage decodeDataUrl(String dataUrl) {
         if (dataUrl == null || !dataUrl.startsWith("data:")) return null;
@@ -248,7 +276,6 @@ public class OrgBrandingService {
     public OrgBrandingResponse toResponse(Organization org) {
         OrgBranding b = org.getBranding();
         boolean configured = b != null && (
-                (b.getLogoBase64()     != null && !b.getLogoBase64().isBlank())     ||
                 (b.getLogoUrl()        != null && !b.getLogoUrl().isBlank())         ||
                 (b.getPrimaryColor()   != null && !b.getPrimaryColor().isBlank())   ||
                 (b.getAccentColor()    != null && !b.getAccentColor().isBlank())    ||
@@ -260,8 +287,10 @@ public class OrgBrandingService {
         return OrgBrandingResponse.builder()
                 .organizationId(org.getId())
                 .organizationName(org.getName())
-                .logoBase64(b != null ? b.getLogoBase64() : null)
-                .logoUrl(b != null ? b.getLogoUrl() : null)
+                .logoUrl(b == null ? null
+                        : b.getLogoUrl() != null ? b.getLogoUrl()
+                        : hasStoredLogo(b) ? logoEndpointUrl(org.getId())   // old rows saved before logoUrl existed
+                        : null)
                 .primaryColor(b != null ? b.getPrimaryColor() : null)
                 .accentColor(b != null ? b.getAccentColor() : null)
                 .emailSenderName(b != null ? b.getEmailSenderName() : null)

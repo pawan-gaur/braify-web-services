@@ -1,14 +1,8 @@
 package com.braify.feature.fileupload.service;
 
-import com.braify.config.EncryptionService;
 import com.braify.feature.audit.model.AuditLog;
 import com.braify.feature.audit.service.AuditLogService;
 import com.braify.feature.cloudconfig.model.OrgCloudConfig;
-import com.braify.feature.fileupload.cloud.CloudDownloadRequest;
-import com.braify.feature.fileupload.cloud.CloudUploadRequest;
-import com.braify.feature.fileupload.cloud.CloudUploadResult;
-import com.braify.feature.fileupload.cloud.CloudUploader;
-import com.braify.feature.fileupload.cloud.CloudUploaderFactory;
 import com.braify.feature.fileupload.cloud.StorageConfigResolver;
 import com.braify.feature.fileupload.dto.FileDownloadResponse;
 import com.braify.feature.fileupload.dto.FileListResponse;
@@ -18,6 +12,9 @@ import com.braify.feature.fileupload.dto.OrgStorageStat;
 import com.braify.feature.fileupload.model.OrgFile;
 import com.braify.feature.fileupload.repository.OrgFileRepository;
 import com.braify.feature.organization.model.Organization;
+import com.braify.feature.storage.model.StoragePurpose;
+import com.braify.feature.storage.model.StoredFile;
+import com.braify.feature.storage.service.StorageService;
 import com.braify.feature.organization.repository.OrganizationRepository;
 import com.braify.feature.quota.exception.QuotaExceededException;
 import com.braify.feature.quota.model.OrgQuotaConfig;
@@ -73,12 +70,11 @@ public class FileService {
     private final OrganizationRepository orgRepository;
     private final com.braify.feature.events.EventPublisher eventPublisher;
     private final OrgFileRepository      fileRepository;
-    private final CloudUploaderFactory   uploaderFactory;
-    private final EncryptionService      encryptionService;
     private final QuotaService           quotaService;
     private final AuditLogService        auditLogService;
     private final FileIdGenerator        fileIdGenerator;
     private final StorageConfigResolver  storageResolver;
+    private final StorageService         storageService;
 
     // ── Upload ────────────────────────────────────────────────────────────────
 
@@ -137,20 +133,10 @@ public class FileService {
         if (countAsDocument) quotaService.checkAndIncrementDocs(orgId);
         checkStorageQuota(orgId, fileSizeMb);
 
-        // ── Build storage key ─────────────────────────────────────────────────
-        String fileId     = fileIdGenerator.next();
-        String basePath   = buildBasePath(cfg, orgId, fileId, originalFilename);
-
-        // ── Decrypt credentials ───────────────────────────────────────────────
-        String plainAccessKey = encryptionService.decryptSafe(cfg.getAccessKey());
-        String plainSecretKey = encryptionService.decryptSafe(cfg.getSecretKey());
-
-        // ── Upload to cloud ───────────────────────────────────────────────────
-        CloudUploader uploader2 = uploaderFactory.get(cfg.getCloud());
-        CloudUploadRequest uploadReq = buildUploadRequest(cfg, basePath, bytes,
-                contentType, originalFilename,
-                plainAccessKey, plainSecretKey);
-        CloudUploadResult result = uploader2.upload(uploadReq);
+        // ── Store the bytes (StorageService picks the bucket and key) ─────────────
+        String fileId = fileIdGenerator.next();
+        StoredFile stored = storageService.store(orgId, StoragePurpose.LIBRARY_FILE, bytes, originalFilename,
+                contentType, createdById != null ? createdById : uploader, "org-file:" + fileId);
 
         // ── Persist metadata ──────────────────────────────────────────────────
         OrgFile orgFile = OrgFile.builder()
@@ -159,9 +145,8 @@ public class FileService {
                 .uploadedBy(uploader)
                 .createdBy(createdById)
                 .originalFilename(originalFilename)
-                .storageKey(result.getStorageKey())
-                .bucket(result.getBucket())
-                .cloudProvider(toModelProvider(cfg.getCloud()))
+                .storedFileId(stored.getId())
+                .cloudProvider(OrgFile.CloudProvider.valueOf(stored.getProvider()))
                 .contentType(contentType)
                 .fileSizeBytes(fileSizeBytes)
                 .fileSizeMb(fileSizeMb)
@@ -194,13 +179,13 @@ public class FileService {
                        "fileId",   fileId,
                        "filename", originalFilename != null ? originalFilename : "",
                        "sizeMb",   String.valueOf(fileSizeMb),
-                       "cloud",    cfg.getCloud().name()),
+                       "cloud",    stored.getProvider()),
                 uploader,
                 orgId
         );
 
         log.info("File uploaded: org={} fileId={} filename={} size={}MB cloud={}",
-                orgId, fileId, originalFilename, fileSizeMb, cfg.getCloud());
+                orgId, fileId, originalFilename, fileSizeMb, stored.getProvider());
 
         return FileUploadResponse.from(saved);
     }
@@ -230,22 +215,13 @@ public class FileService {
         OrgFile file = requireFile(orgId, fileId);
 
         Organization org = requireOrg(orgId);
-        // Route by the bucket the file was stored in (own vs managed storage).
         if (!storageResolver.isAvailable(org)) throw new RuntimeException(CLOUD_NOT_CONFIGURED);
-        OrgCloudConfig cfg = storageResolver.forRead(org, file.getBucket());
-
-        int ttlSeconds = cfg.getPresignedUrlExpiration() != null
-                ? cfg.getPresignedUrlExpiration() * 60   // stored as minutes
-                : 3600;                                   // default 1 hour
-
-        String plainAccessKey = encryptionService.decryptSafe(cfg.getAccessKey());
-        String plainSecretKey = encryptionService.decryptSafe(cfg.getSecretKey());
-
-        CloudUploader cloudUploader = uploaderFactory.get(cfg.getCloud());
-        CloudDownloadRequest dlReq = buildDownloadRequest(cfg, file.getStorageKey(),
-                ttlSeconds, plainAccessKey, plainSecretKey);
-
-        String presignedUrl = cloudUploader.generatePresignedUrl(dlReq);
+        StorageService.PresignedUrl url = storageService.presignedUrl(file.getStoredFileId() != null
+                ? storageService.get(file.getStoredFileId())
+                : StoredFile.builder().organizationId(orgId).bucket(file.getBucket())     // LEGACY pre-StoredFile file
+                        .storageKey(file.getStorageKey()).build());
+        String presignedUrl = url.url();
+        int    ttlSeconds   = url.expiresInSeconds();
 
         // Increment download counter (non-atomic, best-effort)
         file.setDownloadCount(file.getDownloadCount() + 1);
@@ -548,61 +524,8 @@ public class FileService {
         }
     }
 
-    /**
-     * Builds the object storage key.
-     * Pattern: {@code <cfg.path>/<orgId>/<fileId>/<sanitisedFilename>}
-     */
-    private String buildBasePath(OrgCloudConfig cfg, String orgId, String fileId, String filename) {
-        String base = (cfg.getPath() != null && !cfg.getPath().isBlank())
-                ? cfg.getPath().replaceAll("/$", "") + "/" + orgId + "/" + fileId
-                : orgId + "/" + fileId;
-        String safeFilename = sanitize(filename != null ? filename : "file");
-        return base + "/" + safeFilename;
-    }
 
-    private CloudUploadRequest buildUploadRequest(OrgCloudConfig cfg,
-                                                   String storageKey,
-                                                   byte[] data,
-                                                   String contentType,
-                                                   String originalFilename,
-                                                   String plainAccessKey,
-                                                   String plainSecretKey) {
-        return CloudUploadRequest.builder()
-                .bucket(cfg.getBucket())
-                .storageKey(storageKey)
-                .data(data)
-                .contentType(contentType)
-                .originalFilename(originalFilename)
-                .awsRegion(cfg.getAwsRegion())
-                .awsAccessKeyId(plainAccessKey)
-                .awsSecretAccessKey(plainSecretKey)
-                .azureConnectionString(plainAccessKey)    // Azure: accessKey = connection string
-                .gcpServiceAccountJson(plainSecretKey)    // GCP:   secretKey = SA JSON
-                .useDefaultCredentials(cfg.isPlatformManaged())
-                .build();
-    }
 
-    private CloudDownloadRequest buildDownloadRequest(OrgCloudConfig cfg,
-                                                       String storageKey,
-                                                       int ttlSeconds,
-                                                       String plainAccessKey,
-                                                       String plainSecretKey) {
-        return CloudDownloadRequest.builder()
-                .bucket(cfg.getBucket())
-                .storageKey(storageKey)
-                .expirationSeconds(ttlSeconds)
-                .awsRegion(cfg.getAwsRegion())
-                .awsAccessKeyId(plainAccessKey)
-                .awsSecretAccessKey(plainSecretKey)
-                .azureConnectionString(plainAccessKey)
-                .gcpServiceAccountJson(plainSecretKey)
-                .useDefaultCredentials(cfg.isPlatformManaged())
-                .build();
-    }
-
-    private OrgFile.CloudProvider toModelProvider(OrgCloudConfig.CloudProvider p) {
-        return OrgFile.CloudProvider.valueOf(p.name());
-    }
 
     private OrgFile.DocumentType parseDocumentType(String value) {
         if (value == null || value.isBlank()) return OrgFile.DocumentType.OTHER;
@@ -622,7 +545,4 @@ public class FileService {
         }
     }
 
-    private static String sanitize(String s) {
-        return s.replaceAll("[^a-zA-Z0-9._\\-]", "_");
-    }
 }
