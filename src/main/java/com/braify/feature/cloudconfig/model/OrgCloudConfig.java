@@ -1,5 +1,6 @@
 package com.braify.feature.cloudconfig.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -56,9 +57,11 @@ public class OrgCloudConfig {
     // ── Credentials ───────────────────────────────────────────────────────────
 
     /** Cloud access key / client ID. Masked in all API responses. */
+    @JsonIgnore   // encrypted secret — never serialized (API responses use the masked *Response DTOs)
     private String accessKey;
 
     /** Cloud secret key / client secret. Masked in all API responses. */
+    @JsonIgnore   // encrypted secret — never serialized (API responses use the masked *Response DTOs)
     private String secretKey;
 
     /** AWS-specific region, e.g. {@code "ap-south-1"}. Ignored for Azure / GCP. */

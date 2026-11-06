@@ -45,6 +45,7 @@ public class PlatformProviderDefaultsService {
     private final SmsConfigMapper                    smsMapper;
     private final SmsDispatcher                      smsDispatcher;
     private final CloudConfigMapper                  cloudMapper;
+    private final com.braify.feature.storage.service.StorageConfigCache storageConfigCache;
 
     @Value("${resend.api-key:}")
     private String envResendApiKey;
@@ -199,6 +200,7 @@ public class PlatformProviderDefaultsService {
         defaults.setCloud(updated);
         defaults.setUpdatedBy(caller != null ? caller.getEmail() : "system");
         repo.save(defaults);
+        storageConfigCache.evictAll();   // managed storage affects every org's resolved config
 
         if (caller != null) {
             auditLogService.logByUser(

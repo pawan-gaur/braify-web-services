@@ -2,6 +2,7 @@ package com.braify.security;
 
 import com.braify.feature.user.model.AppUser;
 import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.JwtParser;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import jakarta.annotation.PostConstruct;
@@ -55,9 +56,21 @@ public class JwtUtil {
             throw new IllegalStateException(
                     "jwt.secret is too short (" + secret.trim().length() + " chars). Use a random value of at least 32 characters.");
         }
+        signingKey = deriveKey(secret);
+        parser = Jwts.parser().verifyWith(signingKey).build();
     }
 
+    /** HMAC key derived once from the secret (was re-derived on every sign/parse). */
+    private SecretKey signingKey;
+
+    /** Thread-safe, immutable parser bound to {@link #signingKey}. */
+    private JwtParser parser;
+
     private SecretKey key() {
+        return signingKey;
+    }
+
+    private static SecretKey deriveKey(String secret) {
         // Derive a guaranteed 256-bit key by SHA-256-hashing the configured secret, so
         // any secret length is accepted (mirrors EncryptionService). Using the raw secret
         // bytes directly fails JWT's RFC 7518 minimum-key-size check when the secret is
@@ -111,11 +124,19 @@ public class JwtUtil {
     }
 
     public Claims parseToken(String token) {
-        return Jwts.parser()
-                .verifyWith(key())
-                .build()
-                .parseSignedClaims(token)
-                .getPayload();
+        return parser.parseSignedClaims(token).getPayload();
+    }
+
+    /**
+     * Verifies signature + expiry once and returns the claims, or {@code null} when the token
+     * is malformed, badly signed or expired (exactly the cases {@link #isValid} rejects).
+     */
+    public Claims tryParse(String token) {
+        try {
+            return parseToken(token);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**

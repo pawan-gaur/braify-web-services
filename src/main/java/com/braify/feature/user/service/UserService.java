@@ -16,11 +16,17 @@ import com.braify.feature.user.repository.AppUserRepository;
 import com.braify.shared.Feature;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 @Slf4j
@@ -37,6 +43,7 @@ public class UserService {
     private final QuotaService         quotaService;
     private final com.braify.feature.auth.service.PasswordPolicyService passwordPolicyService;
     private final com.braify.feature.platform.service.PlatformSettingsService platformSettingsService;
+    private final MongoTemplate        mongoTemplate;
 
     /**
      * Returns users visible to currentUser.
@@ -50,7 +57,7 @@ public class UserService {
         } else {
             users = userRepository.findByOrganizationId(currentUser.getOrganizationId());
         }
-        return users.stream().map(this::toResponse).toList();
+        return toResponses(users);
     }
 
     /**
@@ -68,7 +75,7 @@ public class UserService {
         } else {
             results = userRepository.searchByOrgAndQuery(q, currentUser.getOrganizationId());
         }
-        return results.stream().map(this::toResponse).toList();
+        return toResponses(results);
     }
 
     public UserResponse findById(String id, AppUser currentUser) {
@@ -273,13 +280,36 @@ public class UserService {
         }
     }
 
-    public UserResponse toResponse(AppUser u) {
-        // PLATFORM_ADMIN bypasses feature and role restrictions — return all keys
-        boolean isPlatformAdmin = u.getRole() == AppUser.Role.PLATFORM_ADMIN;
+    /**
+     * List variant of {@link #toResponse}: loads each distinct organisation ONCE (projected to
+     * the fields toResponse reads) instead of one full-document findById per user.
+     */
+    private List<UserResponse> toResponses(List<AppUser> users) {
+        Set<String> orgIds = new HashSet<>();
+        for (AppUser u : users) if (u.getOrganizationId() != null) orgIds.add(u.getOrganizationId());
+        Map<String, Organization> orgs = new HashMap<>();
+        if (!orgIds.isEmpty()) {
+            Query q = Query.query(Criteria.where("_id").in(orgIds));
+            q.fields().include("name", "features",
+                    "branding.featureRoleAccess", "branding.primaryColor", "branding.accentColor");
+            for (Organization o : mongoTemplate.find(q, Organization.class)) orgs.put(o.getId(), o);
+        }
+        return users.stream()
+                .map(u -> toResponse(u, u.getOrganizationId() != null ? orgs.get(u.getOrganizationId()) : null))
+                .toList();
+    }
 
+    public UserResponse toResponse(AppUser u) {
         Organization org = u.getOrganizationId() != null
                 ? orgRepository.findById(u.getOrganizationId()).orElse(null)
                 : null;
+        return toResponse(u, org);
+    }
+
+    /** @param org the user's organisation (only name, features and branding colours/featureRoleAccess are read), or null */
+    private UserResponse toResponse(AppUser u, Organization org) {
+        // PLATFORM_ADMIN bypasses feature and role restrictions — return all keys
+        boolean isPlatformAdmin = u.getRole() == AppUser.Role.PLATFORM_ADMIN;
 
         String orgName = org != null ? org.getName() : null;
 

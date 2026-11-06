@@ -75,6 +75,7 @@ public class ESignDocumentService {
     private final AppUserRepository             userRepo;
     private final OrganizationRepository        orgRepo;
     private final MongoTemplate                 mongoTemplate;
+    private final ESignSendFanOut               sendFanOut;
 
     // ── Create ──────────────────────────────────────────────────────────────
 
@@ -449,13 +450,19 @@ public class ESignDocumentService {
             if (!emailService.sendSigningInvitation(doc, first.getName(), first.getEmail(), true, token))
                 emailFailures.add(first.getEmail());
         } else {
+            // Tokens + signatory mutations stay on this thread; only the provider calls fan out.
+            List<java.util.function.Supplier<Boolean>> sends = new ArrayList<>();
             for (int i = 0; i < sigs.size(); i++) {
                 ESignDocument.Signatory s = sigs.get(i);
                 String token = tokenService.issueSigningToken(doc, s, tokenValidDays);
                 if (s.getInvitedAt() == null) s.setInvitedAt(LocalDateTime.now());
-                if (!emailService.sendSigningInvitation(doc, s.getName(), s.getEmail(), i == 0, token))
-                    emailFailures.add(s.getEmail());
+                final ESignDocument sendDoc = doc;
+                final boolean includeCc = i == 0;
+                sends.add(() -> emailService.sendSigningInvitation(sendDoc, s.getName(), s.getEmail(), includeCc, token));
             }
+            List<Boolean> results = sendFanOut.runAll(sends);
+            for (int i = 0; i < sigs.size(); i++)
+                if (!Boolean.TRUE.equals(results.get(i))) emailFailures.add(sigs.get(i).getEmail());
         }
         doc = docRepo.save(doc);   // persists tokenJti set on each signatory
 
@@ -531,13 +538,17 @@ public class ESignDocumentService {
                 .filter(s -> s.getStatus() != ESignDocument.SignatoryStatus.SIGNED)
                 .toList();
         boolean first = true;
+        List<java.util.function.Supplier<Boolean>> sends = new ArrayList<>();
         for (ESignDocument.Signatory s : pending) {
             String token = tokenService.issueSigningToken(doc, s, tokenValidDays);
             if (s.getInvitedAt() == null) s.setInvitedAt(LocalDateTime.now());
-            emailService.sendSigningInvitation(doc, s.getName(), s.getEmail(), first, token);
+            final ESignDocument sendDoc = doc;
+            final boolean includeCc = first;
+            sends.add(() -> emailService.sendSigningInvitation(sendDoc, s.getName(), s.getEmail(), includeCc, token));
             first = false;
             if (doc.getSigningMode() == ESignDocument.SigningMode.SEQUENTIAL) break; // only the active one
         }
+        sendFanOut.runAll(sends);   // provider calls concurrently; mutations above stay on this thread
         doc = docRepo.save(doc);
 
         auditService.log(docId, principal.getUsername(),
@@ -589,13 +600,17 @@ public class ESignDocumentService {
                 .filter(s -> s.getStatus() != ESignDocument.SignatoryStatus.SIGNED)
                 .toList();
         boolean first = true;
+        List<java.util.function.Supplier<Boolean>> sends = new ArrayList<>();
         for (ESignDocument.Signatory s : pending) {
             String token = tokenService.issueSigningToken(doc, s, tokenValidDays);
             if (s.getInvitedAt() == null) s.setInvitedAt(LocalDateTime.now());
-            emailService.sendSigningInvitation(doc, s.getName(), s.getEmail(), first, token);
+            final ESignDocument sendDoc = doc;
+            final boolean includeCc = first;
+            sends.add(() -> emailService.sendSigningInvitation(sendDoc, s.getName(), s.getEmail(), includeCc, token));
             first = false;
             if (doc.getSigningMode() == ESignDocument.SigningMode.SEQUENTIAL) break; // only the active one
         }
+        sendFanOut.runAll(sends);   // provider calls concurrently; mutations above stay on this thread
         doc = docRepo.save(doc);
 
         auditService.log(docId, principal.getUsername(),
@@ -743,10 +758,7 @@ public class ESignDocumentService {
             throw new IllegalStateException(
                     "Everyone still to sign has unsubscribed from reminders for this document.");
 
-        int sent = 0;
-        for (ESignDocument.Signatory s : recipients) {
-            if (dispatchReminder(doc, s)) sent++;
-        }
+        int sent = dispatchReminders(doc, recipients);
         doc = docRepo.save(doc);
 
         auditService.log(docId, principal.getUsername(),
@@ -777,8 +789,13 @@ public class ESignDocumentService {
      */
     public int runAutomaticReminderSweep() {
         LocalDateTime now = LocalDateTime.now();
-        List<ESignDocument> candidates =
-                docRepo.findByStatusInAndTokenExpiresAtAfter(REMINDABLE_STATUSES, now);
+        // Same filter as docRepo.findByStatusInAndTokenExpiresAtAfter, minus the legacy PDF/attachment
+        // bytes (never read here). These projected docs are NEVER save()d — a save would wipe the
+        // excluded fields — only their signatories are written back with a targeted $set below.
+        Query candidatesQuery = Query.query(Criteria.where("status").in(REMINDABLE_STATUSES)
+                .and("tokenExpiresAt").gt(now));
+        candidatesQuery.fields().exclude("sourcePdfData").exclude("signedPdfData").exclude("clientAttachments");
+        List<ESignDocument> candidates = mongoTemplate.find(candidatesQuery, ESignDocument.class);
 
         int totalSent = 0;
         for (ESignDocument doc : candidates) {
@@ -787,14 +804,20 @@ public class ESignDocumentService {
             EsignReminderPolicy policy = resolveReminderPolicy(doc.getOrgId());
             if (!policy.isEnabled()) continue;
 
-            boolean touched = false;
-            for (ESignDocument.Signatory s : pendingSignatories(doc)) {
-                if (!reminderDue(doc, s, policy, now)) continue;
-                if (dispatchReminder(doc, s)) totalSent++;
-                touched = true;
-            }
+            List<ESignDocument.Signatory> due = pendingSignatories(doc).stream()
+                    .filter(s -> reminderDue(doc, s, policy, now))
+                    .toList();
+            boolean touched = !due.isEmpty();
+            if (touched) totalSent += dispatchReminders(doc, due);
             if (touched) {
-                docRepo.save(doc);
+                // Targeted write of the only fields the reminder flow changes (per-signatory
+                // tokenJti / lastReminderAt / reminderCount) + updatedAt, which save() used to bump.
+                mongoTemplate.updateFirst(
+                        Query.query(Criteria.where("_id").is(doc.getId())),
+                        new org.springframework.data.mongodb.core.query.Update()
+                                .set("signatories", doc.getSignatories())
+                                .set("updatedAt", LocalDateTime.now()),
+                        ESignDocument.class);
                 auditService.log(doc.getId(), "system",
                         ESignAuditEvent.ActorType.SYSTEM,
                         ESignAuditEvent.EventType.DOCUMENT_SENT, null, null,
@@ -855,6 +878,40 @@ public class ESignDocumentService {
             s.setReminderCount(s.getReminderCount() + 1);
         }
         return ok;
+    }
+
+    /**
+     * {@link #dispatchReminder} for several signatories of one document: each signatory's
+     * email (+ SMS) runs concurrently via {@link ESignSendFanOut} (a task only touches its own
+     * signatory's tokenJti), then the counters are advanced here on the caller thread, which
+     * also persists the document.
+     *
+     * @return how many signatories were reached (email or SMS accepted)
+     */
+    private int dispatchReminders(ESignDocument doc, List<ESignDocument.Signatory> recipients) {
+        if (recipients.size() <= 1) {
+            return (int) recipients.stream().filter(s -> dispatchReminder(doc, s)).count();
+        }
+        boolean smsEnabled = recipients.stream().anyMatch(s -> s.getPhone() != null)
+                && resolveReminderPolicy(doc.getOrgId()).isSmsEnabled();
+        List<java.util.function.Supplier<Boolean>> sends = new ArrayList<>();
+        for (ESignDocument.Signatory s : recipients) {
+            sends.add(() -> {
+                boolean ok = emailService.sendReminder(doc, s);
+                if (smsEnabled && s.getPhone() != null) ok |= smsService.sendReminderSms(doc, s);
+                return ok;
+            });
+        }
+        List<Boolean> results = sendFanOut.runAll(sends);
+        int sent = 0;
+        for (int i = 0; i < recipients.size(); i++) {
+            if (!Boolean.TRUE.equals(results.get(i))) continue;
+            ESignDocument.Signatory s = recipients.get(i);
+            s.setLastReminderAt(LocalDateTime.now());
+            s.setReminderCount(s.getReminderCount() + 1);
+            sent++;
+        }
+        return sent;
     }
 
     private EsignReminderPolicy resolveReminderPolicy(String orgId) {
@@ -1067,9 +1124,16 @@ public class ESignDocumentService {
         // Verify access to the batch first (enforces role-based rules)
         getBatch(batchId, principal);
 
-        Pageable pageable = PageRequest.of(page, Math.min(size, 100));
+        // Same as docRepo.findByBulkBatchIdOrderByCreatedAtDesc, but without the legacy embedded
+        // PDF/attachment bytes (as in listMyDocumentsPaged). Mapped to responses only, never saved.
+        Pageable pageable = PageRequest.of(page, Math.min(size, 100),
+                Sort.by(Sort.Direction.DESC, "createdAt"));
+        Criteria batchCriteria = Criteria.where("bulkBatchId").is(batchId);
+        long total = mongoTemplate.count(Query.query(batchCriteria), ESignDocument.class);
+        Query q = Query.query(batchCriteria).with(pageable);
+        q.fields().exclude("sourcePdfData").exclude("signedPdfData").exclude("clientAttachments");
         Page<ESignDocument> pageResult =
-                docRepo.findByBulkBatchIdOrderByCreatedAtDesc(batchId, pageable);
+                new PageImpl<>(mongoTemplate.find(q, ESignDocument.class), pageable, total);
 
         List<DocumentResponse> content = pageResult.getContent().stream()
                 .map(d -> DocumentResponse.from(d, List.of(), false))

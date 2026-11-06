@@ -2,6 +2,7 @@ package com.braify.feature.pdf.repository;
 
 import com.braify.feature.pdf.model.Template;
 import org.springframework.data.mongodb.repository.MongoRepository;
+import org.springframework.data.mongodb.repository.Query;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -18,6 +19,18 @@ public interface TemplateRepository extends MongoRepository<Template, String> {
 
     /** Active lookup by id (avoids accidentally returning deleted records) */
     Optional<Template> findByIdAndDeletedFalse(String id);
+
+    /**
+     * List-page variants: same filter/sort as above but without the heavy editor fields
+     * (htmlContent / cssContent / gjsData). Callers that need the content use findById.
+     */
+    String LIST_FIELDS = "{'htmlContent':0,'cssContent':0,'gjsData':0}";
+
+    @Query(value = "{'deleted': false}", fields = LIST_FIELDS, sort = "{'updatedAt': -1}")
+    List<Template> findSummariesByDeletedFalse();
+
+    @Query(value = "{'organizationId': ?0, 'deleted': false}", fields = LIST_FIELDS, sort = "{'updatedAt': -1}")
+    List<Template> findSummariesByOrganizationId(String organizationId);
 
     /** Org-scoped queries */
     List<Template> findByOrganizationIdAndDeletedFalseOrderByUpdatedAtDesc(String organizationId);

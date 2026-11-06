@@ -17,6 +17,7 @@ import com.braify.feature.onboarding.model.OnboardingRequest;
 import com.braify.feature.onboarding.repository.OnboardingRequestRepository;
 import com.braify.feature.fileupload.model.OrgFile;
 import com.braify.feature.fileupload.repository.OrgFileRepository;
+import com.braify.feature.fileupload.repository.OrgFileUsageRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.mongodb.core.MongoTemplate;
@@ -38,6 +39,7 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import org.springframework.data.mongodb.core.aggregation.DateOperators;
 import org.springframework.data.mongodb.core.aggregation.Fields;
+import org.springframework.data.domain.Sort;
 
 @Slf4j
 @Service
@@ -53,6 +55,7 @@ public class DashboardService {
     private final ESignAuditEventRepository   auditEventRepo;
     private final OnboardingRequestRepository onboardingRepo;
     private final OrgFileRepository           fileRepo;
+    private final OrgFileUsageRepository      fileUsageRepo;
     private final MongoTemplate               mongoTemplate;
     // Resolved by parameter name → the "dashboardExecutor" bean (bounded IO pool).
     private final ExecutorService             dashboardExecutor;
@@ -217,9 +220,8 @@ public class DashboardService {
     }
 
     private double storageMb(boolean admin, String orgId) {
-        List<OrgFile> files = admin ? fileRepo.findAllActiveFileSizes()
-                                    : fileRepo.findActiveFileSizes(orgId);
-        double sum = files.stream().mapToDouble(OrgFile::getFileSizeMb).sum();
+        // $group/$sum in Mongo — ACTIVE files, org-scoped unless PLATFORM_ADMIN.
+        double sum = fileUsageRepo.sumActiveMb(admin ? null : orgId);
         return Math.round(sum * 10.0) / 10.0;   // 1 d.p.
     }
 
@@ -293,7 +295,12 @@ public class DashboardService {
         if (admin) {
             return auditEventRepo.countByEvent(ESignAuditEvent.EventType.LINK_OPENED);
         }
-        // ID-only projection — don't load the documents' embedded PDF bytes.
+        // Left as two indexed queries on purpose: ESignAuditEvent has no orgId, and a $lookup
+        // would have to join esign_documents._id (stored as ObjectId) to the String
+        // documentId via $toString inside an $expr pipeline, which can't reliably use the
+        // documentId index (version-dependent) → a scan per document, slower than this.
+        // The alternative (scan every LINK_OPENED event platform-wide, then $lookup the org)
+        // grows with total platform traffic. ID-only projection — no PDF bytes are loaded.
         List<String> docIds = esignRepo.findIdsByOrgId(orgId).stream()
                 .map(ESignDocument::getId)
                 .collect(Collectors.toList());
@@ -442,31 +449,42 @@ public class DashboardService {
     private List<DashboardStats.TopUser> topUsers(List<String> scopeEmails) {
         LocalDateTime since = LocalDateTime.now().minusDays(30);
 
-        List<AuditLog> logs;
-        if (scopeEmails == null) {
-            // PLATFORM_ADMIN: unrestricted global view
-            logs = auditLogRepo.findByTimestampAfter(since);
-        } else if (scopeEmails.isEmpty()) {
-            return List.of();
-        } else {
+        // Same filters as before (timestamp strictly after `since`, optional performer scope,
+        // performedBy non-null and non-blank), but counted in Mongo: $match → $group → $sort → $limit.
+        List<Criteria> crit = new ArrayList<>();
+        crit.add(Criteria.where("timestamp").gt(since));
+        if (scopeEmails != null) {
+            if (scopeEmails.isEmpty()) return List.of();
             // ORG_ADMIN / ADMIN / USER: scoped to their visible performer emails
-            logs = auditLogRepo.findByPerformedByInAndTimestampAfter(scopeEmails, since);
+            crit.add(Criteria.where("performedBy").in(scopeEmails));
+        }
+        crit.add(Criteria.where("performedBy").regex("\\S"));   // non-null, non-blank string
+
+        Aggregation agg = Aggregation.newAggregation(
+                Aggregation.match(new Criteria().andOperator(crit.toArray(Criteria[]::new))),
+                Aggregation.group("performedBy").count().as("count"),
+                Aggregation.sort(Sort.by(Sort.Direction.DESC, "count").and(Sort.by(Sort.Direction.ASC, "_id"))),
+                Aggregation.limit(5));
+
+        LinkedHashMap<String, Long> counts = new LinkedHashMap<>();
+        for (org.bson.Document d : mongoTemplate.aggregate(agg, "audit_logs", org.bson.Document.class).getMappedResults()) {
+            if (d.get("_id") != null && d.get("count") instanceof Number n) counts.put(d.get("_id").toString(), n.longValue());
+        }
+        if (counts.isEmpty()) return List.of();
+
+        // One batched user lookup (name fields only) instead of findByEmail per top user.
+        Query userQ = new Query(Criteria.where("email").in(counts.keySet()));
+        userQ.fields().include("email", "firstName", "lastName");
+        Map<String, AppUser> usersByEmail = new HashMap<>();
+        for (AppUser u : mongoTemplate.find(userQ, AppUser.class)) {
+            if (u.getEmail() != null) usersByEmail.putIfAbsent(u.getEmail(), u);
         }
 
-        // Group by performedBy, count occurrences
-        Map<String, Long> counts = logs.stream()
-                .filter(l -> l.getPerformedBy() != null && !l.getPerformedBy().isBlank())
-                .collect(Collectors.groupingBy(AuditLog::getPerformedBy, Collectors.counting()));
-
-        // Build top-5 list enriched with display name from user repo
         return counts.entrySet().stream()
-                .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
-                .limit(5)
                 .map(e -> {
                     String email = e.getKey();
-                    String name  = userRepo.findByEmail(email)
-                            .map(u -> (u.getFirstName() + " " + u.getLastName()).trim())
-                            .orElse(email);
+                    AppUser u    = usersByEmail.get(email);
+                    String name  = (u != null) ? (u.getFirstName() + " " + u.getLastName()).trim() : email;
                     return DashboardStats.TopUser.builder()
                             .email(email)
                             .name(name.isBlank() ? email : name)
@@ -482,29 +500,50 @@ public class DashboardService {
         // Precompute usage grouped by org in one pass each (avoids per-org aggregations).
         Map<String, Long> emailsByOrg = sumByOrg("bulk_email_jobs", "sentCount",     "orgId");
         Map<String, Long> pdfsByOrg   = sumByOrg("org_usage",        "docsGenerated", "organizationId");
-        Map<String, Long>   filesByOrg   = new HashMap<>();
-        Map<String, Double> storageByOrg = new HashMap<>();
-        for (OrgFile f : fileRepo.findAllActiveFileSizes()) {
-            if (f.getOrganizationId() == null) continue;
-            filesByOrg.merge(f.getOrganizationId(), 1L, Long::sum);
-            storageByOrg.merge(f.getOrganizationId(), f.getFileSizeMb(), Double::sum);
-        }
+        // Per-org counts: one $group per collection instead of 4 count queries per org.
+        Map<String, Long> usersByOrg   = countByOrg("users",           "organizationId", Criteria.where("active").is(true));
+        Map<String, Long> pdfTplByOrg  = countByOrg("templates",       "organizationId", Criteria.where("deleted").is(false));
+        Map<String, Long> mailTplByOrg = countByOrg("email_templates", "organizationId", Criteria.where("deleted").is(false));
+        Map<String, Long> esignByOrg   = countByOrg("esign_documents", "orgId",          null);
+        // ACTIVE file count + MB per org in one $group (orgs only look up non-null ids).
+        Map<String, OrgFileUsageRepository.Usage> filesByOrg = fileUsageRepo.activeUsageByOrg();
+        OrgFileUsageRepository.Usage noFiles = new OrgFileUsageRepository.Usage(0L, 0.0);
 
         return allOrgs.stream()
-                .map(org -> DashboardStats.OrgSummary.builder()
+                .map(org -> {
+                    OrgFileUsageRepository.Usage fu = filesByOrg.getOrDefault(org.getId(), noFiles);
+                    return DashboardStats.OrgSummary.builder()
                         .organizationId(org.getId())
                         .organizationName(org.getName())
                         .features(org.getFeatures())
-                        .users(userRepo.countByOrganizationIdAndActiveTrue(org.getId()))
-                        .pdfTemplates(templateRepo.countByOrganizationIdAndDeletedFalse(org.getId()))
-                        .emailTemplates(emailTemplateRepo.countByOrganizationIdAndDeletedFalse(org.getId()))
-                        .esignDocuments(esignRepo.countByOrgId(org.getId()))
+                        .users(usersByOrg.getOrDefault(org.getId(), 0L))
+                        .pdfTemplates(pdfTplByOrg.getOrDefault(org.getId(), 0L))
+                        .emailTemplates(mailTplByOrg.getOrDefault(org.getId(), 0L))
+                        .esignDocuments(esignByOrg.getOrDefault(org.getId(), 0L))
                         .emailsSent(emailsByOrg.getOrDefault(org.getId(), 0L))
                         .pdfsGenerated(pdfsByOrg.getOrDefault(org.getId(), 0L))
-                        .files(filesByOrg.getOrDefault(org.getId(), 0L))
-                        .storageMb(Math.round(storageByOrg.getOrDefault(org.getId(), 0.0) * 10.0) / 10.0)
-                        .build())
+                        .files(fu.count())
+                        .storageMb(Math.round(fu.totalMb() * 10.0) / 10.0)
+                        .build();
+                })
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * Counts documents grouped by org → map of orgId → count (one aggregation).
+     * {@code filter} (nullable) is applied before grouping.
+     */
+    private Map<String, Long> countByOrg(String collection, String orgField, Criteria filter) {
+        var group = Aggregation.group(orgField).count().as("count");
+        Aggregation agg = (filter == null)
+                ? Aggregation.newAggregation(group)
+                : Aggregation.newAggregation(Aggregation.match(filter), group);
+        Map<String, Long> map = new HashMap<>();
+        for (org.bson.Document d : mongoTemplate.aggregate(agg, collection, org.bson.Document.class).getMappedResults()) {
+            Object id = d.get("_id");
+            if (id != null && d.get("count") instanceof Number n) map.put(id.toString(), n.longValue());
+        }
+        return map;
     }
 
     /** Sums a numeric field grouped by org → map of orgId → total (one aggregation). */

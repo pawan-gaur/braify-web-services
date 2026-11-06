@@ -20,6 +20,17 @@ import java.util.List;
     // Creator-scoped list (USER/ADMIN)
     @CompoundIndex(name = "idx_createdBy_status_batch_created",
                    def = "{'createdBy':1,'status':1,'bulkBatchId':1,'createdAt':-1}"),
+    // Default lists have no status filter, so the two indexes above can't serve the createdAt sort.
+    @CompoundIndex(name = "idx_org_batch_created",
+                   def = "{'orgId':1,'bulkBatchId':1,'createdAt':-1}"),
+    @CompoundIndex(name = "idx_createdBy_batch_created",
+                   def = "{'createdBy':1,'bulkBatchId':1,'createdAt':-1}"),
+    // Batch-documents list (bulkBatchId = X, newest first) and the PA all-orgs list (bulkBatchId = null).
+    @CompoundIndex(name = "idx_batch_created",
+                   def = "{'bulkBatchId':1,'createdAt':-1}"),
+    // Expiry / reminder schedulers: status IN [...] (equality) + tokenExpiresAt range.
+    @CompoundIndex(name = "idx_status_tokenExpires",
+                   def = "{'status':1,'tokenExpiresAt':1}"),
     // Signer inbox: "documents where this email is a signatory / legacy client / CC"
     @CompoundIndex(name = "idx_signatories_email", def = "{'signatories.email':1}"),
     @CompoundIndex(name = "idx_client_email",      def = "{'clientEmail':1}"),

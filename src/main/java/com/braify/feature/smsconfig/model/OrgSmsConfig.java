@@ -1,5 +1,6 @@
 package com.braify.feature.smsconfig.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -38,14 +39,17 @@ public class OrgSmsConfig {
     private String accountSid;
 
     /** Twilio Auth Token. Encrypted at rest, masked in responses. */
+    @JsonIgnore   // encrypted secret — never serialized (API responses use the masked *Response DTOs)
     private String authToken;
 
     // ── Vonage ────────────────────────────────────────────────────────────────
 
     /** Vonage API key (identifier). */
+    @JsonIgnore   // encrypted secret — never serialized (API responses use the masked *Response DTOs)
     private String apiKey;
 
     /** Vonage API secret. Encrypted at rest, masked in responses. */
+    @JsonIgnore   // encrypted secret — never serialized (API responses use the masked *Response DTOs)
     private String apiSecret;
 
     // ── Custom HTTP provider (any REST-based SMS gateway) ──────────────────────
@@ -70,6 +74,7 @@ public class OrgSmsConfig {
     private String authHeaderName;
 
     /** Optional auth header value, e.g. {@code "Bearer …"}. Encrypted at rest, masked in responses. */
+    @JsonIgnore   // encrypted secret — never serialized (API responses use the masked *Response DTOs)
     private String authHeaderValue;
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────

@@ -48,6 +48,7 @@ public class OrgCloudConfigService {
     private final EncryptionService      encryptionService;
     private final CloudUploaderFactory   uploaderFactory;
     private final StorageConfigResolver  storageResolver;
+    private final com.braify.feature.storage.service.StorageConfigCache storageConfigCache;
 
     // ── Read ─────────────────────────────────────────────────────────────────
 
@@ -161,6 +162,7 @@ public class OrgCloudConfigService {
 
         org.setCloudConfig(updated);
         orgRepository.save(org);
+        storageConfigCache.evictOrg(org.getId());   // StorageService caches resolved creds ~60 s
 
         auditLogService.log(
                 org.getId(), org.getName(),

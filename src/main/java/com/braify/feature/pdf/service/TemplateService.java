@@ -32,10 +32,9 @@ public class TemplateService {
     public List<Template> findAll(AppUser currentUser) {
         log.debug("findAll templates for user='{}' org='{}'", currentUser.getEmail(), currentUser.getOrganizationId());
         if (currentUser.getRole() == AppUser.Role.PLATFORM_ADMIN) {
-            return templateRepository.findByDeletedFalseOrderByUpdatedAtDesc();
+            return templateRepository.findSummariesByDeletedFalse();
         }
-        return templateRepository.findByOrganizationIdAndDeletedFalseOrderByUpdatedAtDesc(
-                currentUser.getOrganizationId());
+        return templateRepository.findSummariesByOrganizationId(currentUser.getOrganizationId());
     }
 
     /** Throws if the template is deleted, not found, or inaccessible to the user. */

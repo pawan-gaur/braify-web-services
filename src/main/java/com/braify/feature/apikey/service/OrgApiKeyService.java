@@ -9,8 +9,14 @@ import com.braify.feature.organization.repository.OrganizationRepository;
 import com.braify.feature.user.model.AppUser;
 import com.braify.feature.user.repository.AppUserRepository;
 import com.braify.feature.quota.service.QuotaService;
+import com.braify.shared.TtlCache;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.BeanUtils;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -20,6 +26,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
@@ -36,6 +43,12 @@ public class OrgApiKeyService {
     private final OrganizationRepository    orgRepo;
     private final AppUserRepository         appUserRepo;
     private final QuotaService              quotaService;
+    private final MongoTemplate             mongoTemplate;
+
+    /** Resolved key by SHA-256 hash, and org active flag by orgId — short TTL, evicted on writes. */
+    private static final Duration CACHE_TTL = Duration.ofSeconds(60);
+    private final TtlCache<String, OrgApiKey> keyCache       = new TtlCache<>(CACHE_TTL, 10_000);
+    private final TtlCache<String, Boolean>   orgActiveCache = new TtlCache<>(CACHE_TTL, 10_000);
 
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
@@ -240,7 +253,7 @@ public class OrgApiKeyService {
      *   <li>Verifies the key is active.</li>
      *   <li>Checks the optional expiry date.</li>
      *   <li>Verifies the owning organisation is active.</li>
-     *   <li>Updates lastUsedAt and increments totalCalls.</li>
+     *   <li>(lastUsedAt / totalCalls are bumped in {@link #trackUsage}.)</li>
      * </ol>
      *
      * @param plainKey The raw value from the X-API-Key header
@@ -250,33 +263,70 @@ public class OrgApiKeyService {
     public OrgApiKey validateKey(String plainKey) {
         String hash = hashKey(plainKey);
 
-        OrgApiKey key = orgApiKeyRepo.findByKeyHash(hash)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED,
-                        "Invalid API key"));
+        // Cached ≤ CACHE_TTL; evicted on every OrgApiKey / Organization save or delete
+        // (AuthCacheEvictionListener), so revoke / toggle / org deactivation apply immediately.
+        OrgApiKey cached = keyCache.get(hash, h -> orgApiKeyRepo.findByKeyHash(h).orElse(null));
+        if (cached == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid API key");
+        }
 
-        if (!key.isActive()) {
+        if (!cached.isActive()) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "API key is inactive");
         }
 
-        if (key.getExpiresAt() != null && LocalDateTime.now().isAfter(key.getExpiresAt())) {
+        if (cached.getExpiresAt() != null && LocalDateTime.now().isAfter(cached.getExpiresAt())) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "API key expired");
         }
 
-        Organization org = orgRepo.findById(key.getOrgId())
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED,
-                        "Organisation not found for this API key"));
+        Boolean orgActive = orgActiveCache.get(cached.getOrgId(), this::loadOrgActive);
+        if (orgActive == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED,
+                    "Organisation not found for this API key");
+        }
 
-        if (!org.isActive()) {
+        if (!orgActive) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN,
                     "Organisation is not active");
         }
 
-        // Update usage metadata
-        key.setLastUsedAt(LocalDateTime.now());
-        key.setTotalCalls(key.getTotalCalls() + 1);
-        orgApiKeyRepo.save(key);
+        // Usage metadata (totalCalls / lastUsedAt) is bumped atomically in trackUsage(), or in
+        // recordRejectedCall() when the filter then rejects the call (403 feature / 429 limit).
+        return copyOf(cached);
+    }
 
-        return key;
+    /** Org active flag only (projection) — null when the org does not exist. */
+    private Boolean loadOrgActive(String orgId) {
+        Query q = Query.query(Criteria.where("_id").is(orgId));
+        q.fields().include("active");
+        Organization org = mongoTemplate.findOne(q, Organization.class);
+        return org != null ? org.isActive() : null;
+    }
+
+    private static OrgApiKey copyOf(OrgApiKey src) {
+        OrgApiKey copy = new OrgApiKey();
+        BeanUtils.copyProperties(src, copy);
+        copy.setAllowedFeatures(src.getAllowedFeatures() != null
+                ? new java.util.HashSet<>(src.getAllowedFeatures()) : new java.util.HashSet<>());
+        return copy;
+    }
+
+    // ── Cache eviction (called by AuthCacheEvictionListener) ──────────────────
+
+    /** Evicts one key by its hash (all keys when the hash is unknown). */
+    public void evictKey(String keyHash) {
+        if (keyHash == null) keyCache.clear();
+        else keyCache.invalidate(keyHash);
+    }
+
+    /** Evicts an organisation's cached active flag (all orgs when the id is unknown). */
+    public void evictOrg(String orgId) {
+        if (orgId == null) orgActiveCache.clear();
+        else orgActiveCache.invalidate(orgId);
+    }
+
+    public void evictAllCaches() {
+        keyCache.clear();
+        orgActiveCache.clear();
     }
 
     // ── Track usage ───────────────────────────────────────────────────────────
@@ -310,6 +360,30 @@ public class OrgApiKeyService {
             quotaService.incrementApiCall(orgId);
         } catch (Exception e) {
             log.warn("Failed to track API key usage for apiKeyId={}: {}", apiKeyId, e.getMessage());
+        }
+        bumpKeyCounters(apiKeyId);
+    }
+
+    /**
+     * Counts a call against the key (totalCalls / lastUsedAt) when the request is rejected
+     * after the key itself validated (feature not allowed → 403, plan limit → 429). Those
+     * calls were always counted on the key, but don't get a usage-log row or quota increment.
+     */
+    @Async
+    public void recordRejectedCall(String apiKeyId) {
+        bumpKeyCounters(apiKeyId);
+    }
+
+    private void bumpKeyCounters(String apiKeyId) {
+        try {
+            // Atomic counter bump (was a full-document save in validateKey → lost updates under
+            // concurrency). updateFirst fires no mapping event, so the key cache is untouched.
+            mongoTemplate.updateFirst(
+                    Query.query(Criteria.where("_id").is(apiKeyId)),
+                    new Update().inc("totalCalls", 1).set("lastUsedAt", LocalDateTime.now()),
+                    OrgApiKey.class);
+        } catch (Exception e) {
+            log.warn("Failed to bump API key counters for apiKeyId={}: {}", apiKeyId, e.getMessage());
         }
     }
 

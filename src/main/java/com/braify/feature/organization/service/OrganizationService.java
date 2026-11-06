@@ -32,7 +32,7 @@ public class OrganizationService {
 
     public List<Organization> findAll() {
         log.info("Finding all organizations");
-        return orgRepository.findByDeletedFalseOrderByNameAsc();
+        return orgRepository.findSummariesByDeletedFalse();
     }
 
     public List<Organization> search(String q) {

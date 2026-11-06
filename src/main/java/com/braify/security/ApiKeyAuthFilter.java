@@ -85,6 +85,7 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
             // Check the key is permitted to access this feature
             if (feature != null) {
                 if (!key.getAllowedFeatures().contains(feature)) {
+                    orgApiKeyService.recordRejectedCall(key.getId());
                     writeJson(response, HttpServletResponse.SC_FORBIDDEN,
                             Map.of("error", "Feature not allowed for this API key"));
                     return;
@@ -119,6 +120,7 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
                 log.warn("API call limit check failed for org {}: {}", key.getOrgId(), e.getMessage());
             }
             if (limitMsg != null) {
+                orgApiKeyService.recordRejectedCall(key.getId());
                 writeJson(response, 429, Map.of("status", 429, "error", limitMsg, "message", limitMsg));
                 return;
             }

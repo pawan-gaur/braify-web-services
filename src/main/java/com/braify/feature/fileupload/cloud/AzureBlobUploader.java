@@ -12,6 +12,7 @@ import org.springframework.stereotype.Component;
 
 import java.io.ByteArrayInputStream;
 import java.time.OffsetDateTime;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * {@link CloudUploader} implementation backed by Azure Blob Storage.
@@ -123,10 +124,19 @@ public class AzureBlobUploader implements CloudUploader {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    /**
+     * BlobServiceClient is thread-safe and holds the HTTP pipeline, so it is cached per
+     * connection string (keyed by its SHA-256, never the secret) instead of rebuilt per call.
+     * Container/blob clients are cheap views over it and are still created per call.
+     */
+    private final ConcurrentHashMap<String, BlobServiceClient> serviceClients = new ConcurrentHashMap<>();
+
     private BlobClient buildBlobClient(String connectionString, String container, String blobName) {
-        BlobServiceClient serviceClient = new BlobServiceClientBuilder()
-                .connectionString(connectionString)
-                .buildClient();
+        BlobServiceClient serviceClient = serviceClients.computeIfAbsent(
+                CloudClientKeys.of("azure", null, connectionString),
+                k -> new BlobServiceClientBuilder()
+                        .connectionString(connectionString)
+                        .buildClient());
         BlobContainerClient containerClient = serviceClient.getBlobContainerClient(container);
         return containerClient.getBlobClient(blobName);
     }

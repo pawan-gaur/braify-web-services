@@ -1,5 +1,6 @@
 package com.braify.feature.emailconfig.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -47,6 +48,7 @@ public class OrgEmailConfig {
     // ── API-key providers (RESEND / SENDGRID / MAILGUN) ───────────────────────
 
     /** Provider API key. Encrypted at rest, masked in responses. */
+    @JsonIgnore   // encrypted secret — never serialized (API responses use the masked *Response DTOs)
     private String apiKey;
 
     /** Mailgun sending domain, e.g. {@code "mg.acme.com"}. Mailgun only. */
@@ -62,6 +64,7 @@ public class OrgEmailConfig {
     private String  smtpUsername;
 
     /** SMTP password. Encrypted at rest, masked in responses. */
+    @JsonIgnore   // encrypted secret — never serialized (API responses use the masked *Response DTOs)
     private String  smtpPassword;
 
     /** Whether to enable STARTTLS on the SMTP connection. Defaults to true. */

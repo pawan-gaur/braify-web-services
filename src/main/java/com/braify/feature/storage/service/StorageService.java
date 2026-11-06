@@ -50,6 +50,7 @@ public class StorageService {
     private final StorageConfigResolver  storageResolver;
     private final CloudUploaderFactory   uploaderFactory;
     private final EncryptionService      encryptionService;
+    private final StorageConfigCache     configCache;
 
     /** A pre-signed GET URL and how long it stays valid. */
     public record PresignedUrl(String url, int expiresInSeconds) {}
@@ -96,14 +97,16 @@ public class StorageService {
     public StoredFile store(String orgId, StoragePurpose purpose, byte[] bytes,
                             String filename, String contentType, String createdBy, String ownerRef) {
         if (bytes == null || bytes.length == 0) throw new IllegalArgumentException("File must not be empty");
-        OrgCloudConfig cfg = writeConfig(orgId);
+        StorageConfigCache.Resolved resolved = configCache.get(orgId, "write",
+                () -> resolve(writeConfig(orgId)));   // org load + resolver + 2 decrypts, cached 60 s
+        OrgCloudConfig cfg = resolved.cfg();
         String id  = UUID.randomUUID().toString();
         String name = filename != null && !filename.isBlank() ? filename : "file";
         String key = keyBase(cfg, orgId) + "/" + purpose.folder() + "/" + id + "/" + sanitize(name);
         String type = contentType != null && !contentType.isBlank() ? contentType : "application/octet-stream";
 
-        String accessKey = encryptionService.decryptSafe(cfg.getAccessKey());
-        String secretKey = encryptionService.decryptSafe(cfg.getSecretKey());
+        String accessKey = resolved.accessKey();
+        String secretKey = resolved.secretKey();
         uploaderFactory.get(cfg.getCloud()).upload(CloudUploadRequest.builder()
                 .bucket(cfg.getBucket())
                 .storageKey(key)
@@ -224,8 +227,8 @@ public class StorageService {
     }
 
     public byte[] read(StoredFile f) {
-        OrgCloudConfig cfg = readConfig(f);
-        return uploaderFactory.get(cfg.getCloud()).download(downloadRequest(cfg, f, 0));
+        StorageConfigCache.Resolved r = resolvedReadConfig(f);
+        return uploaderFactory.get(r.cfg().getCloud()).download(downloadRequest(r, f, 0));
     }
 
     /** A short-lived pre-signed GET URL — the only way a browser reaches an object. */
@@ -234,11 +237,12 @@ public class StorageService {
     }
 
     public PresignedUrl presignedUrl(StoredFile f) {
-        OrgCloudConfig cfg = readConfig(f);
+        StorageConfigCache.Resolved r = resolvedReadConfig(f);
+        OrgCloudConfig cfg = r.cfg();
         int ttl = cfg.getPresignedUrlExpiration() != null
                 ? cfg.getPresignedUrlExpiration() * 60   // stored in minutes
                 : 3600;
-        String url = uploaderFactory.get(cfg.getCloud()).generatePresignedUrl(downloadRequest(cfg, f, ttl));
+        String url = uploaderFactory.get(cfg.getCloud()).generatePresignedUrl(downloadRequest(r, f, ttl));
         return new PresignedUrl(url, ttl);
     }
 
@@ -257,8 +261,8 @@ public class StorageService {
     /** Removes just the bucket object (also works for an unsaved, pre-registry reference). Never throws. */
     public void deleteObjectQuietly(StoredFile f) {
         try {
-            OrgCloudConfig cfg = readConfig(f);
-            uploaderFactory.get(cfg.getCloud()).delete(downloadRequest(cfg, f, 0));
+            StorageConfigCache.Resolved r = resolvedReadConfig(f);
+            uploaderFactory.get(r.cfg().getCloud()).delete(downloadRequest(r, f, 0));
         } catch (Exception e) {
             log.warn("Stored object delete failed (id={} key={}): {}", f.getId(), f.getStorageKey(), e.getMessage());
         }
@@ -289,9 +293,25 @@ public class StorageService {
         return org;
     }
 
-    private CloudDownloadRequest downloadRequest(OrgCloudConfig cfg, StoredFile f, int ttlSeconds) {
-        String accessKey = encryptionService.decryptSafe(cfg.getAccessKey());
-        String secretKey = encryptionService.decryptSafe(cfg.getSecretKey());
+    /**
+     * {@link #readConfig} + decrypted credentials, cached ~60 s per (org, object bucket) in
+     * {@link StorageConfigCache}; evicted when the org's / platform's cloud config is saved.
+     * Access to the file itself is still checked by the callers on every call.
+     */
+    private StorageConfigCache.Resolved resolvedReadConfig(StoredFile f) {
+        return configCache.get(f.getOrganizationId(), "read|" + f.getBucket(), () -> resolve(readConfig(f)));
+    }
+
+    private StorageConfigCache.Resolved resolve(OrgCloudConfig cfg) {
+        return new StorageConfigCache.Resolved(cfg,
+                encryptionService.decryptSafe(cfg.getAccessKey()),
+                encryptionService.decryptSafe(cfg.getSecretKey()));
+    }
+
+    private CloudDownloadRequest downloadRequest(StorageConfigCache.Resolved r, StoredFile f, int ttlSeconds) {
+        OrgCloudConfig cfg = r.cfg();
+        String accessKey = r.accessKey();
+        String secretKey = r.secretKey();
         return CloudDownloadRequest.builder()
                 .bucket(f.getBucket() != null ? f.getBucket() : cfg.getBucket())
                 .storageKey(f.getStorageKey())

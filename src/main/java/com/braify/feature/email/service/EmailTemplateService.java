@@ -45,10 +45,9 @@ public class EmailTemplateService {
         log.debug("findAll email templates for user='{}' org='{}'", currentUser.getEmail(), currentUser.getOrganizationId());
         // INTERNAL system templates are managed separately and never shown in the org UI.
         if (currentUser.getRole() == AppUser.Role.PLATFORM_ADMIN) {
-            return emailTemplateRepository.findByTypeAndDeletedFalseOrderByUpdatedAtDesc(
-                    com.braify.shared.TemplateType.EXTERNAL);
+            return emailTemplateRepository.findSummariesByType(com.braify.shared.TemplateType.EXTERNAL);
         }
-        return emailTemplateRepository.findByOrganizationIdAndTypeAndDeletedFalseOrderByUpdatedAtDesc(
+        return emailTemplateRepository.findSummariesByOrganizationIdAndType(
                 currentUser.getOrganizationId(), com.braify.shared.TemplateType.EXTERNAL);
     }
 
@@ -60,8 +59,7 @@ public class EmailTemplateService {
         if (currentUser.getRole() != AppUser.Role.PLATFORM_ADMIN) {
             return java.util.List.of();
         }
-        return emailTemplateRepository.findByTypeAndDeletedFalseOrderByUpdatedAtDesc(
-                com.braify.shared.TemplateType.INTERNAL);
+        return emailTemplateRepository.findSummariesByType(com.braify.shared.TemplateType.INTERNAL);
     }
 
     public EmailTemplate findById(String id, AppUser currentUser) {

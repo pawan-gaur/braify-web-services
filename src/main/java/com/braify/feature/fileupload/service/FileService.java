@@ -11,6 +11,7 @@ import com.braify.feature.fileupload.dto.FileUploadResponse;
 import com.braify.feature.fileupload.dto.OrgStorageStat;
 import com.braify.feature.fileupload.model.OrgFile;
 import com.braify.feature.fileupload.repository.OrgFileRepository;
+import com.braify.feature.fileupload.repository.OrgFileUsageRepository;
 import com.braify.feature.organization.model.Organization;
 import com.braify.feature.storage.model.StoragePurpose;
 import com.braify.feature.storage.model.StoredFile;
@@ -21,6 +22,9 @@ import com.braify.feature.quota.model.OrgQuotaConfig;
 import com.braify.feature.quota.service.QuotaService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -75,6 +79,8 @@ public class FileService {
     private final FileIdGenerator        fileIdGenerator;
     private final StorageConfigResolver  storageResolver;
     private final StorageService         storageService;
+    private final OrgFileUsageRepository fileUsageRepository;
+    private final MongoTemplate          mongoTemplate;
 
     // ── Upload ────────────────────────────────────────────────────────────────
 
@@ -306,10 +312,7 @@ public class FileService {
 
         // Dashboard totals
         long   totalActive    = fileRepository.countByOrganizationIdAndStatus(orgId, OrgFile.FileStatus.ACTIVE);
-        double totalStorageMb = fileRepository.findActiveFileSizes(orgId)
-                .stream()
-                .mapToDouble(OrgFile::getFileSizeMb)
-                .sum();
+        double totalStorageMb = fileUsageRepository.sumActiveMb(orgId);   // $group/$sum in Mongo
 
         return FileListResponse.builder()
                 .files(items)
@@ -380,28 +383,25 @@ public class FileService {
         long totalActive = fileRepository.countByStatus(OrgFile.FileStatus.ACTIVE);
 
         // ── Per-org storage stats ─────────────────────────────────────────────
-        List<OrgFile> allActiveSizes = fileRepository.findAllActiveFileSizes();
+        // One $group by organizationId in Mongo: { orgId -> {count, storageMb} }
+        Map<String, OrgFileUsageRepository.Usage> orgAgg = fileUsageRepository.activeUsageByOrg();
 
-        // Group by orgId: { orgId -> {count, storageMb} }
-        Map<String, long[]> orgAgg = new HashMap<>(); // [0]=count, [1]=bits of double storageMb
-        for (OrgFile f : allActiveSizes) {
-            orgAgg.computeIfAbsent(f.getOrganizationId(), k -> new long[]{0, 0});
-            long[] v = orgAgg.get(f.getOrganizationId());
-            v[0]++;
-            v[1] = Double.doubleToLongBits(Double.longBitsToDouble(v[1]) + f.getFileSizeMb());
-        }
-
-        // Resolve org names from repository
+        // Resolve org names — name-only projection (no branding/config payloads)
         Map<String, String> orgNames = new HashMap<>();
-        orgRepository.findAllById(orgAgg.keySet())
-                .forEach(o -> orgNames.put(o.getId(), o.getName()));
+        List<String> orgIds = orgAgg.keySet().stream().filter(java.util.Objects::nonNull).toList();
+        if (!orgIds.isEmpty()) {
+            Query nameQuery = new Query(Criteria.where("_id").in(orgIds));
+            nameQuery.fields().include("name");
+            mongoTemplate.find(nameQuery, Organization.class)
+                    .forEach(o -> orgNames.put(o.getId(), o.getName()));
+        }
 
         List<OrgStorageStat> orgStats = orgAgg.entrySet().stream()
                 .map(e -> OrgStorageStat.builder()
                         .orgId(e.getKey())
                         .orgName(orgNames.getOrDefault(e.getKey(), e.getKey()))
-                        .fileCount(e.getValue()[0])
-                        .storageMb(Math.round(Double.longBitsToDouble(e.getValue()[1]) * 1000.0) / 1000.0)
+                        .fileCount(e.getValue().count())
+                        .storageMb(Math.round(e.getValue().totalMb() * 1000.0) / 1000.0)
                         .build())
                 .sorted(Comparator.comparingDouble(OrgStorageStat::getStorageMb).reversed())
                 .collect(Collectors.toList());
@@ -515,8 +515,7 @@ public class FileService {
         OrgQuotaConfig quotaCfg = quotaService.getConfig(orgId);
         if (quotaCfg.getMaxStorageMb() == -1) return; // unlimited
 
-        double usedMb = fileRepository.findActiveFileSizes(orgId)
-                .stream().mapToDouble(OrgFile::getFileSizeMb).sum();
+        double usedMb = fileUsageRepository.sumActiveMb(orgId);   // $group/$sum in Mongo
 
         if (usedMb + additionalMb > quotaCfg.getMaxStorageMb()) {
             throw new QuotaExceededException(
