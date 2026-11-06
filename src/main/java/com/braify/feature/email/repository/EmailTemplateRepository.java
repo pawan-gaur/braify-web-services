@@ -3,6 +3,7 @@ package com.braify.feature.email.repository;
 import com.braify.feature.email.model.EmailTemplate;
 import com.braify.shared.TemplateType;
 import org.springframework.data.mongodb.repository.MongoRepository;
+import org.springframework.data.mongodb.repository.Query;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -23,6 +24,18 @@ public interface EmailTemplateRepository extends MongoRepository<EmailTemplate, 
     /** Type-scoped listing — the user-facing template UI shows EXTERNAL only. */
     List<EmailTemplate> findByTypeAndDeletedFalseOrderByUpdatedAtDesc(TemplateType type);
     List<EmailTemplate> findByOrganizationIdAndTypeAndDeletedFalseOrderByUpdatedAtDesc(String organizationId, TemplateType type);
+
+    /**
+     * List-page variants of the type-scoped queries above, without the heavy editor fields
+     * (htmlContent / cssContent / gjsData). Callers that need the content use findById.
+     */
+    String LIST_FIELDS = "{'htmlContent':0,'cssContent':0,'gjsData':0}";
+
+    @Query(value = "{'type': ?0, 'deleted': false}", fields = LIST_FIELDS, sort = "{'updatedAt': -1}")
+    List<EmailTemplate> findSummariesByType(TemplateType type);
+
+    @Query(value = "{'organizationId': ?0, 'type': ?1, 'deleted': false}", fields = LIST_FIELDS, sort = "{'updatedAt': -1}")
+    List<EmailTemplate> findSummariesByOrganizationIdAndType(String organizationId, TemplateType type);
 
     /** Org-scoped queries */
     List<EmailTemplate> findByOrganizationIdAndDeletedFalseOrderByUpdatedAtDesc(String organizationId);

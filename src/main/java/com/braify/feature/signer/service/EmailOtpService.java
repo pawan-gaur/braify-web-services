@@ -10,6 +10,7 @@ import com.braify.feature.internaltemplate.InternalTemplateCodes;
 import com.braify.feature.internaltemplate.InternalTemplateProvider;
 import com.braify.feature.internaltemplate.InternalTemplateSeed;
 import com.braify.feature.signer.model.EmailOtp;
+import com.braify.feature.signer.model.OtpThrottle;
 import com.braify.feature.signer.repository.EmailOtpRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -66,6 +67,13 @@ public class EmailOtpService implements InternalTemplateProvider {
     @Value("${app.otp.max-per-hour:5}")
     private int maxPerHour;
 
+    /** Wrong guesses allowed per email per rolling 24h (across all codes) before a lockout. */
+    @Value("${app.otp.max-failures-per-day:10}")
+    private int maxFailuresPerDay;
+
+    @Value("${app.otp.lockout-hours:24}")
+    private int lockoutHours;
+
     /** Product name shown in the sign-in email (brand bar, copy, sender name). */
     @Value("${app.mail.product-name:Braify E-Sign}")
     private String productName;
@@ -94,12 +102,16 @@ public class EmailOtpService implements InternalTemplateProvider {
     public void issue(String email, String recipientName, String userAgent, String ip) {
         LocalDateTime now = LocalDateTime.now();
 
-        var last = otpRepository.findFirstByEmailOrderByCreatedAtDesc(email);
-        if (last.isPresent() && last.get().getCreatedAt() != null
-                && last.get().getCreatedAt().plusSeconds(resendSeconds).isAfter(now)) {
+        if (isLocked(email, now)) {
+            log.warn("OTP request ignored — code sign-in locked for '{}'", email);
+            return;
+        }
+        // Atomic per-email claim of the resend window: parallel requests can't all pass.
+        if (!claimSendSlot(email, now)) {
             log.info("OTP request throttled (resend gap) for '{}'", email);
             return;
         }
+        // Sends are serialised by the claim above, so this count can't be raced.
         if (otpRepository.countByEmailAndCreatedAtAfter(email, now.minusHours(1)) >= maxPerHour) {
             log.warn("OTP request throttled (hourly cap) for '{}'", email);
             return;
@@ -138,6 +150,8 @@ public class EmailOtpService implements InternalTemplateProvider {
         String cleaned = code == null ? "" : code.replaceAll("\\s", "");
         LocalDateTime now = LocalDateTime.now();
 
+        if (isLocked(email, now)) throw new IllegalArgumentException(LOCKED);
+
         // Claim one attempt on the newest live code (atomic: attempts < max, unexpired, unused).
         EmailOtp otp = mongoTemplate.findAndModify(
                 new Query(Criteria.where("email").is(email)
@@ -152,6 +166,7 @@ public class EmailOtpService implements InternalTemplateProvider {
 
         if (!passwordEncoder.matches(cleaned, otp.getCodeHash())) {
             log.warn("OTP verification failed for '{}' (attempt {}/{})", email, otp.getAttempts(), maxAttempts);
+            if (recordFailedGuess(email, now)) throw new IllegalArgumentException(LOCKED);
             throw new IllegalArgumentException(INVALID);
         }
 
@@ -161,6 +176,70 @@ public class EmailOtpService implements InternalTemplateProvider {
                 new Update().set("consumed", true),
                 EmailOtp.class);
         if (consumed == null) throw new IllegalArgumentException(INVALID);
+
+        // Success clears the wrong-guess counter.
+        mongoTemplate.updateFirst(new Query(Criteria.where("_id").is(email)),
+                new Update().set("failedGuesses", 0).unset("failWindowStart"), OtpThrottle.class);
+    }
+
+    /* ── Per-email throttling (email_otp_throttles) ───────────────────────── */
+
+    private static final String LOCKED =
+            "Too many incorrect codes. For your security, sign-in by code is paused — try again later or use your password.";
+
+    private boolean isLocked(String email, LocalDateTime now) {
+        OtpThrottle t = mongoTemplate.findById(email, OtpThrottle.class);
+        return t != null && t.getLockedUntil() != null && t.getLockedUntil().isAfter(now);
+    }
+
+    /**
+     * Atomically records a send for {@code email} if the resend gap has passed. Upsert with a
+     * conditional query: when the record exists but the gap hasn't passed, the upsert's insert
+     * collides on {@code _id} — that duplicate-key error means "throttled".
+     */
+    private boolean claimSendSlot(String email, LocalDateTime now) {
+        Query q = new Query(new Criteria().andOperator(
+                Criteria.where("_id").is(email),
+                new Criteria().orOperator(
+                        Criteria.where("lastSentAt").lt(now.minusSeconds(resendSeconds)),
+                        Criteria.where("lastSentAt").exists(false))));
+        try {
+            mongoTemplate.findAndModify(q, new Update().set("lastSentAt", now),
+                    FindAndModifyOptions.options().upsert(true).returnNew(true), OtpThrottle.class);
+            return true;
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+            return false;
+        }
+    }
+
+    /**
+     * Counts a wrong guess against the email (across all its codes) in a rolling 24h window;
+     * at {@code max-failures-per-day} code sign-in is locked for {@code lockout-hours}.
+     *
+     * @return true when this guess triggered the lock
+     */
+    private boolean recordFailedGuess(String email, LocalDateTime now) {
+        // Start a fresh window if the current one is older than 24h (or doesn't exist).
+        mongoTemplate.updateFirst(new Query(new Criteria().andOperator(
+                        Criteria.where("_id").is(email),
+                        new Criteria().orOperator(
+                                Criteria.where("failWindowStart").lt(now.minusHours(24)),
+                                Criteria.where("failWindowStart").exists(false)))),
+                new Update().set("failedGuesses", 0).set("failWindowStart", now), OtpThrottle.class);
+        OtpThrottle t = mongoTemplate.findAndModify(new Query(Criteria.where("_id").is(email)),
+                new Update().inc("failedGuesses", 1),
+                FindAndModifyOptions.options().upsert(true).returnNew(true), OtpThrottle.class);
+        if (t != null && t.getFailedGuesses() >= maxFailuresPerDay) {
+            mongoTemplate.updateFirst(new Query(Criteria.where("_id").is(email)),
+                    new Update().set("lockedUntil", now.plusHours(lockoutHours)).set("failedGuesses", 0)
+                            .unset("failWindowStart"), OtpThrottle.class);
+            // Kill any live code too.
+            mongoTemplate.updateMulti(new Query(Criteria.where("email").is(email).and("consumed").is(false)),
+                    new Update().set("consumed", true), EmailOtp.class);
+            log.warn("Code sign-in locked for '{}' after {} wrong guesses", email, maxFailuresPerDay);
+            return true;
+        }
+        return false;
     }
 
     private String generateCode() {
@@ -176,7 +255,9 @@ public class EmailOtpService implements InternalTemplateProvider {
         vars.put("brandMark",        brandMark());
         vars.put("accent",           accent);
         vars.put("footerContact",    footerContact());
-        vars.put("recipientName",    recipientName != null && !recipientName.isBlank() ? recipientName.trim() : "there");
+        // Names can be set by any sending org — escape so they can't inject HTML/links.
+        vars.put("recipientName",    org.springframework.web.util.HtmlUtils.htmlEscape(
+                recipientName != null && !recipientName.isBlank() ? recipientName.trim() : "there"));
         vars.put("code",             code);
         vars.put("codeBoxes",        codeBoxes(code));
         vars.put("ttlMinutes",       String.valueOf(ttlMinutes));

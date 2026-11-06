@@ -9,14 +9,18 @@ import java.util.Map;
 public class OrgBrandingRequest {
 
     /**
-     * Base64 data-URL of the org logo for a NEW upload (e.g. {@code data:image/png;base64,...}).
+     * Id of a NEW logo uploaded via {@code POST /api/storage/upload?purpose=BRANDING_LOGO}.
      * Sent only when the logo changes. Null/blank + null {@link #logoUrl} = remove the logo.
      */
+    private String logoFileId;
+
+    /** Deprecated: a data URL from older clients. Stored in cloud storage like {@link #logoFileId}. */
+    @Deprecated
     private String logoBase64;
 
     /**
      * Existing logo URL echoed back by the client when the logo is unchanged, so a branding
-     * save that doesn't touch the logo keeps it. Ignored when {@link #logoBase64} is a new data URL.
+     * save that doesn't touch the logo keeps it. Ignored when {@link #logoFileId} is set.
      */
     private String logoUrl;
 

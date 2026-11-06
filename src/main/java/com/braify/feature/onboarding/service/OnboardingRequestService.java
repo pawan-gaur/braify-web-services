@@ -18,7 +18,6 @@ import com.braify.feature.internaltemplate.InternalTemplateSeed;
 import com.braify.shared.Feature;
 import com.braify.feature.user.repository.AppUserRepository;
 import com.braify.feature.onboarding.repository.OnboardingRequestRepository;
-import com.braify.feature.organization.repository.OrganizationRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -36,7 +35,7 @@ import java.util.UUID;
 public class OnboardingRequestService implements InternalTemplateProvider {
 
     private final OnboardingRequestRepository requestRepository;
-    private final OrganizationRepository      orgRepository;
+    private final com.braify.feature.organization.service.OrgProvisioningService orgProvisioningService;
     private final AppUserRepository           userRepository;
     private final EmailInviteService          emailInviteService;
     private final EmailDispatcher             emailDispatcher;
@@ -156,28 +155,9 @@ public class OnboardingRequestService implements InternalTemplateProvider {
 
         req.setApprovedFeatures(features);
 
-        // 2. Create Organisation
-        // Generate a short code from org name: uppercase, alphanumeric, first 8 chars
-        String code = req.getOrganizationName()
-                .replaceAll("[^A-Za-z0-9]", "")
-                .toUpperCase();
-        if (code.length() > 8) code = code.substring(0, 8);
-        // Ensure uniqueness by appending a short suffix if needed
-        String baseCode = code;
-        int suffix = 1;
-        while (orgRepository.existsByCode(code)) {
-            code = baseCode + suffix++;
-        }
-
-        Organization org = Organization.builder()
-                .name(req.getOrganizationName())
-                .code(code)
-                .description(req.getDescription())
-                .features(features)
-                .active(true)
-                .deleted(false)
-                .build();
-        org = orgRepository.save(org);
+        // 2. Create Organisation (shared with instant self-serve sign-up)
+        Organization org = orgProvisioningService.createOrganization(
+                req.getOrganizationName(), req.getDescription(), features);
         req.setCreatedOrganizationId(org.getId());
 
         // 3. Create the first user (ORG_ADMIN role, mustChangePassword = true)
@@ -271,7 +251,9 @@ public class OnboardingRequestService implements InternalTemplateProvider {
                 .build();
         try {
             // EmailDispatcher substitutes {{tokens}} in subject + html using vars.
-            emailLogService.recorded(spec, () -> emailDispatcher.sendHtmlEmail(to, subject, html, vars));
+            // Onboarding is pre-org (applicant has no organisation yet) → orgId null
+            // resolves to the platform default provider.
+            emailLogService.recorded(spec, () -> emailDispatcher.sendHtmlEmail(null, to, subject, html, vars));
             log.info("Email sent → {}", to);
         } catch (Exception e) {
             log.warn("Could not send email to {}: {}", to, e.getMessage());

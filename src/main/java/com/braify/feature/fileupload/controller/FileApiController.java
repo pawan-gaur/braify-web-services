@@ -5,7 +5,6 @@ import com.braify.feature.fileupload.dto.FileListResponse;
 import com.braify.feature.fileupload.dto.FileMetadataRequest;
 import com.braify.feature.fileupload.dto.FileUploadResponse;
 import com.braify.feature.fileupload.service.FileService;
-import com.braify.feature.quota.service.QuotaService;
 import com.braify.security.ApiKeyPrincipal;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -46,7 +45,6 @@ import java.util.List;
 public class FileApiController {
 
     private final FileService  fileService;
-    private final QuotaService quotaService;
 
     // ── Upload ────────────────────────────────────────────────────────────────
 
@@ -63,7 +61,6 @@ public class FileApiController {
             @RequestParam(required = false) List<String> tags) {
 
         ApiKeyPrincipal principal = requirePrincipal(orgId);
-        quotaService.incrementApiCall(orgId);
 
         FileMetadataRequest meta = new FileMetadataRequest();
         meta.setFolder(folder);
@@ -107,7 +104,6 @@ public class FileApiController {
             @PathVariable String fileId) {
 
         ApiKeyPrincipal principal = requirePrincipal(orgId);
-        quotaService.incrementApiCall(orgId);
 
         try {
             String ident = "api-key:" + principal.keyPrefix();

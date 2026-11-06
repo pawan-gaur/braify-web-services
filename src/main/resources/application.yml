@@ -28,7 +28,7 @@ spring:
   servlet:
     multipart:
       max-file-size: 10MB
-      max-request-size: 10MB
+      max-request-size: 11MB   # file cap stays 10MB; headroom for the multipart envelope
 
   # Route error handling lets GlobalExceptionHandler catch 404s from Spring MVC
   mvc:
@@ -79,12 +79,49 @@ app:
     max-attempts: ${OTP_MAX_ATTEMPTS:5}
     resend-seconds: ${OTP_RESEND_SECONDS:60}
     max-per-hour: ${OTP_MAX_PER_HOUR:5}
+    max-failures-per-day: ${OTP_MAX_FAILURES_PER_DAY:10}
+    lockout-hours: ${OTP_LOCKOUT_HOURS:24}
+  # First Platform Admin, created only on an empty database (nothing happens if it exists).
+  seed:
+    admin-email: ${SEED_ADMIN_EMAIL:admin@braify.com}
+    admin-password: ${SEED_ADMIN_PASSWORD:}
+  # Self-serve billing (Stripe). Checkout/portal appear only when STRIPE_SECRET_KEY and the Pro price
+  # are set; otherwise plans stay manual (Platform Admin) exactly as before. Trials apply to new
+  # self-serve sign-ups only. Webhook endpoint: POST /api/billing/webhook (events:
+  # checkout.session.completed, customer.subscription.created/updated/deleted).
+  billing:
+    enabled: ${BILLING_ENABLED:true}
+    trial-days: ${BILLING_TRIAL_DAYS:14}
+    pro-monthly-price-id: ${STRIPE_PRICE_PRO_MONTHLY:}
+    pro-yearly-price-id: ${STRIPE_PRICE_PRO_YEARLY:}
+    pro-monthly-display: "${BILLING_PRO_MONTHLY_DISPLAY:$29}"
+    pro-yearly-display: "${BILLING_PRO_YEARLY_DISPLAY:$290}"
+  # Instant self-serve sign-up (/get-started). Set SIGNUP_ENABLED=false to require the
+  # approval-based onboarding request flow only.
+  signup:
+    enabled: ${SIGNUP_ENABLED:true}
+  # Managed storage: the platform's own S3 bucket, used by orgs that have NOT configured their
+  # own bucket (Settings → Cloud Storage). Leave PLATFORM_STORAGE_BUCKET empty to disable — orgs
+  # then must bring their own bucket, as before. Keys are optional: blank uses the AWS default
+  # credential chain (e.g. the EC2 instance role). Objects go under <path>/<orgId>/...
+  platform-storage:
+    bucket: ${PLATFORM_STORAGE_BUCKET:}
+    region: ${PLATFORM_STORAGE_REGION:us-east-1}
+    access-key: ${PLATFORM_STORAGE_ACCESS_KEY:}
+    secret-key: ${PLATFORM_STORAGE_SECRET_KEY:}
+    path: ${PLATFORM_STORAGE_PATH:tenants}
+    max-upload-mb: ${PLATFORM_STORAGE_MAX_UPLOAD_MB:10}
+    url-expiry-minutes: ${PLATFORM_STORAGE_URL_EXPIRY_MINUTES:15}
   # Platform-level system emails (sign-in code): product name, accent and optional footer contact.
   mail:
     product-name: ${MAIL_PRODUCT_NAME:Braify E-Sign}
     accent: "${MAIL_ACCENT:#4F46E5}"
     support-email: ${MAIL_SUPPORT_EMAIL:support@braify.com}
     postal-address: ${MAIL_POSTAL_ADDRESS:}
+
+stripe:
+  secret-key: ${STRIPE_SECRET_KEY:}
+  webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
 
 resend:
   api-key: "${RESEND_KEY}"

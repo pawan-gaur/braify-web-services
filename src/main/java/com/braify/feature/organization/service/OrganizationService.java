@@ -32,7 +32,7 @@ public class OrganizationService {
 
     public List<Organization> findAll() {
         log.info("Finding all organizations");
-        return orgRepository.findByDeletedFalseOrderByNameAsc();
+        return orgRepository.findSummariesByDeletedFalse();
     }
 
     public List<Organization> search(String q) {
@@ -82,6 +82,9 @@ public class OrganizationService {
                 .active(true)
                 .deleted(false)
                 .createdBy(createdById)
+                .billing(com.braify.feature.billing.model.OrgBilling.builder()
+                        .managedBy(com.braify.feature.billing.model.OrgBilling.ManagedBy.MANUAL).status("NONE")
+                        .bulkGrandfathered(false).updatedAt(java.time.LocalDateTime.now()).build())   // new org: not grandfathered
                 .build();
         Organization saved = orgRepository.save(org);
         log.info("Created organization '{}' with features {}", saved.getName(), saved.getFeatures());
@@ -241,6 +244,16 @@ public class OrganizationService {
         }
 
         org.setSubscriptionPlan(newPlan);
+        // A Platform Admin's choice wins over automation: stop trial expiry / Stripe plan changes.
+        var billing = org.getBilling();
+        if (billing == null) {
+            billing = com.braify.feature.billing.model.OrgBilling.builder().status("NONE").bulkGrandfathered(true).build();   // predates billing
+            org.setBilling(billing);
+        }
+        billing.setManagedBy(com.braify.feature.billing.model.OrgBilling.ManagedBy.MANUAL);
+        billing.setTrialEndsAt(null);
+        billing.setTrialReminderSent(false);
+        billing.setUpdatedAt(LocalDateTime.now());
         org.setPlanAssignedAt(LocalDateTime.now());
         org.setPlanAssignedBy(performedBy);
         org.setPlanExpiresAt(req.getPlanExpiresAt());

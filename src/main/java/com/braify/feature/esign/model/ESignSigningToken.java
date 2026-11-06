@@ -2,6 +2,7 @@ package com.braify.feature.esign.model;
 
 import lombok.*;
 import org.springframework.data.annotation.*;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
 import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
 
@@ -9,6 +10,8 @@ import java.time.LocalDateTime;
 
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
 @Document(collection = "esign_signing_tokens")
+// Stale-token sweep (ESignTokenService#expireStaleTokens): used=false, revokedAt=null (equality), expiresAt < now (range).
+@CompoundIndex(name = "idx_used_revoked_expires", def = "{'used':1,'revokedAt':1,'expiresAt':1}")
 public class ESignSigningToken {
 
     @Id private String id;

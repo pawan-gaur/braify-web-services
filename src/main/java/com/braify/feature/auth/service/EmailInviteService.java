@@ -195,12 +195,15 @@ public class EmailInviteService implements InternalTemplateProvider {
         logSpec.setSubject(renderForLog(subject, vars));
         try {
             // EmailDispatcher substitutes {{tokens}} in subject + html using vars.
+            // Always the PLATFORM provider (orgId = null): these links set a password and prove
+            // mailbox ownership, so they must never pass through an org-admin-controlled provider
+            // (an org SMTP server could capture them). The log keeps the org for reporting.
             emailLogService.recorded(logSpec,
-                    () -> emailDispatcher.sendHtmlEmail(to, subject, htmlBody, vars));
-            log.info("Email sent via Resend → {}", to);
+                    () -> emailDispatcher.sendHtmlEmail(null, to, subject, htmlBody, vars));
+            log.info("Email sent → {}", to);
         } catch (Exception e) {
             // Don't let email failure break the user-creation / reset flow
-            log.warn("Could not send email to {} via Resend: {}", to, e.getMessage());
+            log.warn("Could not send email to {}: {}", to, e.getMessage());
         }
     }
 

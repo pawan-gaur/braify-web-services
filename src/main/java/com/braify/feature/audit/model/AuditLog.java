@@ -40,7 +40,9 @@ import java.util.Map;
 @Document(collection = "audit_logs")
 @CompoundIndexes({
     // Dominant read: org-scoped feed sorted newest-first (dashboard + audit page)
-    @CompoundIndex(name = "idx_org_timestamp", def = "{'organizationId':1,'timestamp':-1}")
+    @CompoundIndex(name = "idx_org_timestamp", def = "{'organizationId':1,'timestamp':-1}"),
+    // USER-role audit page + stats filter on the caller's id, sorted newest-first
+    @CompoundIndex(name = "idx_user_timestamp", def = "{'performedByUserId':1,'timestamp':-1}")
 })
 public class AuditLog {
 

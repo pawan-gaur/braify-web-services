@@ -3,6 +3,8 @@ package com.braify.feature.organization.model;
 import com.braify.feature.branding.model.OrgBranding;
 import com.braify.feature.cloudconfig.model.OrgCloudConfig;
 import com.braify.feature.esign.model.EsignReminderPolicy;
+import com.braify.feature.emailconfig.model.OrgEmailConfig;
+import com.braify.feature.smsconfig.model.OrgSmsConfig;
 import com.braify.shared.SubscriptionPlan;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -27,7 +29,9 @@ import java.util.List;
 @AllArgsConstructor
 @Document(collection = "organizations")
 @CompoundIndexes({
-    @CompoundIndex(name = "idx_deleted_name", def = "{'deleted': 1, 'name': 1}")
+    @CompoundIndex(name = "idx_deleted_name", def = "{'deleted': 1, 'name': 1}"),
+    // Billing webhooks resolve the org by payment-provider customer id.
+    @CompoundIndex(name = "idx_billing_customer", def = "{'billing.customerId': 1}", sparse = true)
 })
 public class Organization {
 
@@ -82,6 +86,12 @@ public class Organization {
      */
     private LocalDateTime planExpiresAt;
 
+    /**
+     * Self-serve billing state (trial / paid subscription). {@code null} for organisations whose
+     * plan is managed manually by a Platform Admin — those are never changed automatically.
+     */
+    private com.braify.feature.billing.model.OrgBilling billing;
+
     // ── Branding ──────────────────────────────────────────────────────────────
 
     /**
@@ -111,6 +121,25 @@ public class Organization {
     public EsignReminderPolicy effectiveReminderPolicy() {
         return esignReminderPolicy != null ? esignReminderPolicy : EsignReminderPolicy.defaults();
     }
+    // ── Email provider ────────────────────────────────────────────────────────
+
+    /**
+     * Outbound email provider configuration (Resend / SendGrid / Mailgun / SMTP).
+     * Stored as an embedded BSON object; null until the org configures its own
+     * provider, in which case sends fall back to the platform-admin default.
+     * Sensitive credential fields are masked in all API responses.
+     */
+    private OrgEmailConfig emailConfig;
+
+    // ── SMS provider ──────────────────────────────────────────────────────────
+
+    /**
+     * Outbound SMS provider configuration (Twilio / Vonage).
+     * Stored as an embedded BSON object; null until the org configures its own
+     * provider, in which case sends fall back to the platform-admin default.
+     * Sensitive credential fields are masked in all API responses.
+     */
+    private OrgSmsConfig smsConfig;
 
     // ── Status ────────────────────────────────────────────────────────────────
 

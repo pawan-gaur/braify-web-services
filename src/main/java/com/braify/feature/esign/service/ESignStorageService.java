@@ -1,167 +1,120 @@
 package com.braify.feature.esign.service;
 
-import com.braify.config.EncryptionService;
-import com.braify.feature.cloudconfig.model.OrgCloudConfig;
-import com.braify.feature.fileupload.cloud.CloudDownloadRequest;
-import com.braify.feature.fileupload.cloud.CloudUploadRequest;
-import com.braify.feature.fileupload.cloud.CloudUploader;
-import com.braify.feature.fileupload.cloud.CloudUploaderFactory;
 import com.braify.feature.esign.model.ESignDocument;
-import com.braify.feature.organization.model.Organization;
-import com.braify.feature.organization.repository.OrganizationRepository;
+import com.braify.feature.esign.model.ESignTemplate;
+import com.braify.feature.storage.model.StoragePurpose;
+import com.braify.feature.storage.model.StoredFile;
+import com.braify.feature.storage.service.StorageService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 /**
- * Stores e-sign PDFs (source + signed) in the organisation's configured cloud bucket —
- * the same mechanism the File Storage feature uses — instead of embedding the bytes in
- * MongoDB. The {@code esign_documents} record keeps only a storage reference
- * (bucket + key + provider); content is fetched via {@link #download} (server-side, e.g.
- * for signature stamping / email attachment) or {@link #presignedUrl} (for client viewing).
+ * E-sign view of {@link StorageService}: stores source / signed / template PDFs as stored files
+ * and resolves a document's PDFs by file id. Documents written before the stored-file registry
+ * (raw {@code pdfBucket}/{@code *PdfKey}, or embedded bytes) are still readable until
+ * {@code LegacyFileMigration} has moved them.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class ESignStorageService {
 
-    private final OrganizationRepository orgRepository;
-    private final CloudUploaderFactory   uploaderFactory;
-    private final EncryptionService      encryptionService;
+    private final StorageService storage;
 
-    /** Storage reference persisted on the e-sign document. */
-    public record StoredPdf(String bucket, String storageKey, String provider) {}
-
+    /** True when the org can store e-sign PDFs (own bucket or managed storage). */
     public boolean isCloudConfigured(String orgId) {
-        try { requireConfig(orgId); return true; } catch (RuntimeException e) { return false; }
+        return orgId != null && storage.isAvailable(orgId);   // e-sign documents always belong to an org
     }
 
-    // ── Document-aware resolvers (cloud key preferred, legacy embedded bytes fallback) ──
+    // ── Write ──────────────────────────────────────────────────────────────────
 
-    /** Source PDF bytes for a document — from cloud if stored there, else legacy embedded bytes. */
+    /** Stores a source PDF built server-side (decoded upload, rendered template) for a document. */
+    public String storeSourcePdf(String orgId, String docId, byte[] bytes, String createdBy) {
+        return storage.store(orgId, StoragePurpose.ESIGN_SOURCE, bytes, "source.pdf",
+                "application/pdf", createdBy, owner(docId)).getId();
+    }
+
+    /** Makes an uploaded file ({@code POST /api/storage/upload}) a document's source PDF. */
+    public String adoptSourcePdf(StoredFile upload, byte[] bytes, String docId) {
+        return storage.claim(upload, owner(docId), bytes).getId();
+    }
+
+    public String storeSignedPdf(ESignDocument doc, byte[] bytes) {
+        return storage.store(doc.getOrgId(), StoragePurpose.ESIGN_SIGNED, bytes, "signed.pdf",
+                "application/pdf", "system", owner(doc.getId())).getId();
+    }
+
+    public String storeTemplatePdf(String orgId, String templateId, byte[] bytes, String createdBy) {
+        return storage.store(orgId, StoragePurpose.ESIGN_TEMPLATE, bytes, "template.pdf",
+                "application/pdf", createdBy, "esign-template:" + templateId).getId();
+    }
+
+    /** Stores a signer's post-signing attachment for a document; returns the file id. */
+    public String storeAttachment(ESignDocument doc, byte[] bytes, String fileName, String contentType, String uploadedBy) {
+        return storage.store(doc.getOrgId(), StoragePurpose.ESIGN_ATTACHMENT, bytes, fileName,
+                contentType, uploadedBy, owner(doc.getId())).getId();
+    }
+
+    // ── Read ───────────────────────────────────────────────────────────────────
+
+    /** Bytes of a client attachment (stored file, or LEGACY embedded bytes). */
+    public byte[] attachmentBytes(ESignDocument.ClientAttachment att) {
+        return att.getFileId() != null ? storage.read(att.getFileId()) : att.getData();
+    }
+
+    /** Source PDF bytes (server-side: stamping, attaching to emails). */
     public byte[] resolveSourceBytes(ESignDocument doc) {
-        if (doc.getSourcePdfKey() != null)
-            return download(doc.getOrgId(), doc.getPdfBucket(), doc.getSourcePdfKey());
+        if (doc.getSourceFileId() != null) return storage.read(doc.getSourceFileId());
+        if (doc.getSourcePdfKey() != null) return storage.read(legacy(doc.getOrgId(), doc.getPdfBucket(), doc.getSourcePdfKey()));
         return doc.getSourcePdfData();
     }
 
-    /** Signed PDF bytes for a document — from cloud if stored there, else legacy embedded bytes. */
+    /** Signed PDF bytes, or null while the document isn't completed. */
     public byte[] resolveSignedBytes(ESignDocument doc) {
-        if (doc.getSignedPdfKey() != null)
-            return download(doc.getOrgId(), doc.getPdfBucket(), doc.getSignedPdfKey());
+        if (doc.getSignedFileId() != null) return storage.read(doc.getSignedFileId());
+        if (doc.getSignedPdfKey() != null) return storage.read(legacy(doc.getOrgId(), doc.getPdfBucket(), doc.getSignedPdfKey()));
         return doc.getSignedPdfData();
     }
 
-    /** Pre-signed URL for the source PDF, or {@code null} for legacy (embedded) documents. */
+    /** Pre-signed URL for the source PDF; null for embedded-bytes legacy documents. */
     public String sourcePresignedUrl(ESignDocument doc) {
-        return doc.getSourcePdfKey() != null
-                ? presignedUrl(doc.getOrgId(), doc.getPdfBucket(), doc.getSourcePdfKey()) : null;
+        if (doc.getSourceFileId() != null) return storage.presignedUrl(doc.getSourceFileId()).url();
+        if (doc.getSourcePdfKey() != null) return storage.presignedUrl(legacy(doc.getOrgId(), doc.getPdfBucket(), doc.getSourcePdfKey())).url();
+        return null;
     }
 
-    /** Pre-signed URL for the signed PDF, or {@code null} for legacy (embedded) documents. */
+    /** Pre-signed URL for the signed PDF; null when there is none (or it's embedded legacy bytes). */
     public String signedPresignedUrl(ESignDocument doc) {
-        return doc.getSignedPdfKey() != null
-                ? presignedUrl(doc.getOrgId(), doc.getPdfBucket(), doc.getSignedPdfKey()) : null;
+        if (doc.getSignedFileId() != null) return storage.presignedUrl(doc.getSignedFileId()).url();
+        if (doc.getSignedPdfKey() != null) return storage.presignedUrl(legacy(doc.getOrgId(), doc.getPdfBucket(), doc.getSignedPdfKey())).url();
+        return null;
     }
 
-    /** Uploads the source PDF and returns its storage reference. */
-    public StoredPdf uploadSourcePdf(String orgId, String docId, byte[] bytes) {
-        return upload(orgId, key(orgId, docId, "source.pdf"), bytes);
+    public byte[] templatePdf(ESignTemplate tpl) {
+        if (tpl.getPdfFileId() != null) return storage.read(tpl.getPdfFileId());
+        return storage.read(legacy(tpl.getOrgId(), tpl.getPdfBucket(), tpl.getPdfKey()));
     }
 
-    /** Uploads the signed PDF and returns its storage reference. */
-    public StoredPdf uploadSignedPdf(String orgId, String docId, byte[] bytes) {
-        return upload(orgId, key(orgId, docId, "signed.pdf"), bytes);
-    }
-
-    /** Downloads object bytes (server-side) — for signature stamping or email attachment. */
-    public byte[] download(String orgId, String bucket, String storageKey) {
-        OrgCloudConfig cfg = requireConfig(orgId);
-        CloudUploader uploader = uploaderFactory.get(cfg.getCloud());
-        return uploader.download(downloadRequest(cfg, bucket, storageKey, 0));
-    }
-
-    /** Generates a time-limited pre-signed URL for client-side viewing/download. */
-    public String presignedUrl(String orgId, String bucket, String storageKey) {
-        OrgCloudConfig cfg = requireConfig(orgId);
-        int ttl = cfg.getPresignedUrlExpiration() != null
-                ? cfg.getPresignedUrlExpiration() * 60   // stored in minutes
-                : 3600;
-        CloudUploader uploader = uploaderFactory.get(cfg.getCloud());
-        return uploader.generatePresignedUrl(downloadRequest(cfg, bucket, storageKey, ttl));
-    }
-
-    /** Best-effort delete (e.g. when a document is hard-deleted). Never throws. */
-    public void deleteQuietly(String orgId, String bucket, String storageKey) {
-        if (bucket == null || storageKey == null) return;
+    /** Best-effort delete of a template's PDF. Never throws. */
+    public void deleteTemplatePdf(ESignTemplate tpl) {
+        if (tpl.getPdfFileId() != null) { storage.deleteQuietly(tpl.getPdfFileId()); return; }
+        if (tpl.getPdfKey() == null) return;
         try {
-            OrgCloudConfig cfg = requireConfig(orgId);
-            uploaderFactory.get(cfg.getCloud()).delete(downloadRequest(cfg, bucket, storageKey, 0));
+            storage.deleteObjectQuietly(legacy(tpl.getOrgId(), tpl.getPdfBucket(), tpl.getPdfKey()));
         } catch (Exception e) {
-            log.warn("E-sign PDF delete failed (key={}): {}", storageKey, e.getMessage());
+            log.warn("E-sign template PDF delete failed (key={}): {}", tpl.getPdfKey(), e.getMessage());
         }
     }
 
     // ── Internals ──────────────────────────────────────────────────────────────
 
-    private StoredPdf upload(String orgId, String storageKey, byte[] bytes) {
-        OrgCloudConfig cfg = requireConfig(orgId);
-        String accessKey = encryptionService.decryptSafe(cfg.getAccessKey());
-        String secretKey = encryptionService.decryptSafe(cfg.getSecretKey());
-
-        CloudUploadRequest req = CloudUploadRequest.builder()
-                .bucket(cfg.getBucket())
-                .storageKey(storageKey)
-                .data(bytes)
-                .contentType("application/pdf")
-                .originalFilename(storageKey.substring(storageKey.lastIndexOf('/') + 1))
-                .awsRegion(cfg.getAwsRegion())
-                .awsAccessKeyId(accessKey)
-                .awsSecretAccessKey(secretKey)
-                .azureConnectionString(accessKey)   // Azure: accessKey = connection string
-                .gcpServiceAccountJson(secretKey)   // GCP:   secretKey = service-account JSON
-                .build();
-
-        uploaderFactory.get(cfg.getCloud()).upload(req);
-        log.info("E-sign PDF uploaded: org={} key={} size={}B cloud={}",
-                orgId, storageKey, bytes.length, cfg.getCloud());
-        return new StoredPdf(cfg.getBucket(), storageKey, cfg.getCloud().name());
+    private static String owner(String docId) {
+        return "esign-doc:" + docId;
     }
 
-    private CloudDownloadRequest downloadRequest(OrgCloudConfig cfg, String bucket,
-                                                 String storageKey, int ttlSeconds) {
-        String accessKey = encryptionService.decryptSafe(cfg.getAccessKey());
-        String secretKey = encryptionService.decryptSafe(cfg.getSecretKey());
-        return CloudDownloadRequest.builder()
-                .bucket(bucket != null ? bucket : cfg.getBucket())
-                .storageKey(storageKey)
-                .expirationSeconds(ttlSeconds)
-                .awsRegion(cfg.getAwsRegion())
-                .awsAccessKeyId(accessKey)
-                .awsSecretAccessKey(secretKey)
-                .azureConnectionString(accessKey)
-                .gcpServiceAccountJson(secretKey)
-                .build();
-    }
-
-    /** Object key: {@code <cfg.path>/<orgId>/esign/<docId>/<name>}. */
-    private String key(String orgId, String docId, String name) {
-        OrgCloudConfig cfg = requireConfig(orgId);
-        String base = (cfg.getPath() != null && !cfg.getPath().isBlank())
-                ? cfg.getPath().replaceAll("/$", "") + "/" + orgId
-                : orgId;
-        return base + "/esign/" + docId + "/" + name;
-    }
-
-    private OrgCloudConfig requireConfig(String orgId) {
-        Organization org = orgRepository.findById(orgId)
-                .orElseThrow(() -> new RuntimeException("Organisation not found: " + orgId));
-        OrgCloudConfig cfg = org.getCloudConfig();
-        if (cfg == null || cfg.getCloud() == null || cfg.getBucket() == null) {
-            throw new RuntimeException(
-                    "Cloud storage is not configured for this organisation. " +
-                    "Configure it under Settings → Cloud Storage before sending e-sign documents.");
-        }
-        return cfg;
+    /** An unsaved StoredFile describing a pre-registry object, so StorageService can route it by bucket. */
+    private static StoredFile legacy(String orgId, String bucket, String key) {
+        return StoredFile.builder().organizationId(orgId).bucket(bucket).storageKey(key).build();
     }
 }

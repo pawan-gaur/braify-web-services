@@ -142,15 +142,19 @@ public class EmailTemplateController {
     @Operation(summary = "List email template version history",
                description = "Returns all saved snapshots, newest first.")
     @GetMapping("/{id}/versions")
-    public List<EmailTemplateVersion> getVersions(@Parameter(description = "Template ID") @PathVariable String id) {
+    public List<EmailTemplateVersion> getVersions(@Parameter(description = "Template ID") @PathVariable String id,
+                                                  Authentication auth) {
         log.debug("GET /api/email-templates/{}/versions", id);
+        emailTemplateService.findById(id, getUser(auth));   // org access check (404 if not accessible)
         return versionService.getVersions(id);
     }
 
     @Operation(summary = "Get a specific email template version")
     @GetMapping("/{id}/versions/{version}")
     public EmailTemplateVersion getVersion(@Parameter(description = "Template ID") @PathVariable String id,
-                                           @Parameter(description = "Version number") @PathVariable int version) {
+                                           @Parameter(description = "Version number") @PathVariable int version,
+                                           Authentication auth) {
+        emailTemplateService.findById(id, getUser(auth));   // org access check (404 if not accessible)
         return versionService.getVersion(id, version);
     }
 

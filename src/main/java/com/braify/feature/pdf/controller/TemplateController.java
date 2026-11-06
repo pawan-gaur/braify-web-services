@@ -111,16 +111,20 @@ public class TemplateController {
     @Operation(summary = "List version history",
                description = "Returns all saved version snapshots for the template, newest first. Each entry stores the full HTML/CSS/GJS state at the time of save.")
     @GetMapping("/{id}/versions")
-    public List<TemplateVersion> getVersions(@Parameter(description = "Template ID") @PathVariable String id) {
+    public List<TemplateVersion> getVersions(@Parameter(description = "Template ID") @PathVariable String id,
+                                             Authentication auth) {
         log.debug("GET /api/templates/{}/versions", id);
+        templateService.findById(id, getUser(auth));   // org access check (404 if not accessible)
         return versionService.getVersions(id);
     }
 
     @Operation(summary = "Get a specific version snapshot")
     @GetMapping("/{id}/versions/{version}")
     public TemplateVersion getVersion(@Parameter(description = "Template ID") @PathVariable String id,
-                                      @Parameter(description = "Version number") @PathVariable int version) {
+                                      @Parameter(description = "Version number") @PathVariable int version,
+                                      Authentication auth) {
         log.debug("GET /api/templates/{}/versions/{}", id, version);
+        templateService.findById(id, getUser(auth));   // org access check (404 if not accessible)
         return versionService.getVersion(id, version);
     }
 

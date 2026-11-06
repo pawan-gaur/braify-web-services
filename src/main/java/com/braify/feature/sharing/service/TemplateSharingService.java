@@ -16,12 +16,19 @@ import com.braify.feature.audit.model.AuditLog;
 import com.braify.feature.audit.service.AuditLogService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -35,6 +42,7 @@ public class TemplateSharingService {
     private final OrganizationRepository   orgRepo;
     private final AppUserRepository        userRepo;
     private final AuditLogService          auditLogService;
+    private final MongoTemplate            mongoTemplate;
 
     // ── Share ─────────────────────────────────────────────────────────────────
 
@@ -148,26 +156,23 @@ public class TemplateSharingService {
         String orgId = caller.getRole() == AppUser.Role.PLATFORM_ADMIN
                 ? null : caller.getOrganizationId();
         if (orgId == null) return List.of(); // PA has no org
-        return sharingRepo.findByTargetOrgIdAndStatusOrderBySharedAtDesc(orgId, SharedTemplate.Status.ACTIVE)
-                .stream().map(this::enrich).collect(Collectors.toList());
+        return enrichAll(sharingRepo.findByTargetOrgIdAndStatusOrderBySharedAtDesc(orgId, SharedTemplate.Status.ACTIVE));
     }
 
     /** Templates the caller's org has shared OUT to other orgs. */
     public List<SharingResponse> getSentShares(AppUser caller) {
         String orgId = caller.getOrganizationId();
         if (orgId == null) return List.of();
-        return sharingRepo.findBySourceOrgIdAndStatusOrderBySharedAtDesc(orgId, SharedTemplate.Status.ACTIVE)
-                .stream().map(this::enrich).collect(Collectors.toList());
+        return enrichAll(sharingRepo.findBySourceOrgIdAndStatusOrderBySharedAtDesc(orgId, SharedTemplate.Status.ACTIVE));
     }
 
     /** All active shares for a specific template (used by the Share modal to show existing shares). */
     public List<SharingResponse> getSharesForTemplate(String templateId, AppUser caller) {
-        return sharingRepo.findByTemplateIdAndStatus(templateId, SharedTemplate.Status.ACTIVE)
+        return enrichAll(sharingRepo.findByTemplateIdAndStatus(templateId, SharedTemplate.Status.ACTIVE)
                 .stream()
                 .filter(s -> caller.getRole() == AppUser.Role.PLATFORM_ADMIN
                              || s.getSourceOrgId().equals(caller.getOrganizationId()))
-                .map(this::enrich)
-                .collect(Collectors.toList());
+                .collect(Collectors.toList()));
     }
 
     // ── Fork helpers ──────────────────────────────────────────────────────────
@@ -247,12 +252,56 @@ public class TemplateSharingService {
     // ── Enrichment ───────────────────────────────────────────────────────────
 
     private SharingResponse enrich(SharedTemplate share) {
-        String templateName = resolveTemplateName(share.getTemplateId(), share.getTemplateType());
-        String sourceOrgName = orgRepo.findById(share.getSourceOrgId())
-                .map(Organization::getName).orElse(share.getSourceOrgId());
-        String targetOrgName = orgRepo.findById(share.getTargetOrgId())
-                .map(Organization::getName).orElse(share.getTargetOrgId());
+        return enrichAll(List.of(share)).get(0);
+    }
 
+    /**
+     * Enriches shares with template + org display names using batched, name-only
+     * lookups: at most one query each for PDF templates, email templates and orgs,
+     * regardless of the number of shares (was 3 full-document findById per share).
+     * A missing record or null name falls back to the id, as before.
+     */
+    private List<SharingResponse> enrichAll(List<SharedTemplate> shares) {
+        if (shares.isEmpty()) return List.of();
+        Set<String> pdfIds = new HashSet<>(), emailIds = new HashSet<>(), orgIds = new HashSet<>();
+        for (SharedTemplate s : shares) {
+            if (s.getTemplateId() != null) {
+                (s.getTemplateType() == SharedTemplate.TemplateType.TEMPLATE ? pdfIds : emailIds).add(s.getTemplateId());
+            }
+            if (s.getSourceOrgId() != null) orgIds.add(s.getSourceOrgId());
+            if (s.getTargetOrgId() != null) orgIds.add(s.getTargetOrgId());
+        }
+        Map<String, String> pdfNames   = namesById(pdfIds,   Template.class,      Template::getId,      Template::getName);
+        Map<String, String> emailNames = namesById(emailIds, EmailTemplate.class, EmailTemplate::getId, EmailTemplate::getName);
+        Map<String, String> orgNames   = namesById(orgIds,   Organization.class,  Organization::getId,  Organization::getName);
+
+        return shares.stream().map(share -> {
+            Map<String, String> tplNames = share.getTemplateType() == SharedTemplate.TemplateType.TEMPLATE
+                    ? pdfNames : emailNames;
+            return toResponse(share,
+                    tplNames.getOrDefault(share.getTemplateId(), share.getTemplateId()),
+                    orgNames.getOrDefault(share.getSourceOrgId(), share.getSourceOrgId()),
+                    orgNames.getOrDefault(share.getTargetOrgId(), share.getTargetOrgId()));
+        }).collect(Collectors.toList());
+    }
+
+    /** One {@code _id $in} query with a name-only projection → id → name (null names omitted). */
+    private <T> Map<String, String> namesById(Collection<String> ids, Class<T> type,
+                                              java.util.function.Function<T, String> idFn,
+                                              java.util.function.Function<T, String> nameFn) {
+        Map<String, String> out = new HashMap<>();
+        if (ids.isEmpty()) return out;
+        Query q = new Query(Criteria.where("_id").in(ids));
+        q.fields().include("name");
+        for (T doc : mongoTemplate.find(q, type)) {
+            String name = nameFn.apply(doc);
+            if (idFn.apply(doc) != null && name != null) out.put(idFn.apply(doc), name);
+        }
+        return out;
+    }
+
+    private SharingResponse toResponse(SharedTemplate share, String templateName,
+                                       String sourceOrgName, String targetOrgName) {
         return SharingResponse.builder()
                 .id(share.getId())
                 .templateId(share.getTemplateId())

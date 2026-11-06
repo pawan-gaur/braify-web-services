@@ -70,13 +70,13 @@ public class AuthService {
                 if (signer.isPresent()) return signer.get();
             }
             log.warn("Login failed — user not found for email='{}'", req.getEmail());
-            throw new RuntimeException("Invalid email or password");
+            throw new IllegalArgumentException("Invalid email or password");
         }
         AppUser user = userOpt.get();
 
         if (!user.isActive()) {
             log.warn("Login rejected — account disabled for email='{}'", req.getEmail());
-            throw new RuntimeException("Account is disabled");
+            throw new IllegalArgumentException("Account is disabled");
         }
 
         // Lockout: reject while the account is locked (platform security policy).
@@ -86,13 +86,13 @@ public class AuthService {
             log.warn("Login blocked — account locked for email='{}' ({} min remaining)", req.getEmail(), mins);
             auditLogService.logFailureByUser(user.getId(), user.getEmail(),
                     AuditLog.Action.LOGIN, AuditLog.ResourceType.SESSION, user, "Login attempt while account locked");
-            throw new RuntimeException("Account locked due to too many failed attempts. Try again in " + mins + " minute(s).");
+            throw new IllegalArgumentException("Account locked due to too many failed attempts. Try again in " + mins + " minute(s).");
         }
 
         if (!passwordEncoder.matches(req.getPassword(), user.getPassword())) {
             log.warn("Login failed — invalid password for email='{}'", req.getEmail());
             registerFailedAttempt(user);
-            throw new RuntimeException("Invalid email or password");
+            throw new IllegalArgumentException("Invalid email or password");
         }
 
         // Successful password — clear any failed-attempt / lock state.
@@ -128,7 +128,12 @@ public class AuthService {
         String email = SignerEmails.normalize(rawEmail);
         if (email == null) throw new IllegalArgumentException("Email is required");
 
-        Optional<AppUser> user = findUserByEmail(email).filter(AppUser::isActive);
+        Optional<AppUser> found = findUserByEmail(email);
+        if (found.isPresent() && !found.get().isActive()) {
+            log.info("OTP requested for disabled account '{}' — ignored", email);
+            return;
+        }
+        Optional<AppUser> user = found;
         boolean eligible = user.isPresent()
                 || signerAuthService.hasAccount(email)
                 || signerInboxService.hasAnyDocuments(email);
@@ -157,9 +162,11 @@ public class AuthService {
 
         emailOtpService.verify(email, code);
 
-        Optional<AppUser> userOpt = findUserByEmail(email).filter(AppUser::isActive);
+        Optional<AppUser> userOpt = findUserByEmail(email);
         if (userOpt.isPresent()) {
             AppUser user = userOpt.get();
+            // Same as password login: a disabled account can't sign in (not even to the inbox).
+            if (!user.isActive()) throw new IllegalArgumentException("Account is disabled");
             LocalDateTime now = LocalDateTime.now();
             if (user.getLockedUntil() != null && user.getLockedUntil().isAfter(now)) {
                 long mins = Duration.between(now, user.getLockedUntil()).toMinutes() + 1;
@@ -178,7 +185,7 @@ public class AuthService {
                     mfaReq == MfaService.MfaRequirement.MUST_SETUP, "EMAIL_OTP", true);
         }
 
-        // No (active) Braify account — signer portal, if this email has anything to sign.
+        // No Braify account — signer portal, if this email has anything to sign.
         if (signerAuthService.hasAccount(email) || signerInboxService.hasAnyDocuments(email)) {
             var account = signerAuthService.findOrCreate(email);
             if (!account.isActive()) throw new IllegalArgumentException("Account is disabled");
@@ -196,6 +203,23 @@ public class AuthService {
     }
 
     /**
+     * Opens the first session for a user created by self-serve sign-up. The sign-up itself
+     * verified the mailbox with an email code, so the session counts as mailbox proof.
+     * The org's MFA policy still applies (a brand-new org has none, but this stays correct).
+     */
+    public LoginResult openSessionAfterSignup(AppUser user, String deviceInfo, String ipAddress) {
+        MfaService.MfaRequirement mfaReq = mfaService.requirementAtLogin(user);
+        if (mfaReq == MfaService.MfaRequirement.CHALLENGE) {
+            return new LoginResult(LoginResponse.builder()
+                    .mfaRequired(true)
+                    .mfaToken(jwtUtil.generateMfaChallengeToken(user, "EMAIL_OTP"))
+                    .build(), null);
+        }
+        return issueSession(user, deviceInfo, ipAddress, false,
+                mfaReq == MfaService.MfaRequirement.MUST_SETUP, "SIGNUP", true);
+    }
+
+    /**
      * Whether signing in with this user's password also proves they own the mailbox (opens the
      * signer inbox without an email code). Only passwords an admin set — and that the user hasn't
      * since replaced through an email-verified flow — are excluded ({@code false}); passwords the
@@ -206,14 +230,19 @@ public class AuthService {
     }
 
     /** Exact match first (existing rows), then the normalized form. */
-    private Optional<AppUser> findUserByEmail(String email) {
-        if (email == null) return Optional.empty();
+    public Optional<AppUser> findUserByEmail(String email) {
+        if (email == null || email.isBlank()) return Optional.empty();
         Optional<AppUser> exact = userRepository.findByEmail(email.trim());
         if (exact.isPresent()) return exact;
-        String normalized = SignerEmails.normalize(email);
-        return normalized != null && !normalized.equals(email.trim())
-                ? userRepository.findByEmail(normalized)
-                : Optional.empty();
+        // Stored emails keep their original case ("John@X.com"); match ASCII-case-insensitively.
+        List<AppUser> matches = userRepository.findByEmailIgnoreCase(email.trim()).stream()
+                .filter(u -> SignerEmails.same(u.getEmail(), email))
+                .toList();
+        if (matches.size() > 1) {
+            log.warn("Ambiguous email '{}' matches {} users differing only in case — not resolved", email, matches.size());
+            return Optional.empty();
+        }
+        return matches.stream().findFirst();
     }
 
     /**
@@ -223,18 +252,18 @@ public class AuthService {
      */
     public LoginResult verifyMfaAndLogin(MfaVerifyRequest req, String ipAddress) {
         if (req.getMfaToken() == null || !jwtUtil.isValidMfaChallengeToken(req.getMfaToken())) {
-            throw new RuntimeException("Your verification session expired. Please sign in again.");
+            throw new IllegalArgumentException("Your verification session expired. Please sign in again.");
         }
         String userId = jwtUtil.extractUserId(req.getMfaToken());
         AppUser user = userRepository.findById(userId)
                 .orElseThrow(() -> new RuntimeException("User not found"));
-        if (!user.isActive()) throw new RuntimeException("Account is disabled");
+        if (!user.isActive()) throw new IllegalArgumentException("Account is disabled");
 
         if (!mfaService.verifyCode(user, req.getCode())) {
             log.warn("MFA verification failed for '{}'", user.getEmail());
             auditLogService.logFailureByUser(user.getId(), user.getEmail(),
                     AuditLog.Action.LOGIN, AuditLog.ResourceType.SESSION, user, "Invalid MFA code");
-            throw new RuntimeException("Invalid verification code");
+            throw new IllegalArgumentException("Invalid verification code");
         }
         boolean viaEmailOtp = "EMAIL_OTP".equals(
                 jwtUtil.parseToken(req.getMfaToken()).get("firstFactor", String.class));
@@ -425,7 +454,7 @@ public class AuthService {
                 .role(user.getRole().name())
                 .organizationId(user.getOrganizationId())
                 .organizationName(orgName)
-                .profilePicture(user.getProfilePicture())
+                .profilePicture(user.avatarUrl())
                 .mustChangePassword(user.isMustChangePassword())
                 .hasPassword(hasUsablePassword(user))
                 .features(features)

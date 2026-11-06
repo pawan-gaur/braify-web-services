@@ -2,6 +2,8 @@ package com.braify.feature.esign.model;
 
 import lombok.*;
 import org.springframework.data.annotation.*;
+import org.springframework.data.mongodb.core.index.CompoundIndex;
+import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.index.Indexed;
 import org.springframework.data.mongodb.core.mapping.Document;
 
@@ -15,6 +17,11 @@ import java.util.List;
  */
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
 @Document(collection = "esign_bulk_batches")
+@CompoundIndexes({
+    // Batch list pages: org-wide (admins) and own (users), newest first
+    @CompoundIndex(name = "idx_org_created", def = "{'orgId':1,'createdAt':-1}"),
+    @CompoundIndex(name = "idx_creator_created", def = "{'createdBy':1,'createdAt':-1}")
+})
 public class ESignBulkBatch {
 
     @Id private String id;

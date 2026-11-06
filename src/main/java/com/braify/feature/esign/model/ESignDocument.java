@@ -20,9 +20,22 @@ import java.util.List;
     // Creator-scoped list (USER/ADMIN)
     @CompoundIndex(name = "idx_createdBy_status_batch_created",
                    def = "{'createdBy':1,'status':1,'bulkBatchId':1,'createdAt':-1}"),
+    // Default lists have no status filter, so the two indexes above can't serve the createdAt sort.
+    @CompoundIndex(name = "idx_org_batch_created",
+                   def = "{'orgId':1,'bulkBatchId':1,'createdAt':-1}"),
+    @CompoundIndex(name = "idx_createdBy_batch_created",
+                   def = "{'createdBy':1,'bulkBatchId':1,'createdAt':-1}"),
+    // Batch-documents list (bulkBatchId = X, newest first) and the PA all-orgs list (bulkBatchId = null).
+    @CompoundIndex(name = "idx_batch_created",
+                   def = "{'bulkBatchId':1,'createdAt':-1}"),
+    // Expiry / reminder schedulers: status IN [...] (equality) + tokenExpiresAt range.
+    @CompoundIndex(name = "idx_status_tokenExpires",
+                   def = "{'status':1,'tokenExpiresAt':1}"),
     // Signer inbox: "documents where this email is a signatory / legacy client / CC"
     @CompoundIndex(name = "idx_signatories_email", def = "{'signatories.email':1}"),
     @CompoundIndex(name = "idx_client_email",      def = "{'clientEmail':1}"),
+    @CompoundIndex(name = "idx_cc_emails",         def = "{'ccEmails':1}"),
+    @CompoundIndex(name = "idx_completion_cc",     def = "{'completionCcEmails':1}"),
 })
 public class ESignDocument {
 
@@ -42,12 +55,13 @@ public class ESignDocument {
     public enum SourceType { TEMPLATE, UPLOAD }
     private SourceType sourceType;
     private String     templateId;       // set when sourceType == TEMPLATE
-    private byte[]     sourcePdfData;    // LEGACY embedded bytes (older docs); null for cloud-stored docs
-    private String     sourcePdfKey;     // cloud storage key for the source PDF (preferred)
+    private String     sourceFileId;     // StoredFile id of the source PDF (see StorageService)
     private String     sourcePdfHash;    // SHA-256 of the source PDF
 
-    /* ── Cloud storage reference (shared by source + signed PDFs) ───────── */
-    private String     pdfBucket;         // cloud bucket holding this doc's PDFs (null = legacy embedded)
+    /* ── LEGACY storage refs — read only until LegacyFileMigration moves them to sourceFileId/signedFileId ── */
+    private byte[]     sourcePdfData;     // embedded bytes (oldest docs)
+    private String     sourcePdfKey;      // raw cloud key (pre-StoredFile docs)
+    private String     pdfBucket;         // bucket for sourcePdfKey / signedPdfKey
     private String     pdfCloudProvider;  // AWS | AZURE | GCP
 
     /* ── State machine ─────────────────────────────────────────────────── */
@@ -98,8 +112,9 @@ public class ESignDocument {
     private List<Signatory> signatories = new ArrayList<>();
 
     /* ── Signed output ─────────────────────────────────────────────────── */
-    private byte[] signedPdfData;        // LEGACY embedded bytes (older docs); null for cloud-stored docs
-    private String signedPdfKey;         // cloud storage key for the signed PDF (preferred)
+    private String signedFileId;         // StoredFile id of the signed PDF
+    private byte[] signedPdfData;        // LEGACY embedded bytes — see LegacyFileMigration
+    private String signedPdfKey;         // LEGACY raw cloud key — see LegacyFileMigration
     private String signedPdfHash;        // SHA-256 — tamper-proof verification
 
     /* ── Email template ────────────────────────────────────────────────── */
@@ -181,6 +196,8 @@ public class ESignDocument {
         private String id;              // stable UUID; referenced by ESignSignatureField.signatoryId
         private String name;
         private String email;
+        /** Optional mobile number (E.164, e.g. +250788123456) for SMS reminders. Creator-only — never shown to co-signers. */
+        private String phone;
         private int    signingOrder;    // 1-based; drives SEQUENTIAL invitations
         @Builder.Default
         private SignatoryStatus status = SignatoryStatus.PENDING;
@@ -209,7 +226,8 @@ public class ESignDocument {
         private String        id;           // UUID
         private String        fileName;     // original file name
         private String        contentType;  // MIME type
-        private byte[]        data;         // raw bytes
+        private String        fileId;       // StoredFile id (purpose ESIGN_ATTACHMENT)
+        private byte[]        data;         // LEGACY raw bytes — see LegacyFileMigration
         private long          fileSize;     // bytes
         private LocalDateTime uploadedAt;
         private String        uploadedFromIp;

@@ -1,14 +1,9 @@
 package com.braify.feature.fileupload.service;
 
-import com.braify.config.EncryptionService;
 import com.braify.feature.audit.model.AuditLog;
 import com.braify.feature.audit.service.AuditLogService;
 import com.braify.feature.cloudconfig.model.OrgCloudConfig;
-import com.braify.feature.fileupload.cloud.CloudDownloadRequest;
-import com.braify.feature.fileupload.cloud.CloudUploadRequest;
-import com.braify.feature.fileupload.cloud.CloudUploadResult;
-import com.braify.feature.fileupload.cloud.CloudUploader;
-import com.braify.feature.fileupload.cloud.CloudUploaderFactory;
+import com.braify.feature.fileupload.cloud.StorageConfigResolver;
 import com.braify.feature.fileupload.dto.FileDownloadResponse;
 import com.braify.feature.fileupload.dto.FileListResponse;
 import com.braify.feature.fileupload.dto.FileMetadataRequest;
@@ -16,13 +11,20 @@ import com.braify.feature.fileupload.dto.FileUploadResponse;
 import com.braify.feature.fileupload.dto.OrgStorageStat;
 import com.braify.feature.fileupload.model.OrgFile;
 import com.braify.feature.fileupload.repository.OrgFileRepository;
+import com.braify.feature.fileupload.repository.OrgFileUsageRepository;
 import com.braify.feature.organization.model.Organization;
+import com.braify.feature.storage.model.StoragePurpose;
+import com.braify.feature.storage.model.StoredFile;
+import com.braify.feature.storage.service.StorageService;
 import com.braify.feature.organization.repository.OrganizationRepository;
 import com.braify.feature.quota.exception.QuotaExceededException;
 import com.braify.feature.quota.model.OrgQuotaConfig;
 import com.braify.feature.quota.service.QuotaService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -70,12 +72,15 @@ public class FileService {
     private static final String CLOUD_NOT_CONFIGURED = "Cloud setup not exists";
 
     private final OrganizationRepository orgRepository;
+    private final com.braify.feature.events.EventPublisher eventPublisher;
     private final OrgFileRepository      fileRepository;
-    private final CloudUploaderFactory   uploaderFactory;
-    private final EncryptionService      encryptionService;
     private final QuotaService           quotaService;
     private final AuditLogService        auditLogService;
     private final FileIdGenerator        fileIdGenerator;
+    private final StorageConfigResolver  storageResolver;
+    private final StorageService         storageService;
+    private final OrgFileUsageRepository fileUsageRepository;
+    private final MongoTemplate          mongoTemplate;
 
     // ── Upload ────────────────────────────────────────────────────────────────
 
@@ -95,7 +100,7 @@ public class FileService {
                                      String uploader,
                                      String createdById) {
         Organization org = requireOrg(orgId);
-        OrgCloudConfig cfg = requireCloudConfig(org);
+        OrgCloudConfig cfg = requireCloudConfig(org);   // own bucket, else managed storage
 
         // ── Validate file ─────────────────────────────────────────────────────
         validateFile(file, cfg);
@@ -106,28 +111,38 @@ public class FileService {
         } catch (Exception e) {
             throw new RuntimeException("Failed to read file bytes: " + e.getMessage(), e);
         }
+        return store(org, cfg, bytes, file.getOriginalFilename(), file.getContentType(),
+                meta, uploader, createdById, true);
+    }
 
+    /**
+     * Stores a file Braify generated itself (e.g. a bulk-PDF ZIP) in the org's Files.
+     * Unlike {@link #upload}, it does not count as a generated document (the PDFs inside were
+     * already counted) and skips the org's upload type / size allow-list; storage quota still applies.
+     */
+    public FileUploadResponse storeGenerated(String orgId, byte[] bytes, String filename, String contentType,
+                                             FileMetadataRequest meta, String uploader, String createdById) {
+        Organization org = requireOrg(orgId);
+        OrgCloudConfig cfg = requireCloudConfig(org);
+        return store(org, cfg, bytes, filename, contentType, meta, uploader, createdById, false);
+    }
+
+    private FileUploadResponse store(Organization org, OrgCloudConfig cfg, byte[] bytes,
+                                     String originalFilename, String contentType,
+                                     FileMetadataRequest meta, String uploader, String createdById,
+                                     boolean countAsDocument) {
+        String orgId = org.getId();
         long   fileSizeBytes = bytes.length;
         double fileSizeMb    = Math.round((fileSizeBytes / (1024.0 * 1024.0)) * 1000.0) / 1000.0;
 
         // ── Quota checks ──────────────────────────────────────────────────────
-        quotaService.checkAndIncrementDocs(orgId);
+        if (countAsDocument) quotaService.checkAndIncrementDocs(orgId);
         checkStorageQuota(orgId, fileSizeMb);
 
-        // ── Build storage key ─────────────────────────────────────────────────
-        String fileId     = fileIdGenerator.next();
-        String basePath   = buildBasePath(cfg, orgId, fileId, file.getOriginalFilename());
-
-        // ── Decrypt credentials ───────────────────────────────────────────────
-        String plainAccessKey = encryptionService.decryptSafe(cfg.getAccessKey());
-        String plainSecretKey = encryptionService.decryptSafe(cfg.getSecretKey());
-
-        // ── Upload to cloud ───────────────────────────────────────────────────
-        CloudUploader uploader2 = uploaderFactory.get(cfg.getCloud());
-        CloudUploadRequest uploadReq = buildUploadRequest(cfg, basePath, bytes,
-                file.getContentType(), file.getOriginalFilename(),
-                plainAccessKey, plainSecretKey);
-        CloudUploadResult result = uploader2.upload(uploadReq);
+        // ── Store the bytes (StorageService picks the bucket and key) ─────────────
+        String fileId = fileIdGenerator.next();
+        StoredFile stored = storageService.store(orgId, StoragePurpose.LIBRARY_FILE, bytes, originalFilename,
+                contentType, createdById != null ? createdById : uploader, "org-file:" + fileId);
 
         // ── Persist metadata ──────────────────────────────────────────────────
         OrgFile orgFile = OrgFile.builder()
@@ -135,11 +150,10 @@ public class FileService {
                 .organizationId(orgId)
                 .uploadedBy(uploader)
                 .createdBy(createdById)
-                .originalFilename(file.getOriginalFilename())
-                .storageKey(result.getStorageKey())
-                .bucket(result.getBucket())
-                .cloudProvider(toModelProvider(cfg.getCloud()))
-                .contentType(file.getContentType())
+                .originalFilename(originalFilename)
+                .storedFileId(stored.getId())
+                .cloudProvider(OrgFile.CloudProvider.valueOf(stored.getProvider()))
+                .contentType(contentType)
                 .fileSizeBytes(fileSizeBytes)
                 .fileSizeMb(fileSizeMb)
                 .folder(meta != null ? meta.getFolder() : null)
@@ -151,6 +165,13 @@ public class FileService {
                 .build();
 
         OrgFile saved = fileRepository.save(orgFile);
+        eventPublisher.publish(com.braify.feature.events.PlatformEvent.of(
+                com.braify.feature.events.PlatformEventTypes.FILE_UPLOADED, orgId, createdById,
+                "Uploaded " + saved.getOriginalFilename(), "/files",
+                java.util.Map.of("fileId", saved.getFileId(),
+                        "filename", saved.getOriginalFilename() != null ? saved.getOriginalFilename() : "",
+                        "sizeBytes", fileSizeBytes,
+                        "uploadedBy", uploader != null ? uploader : "")));
 
         // ── Increment storage quota ───────────────────────────────────────────
         quotaService.incrementStorage(orgId, fileSizeMb);
@@ -162,15 +183,15 @@ public class FileService {
                 1,
                 Map.of("action",   "FILE_UPLOADED",
                        "fileId",   fileId,
-                       "filename", file.getOriginalFilename() != null ? file.getOriginalFilename() : "",
+                       "filename", originalFilename != null ? originalFilename : "",
                        "sizeMb",   String.valueOf(fileSizeMb),
-                       "cloud",    cfg.getCloud().name()),
+                       "cloud",    stored.getProvider()),
                 uploader,
                 orgId
         );
 
         log.info("File uploaded: org={} fileId={} filename={} size={}MB cloud={}",
-                orgId, fileId, file.getOriginalFilename(), fileSizeMb, cfg.getCloud());
+                orgId, fileId, originalFilename, fileSizeMb, stored.getProvider());
 
         return FileUploadResponse.from(saved);
     }
@@ -200,20 +221,13 @@ public class FileService {
         OrgFile file = requireFile(orgId, fileId);
 
         Organization org = requireOrg(orgId);
-        OrgCloudConfig cfg = requireCloudConfig(org);
-
-        int ttlSeconds = cfg.getPresignedUrlExpiration() != null
-                ? cfg.getPresignedUrlExpiration() * 60   // stored as minutes
-                : 3600;                                   // default 1 hour
-
-        String plainAccessKey = encryptionService.decryptSafe(cfg.getAccessKey());
-        String plainSecretKey = encryptionService.decryptSafe(cfg.getSecretKey());
-
-        CloudUploader cloudUploader = uploaderFactory.get(cfg.getCloud());
-        CloudDownloadRequest dlReq = buildDownloadRequest(cfg, file.getStorageKey(),
-                ttlSeconds, plainAccessKey, plainSecretKey);
-
-        String presignedUrl = cloudUploader.generatePresignedUrl(dlReq);
+        if (!storageResolver.isAvailable(org)) throw new RuntimeException(CLOUD_NOT_CONFIGURED);
+        StorageService.PresignedUrl url = storageService.presignedUrl(file.getStoredFileId() != null
+                ? storageService.get(file.getStoredFileId())
+                : StoredFile.builder().organizationId(orgId).bucket(file.getBucket())     // LEGACY pre-StoredFile file
+                        .storageKey(file.getStorageKey()).build());
+        String presignedUrl = url.url();
+        int    ttlSeconds   = url.expiresInSeconds();
 
         // Increment download counter (non-atomic, best-effort)
         file.setDownloadCount(file.getDownloadCount() + 1);
@@ -298,10 +312,7 @@ public class FileService {
 
         // Dashboard totals
         long   totalActive    = fileRepository.countByOrganizationIdAndStatus(orgId, OrgFile.FileStatus.ACTIVE);
-        double totalStorageMb = fileRepository.findActiveFileSizes(orgId)
-                .stream()
-                .mapToDouble(OrgFile::getFileSizeMb)
-                .sum();
+        double totalStorageMb = fileUsageRepository.sumActiveMb(orgId);   // $group/$sum in Mongo
 
         return FileListResponse.builder()
                 .files(items)
@@ -372,28 +383,25 @@ public class FileService {
         long totalActive = fileRepository.countByStatus(OrgFile.FileStatus.ACTIVE);
 
         // ── Per-org storage stats ─────────────────────────────────────────────
-        List<OrgFile> allActiveSizes = fileRepository.findAllActiveFileSizes();
+        // One $group by organizationId in Mongo: { orgId -> {count, storageMb} }
+        Map<String, OrgFileUsageRepository.Usage> orgAgg = fileUsageRepository.activeUsageByOrg();
 
-        // Group by orgId: { orgId -> {count, storageMb} }
-        Map<String, long[]> orgAgg = new HashMap<>(); // [0]=count, [1]=bits of double storageMb
-        for (OrgFile f : allActiveSizes) {
-            orgAgg.computeIfAbsent(f.getOrganizationId(), k -> new long[]{0, 0});
-            long[] v = orgAgg.get(f.getOrganizationId());
-            v[0]++;
-            v[1] = Double.doubleToLongBits(Double.longBitsToDouble(v[1]) + f.getFileSizeMb());
-        }
-
-        // Resolve org names from repository
+        // Resolve org names — name-only projection (no branding/config payloads)
         Map<String, String> orgNames = new HashMap<>();
-        orgRepository.findAllById(orgAgg.keySet())
-                .forEach(o -> orgNames.put(o.getId(), o.getName()));
+        List<String> orgIds = orgAgg.keySet().stream().filter(java.util.Objects::nonNull).toList();
+        if (!orgIds.isEmpty()) {
+            Query nameQuery = new Query(Criteria.where("_id").in(orgIds));
+            nameQuery.fields().include("name");
+            mongoTemplate.find(nameQuery, Organization.class)
+                    .forEach(o -> orgNames.put(o.getId(), o.getName()));
+        }
 
         List<OrgStorageStat> orgStats = orgAgg.entrySet().stream()
                 .map(e -> OrgStorageStat.builder()
                         .orgId(e.getKey())
                         .orgName(orgNames.getOrDefault(e.getKey(), e.getKey()))
-                        .fileCount(e.getValue()[0])
-                        .storageMb(Math.round(Double.longBitsToDouble(e.getValue()[1]) * 1000.0) / 1000.0)
+                        .fileCount(e.getValue().count())
+                        .storageMb(Math.round(e.getValue().totalMb() * 1000.0) / 1000.0)
                         .build())
                 .sorted(Comparator.comparingDouble(OrgStorageStat::getStorageMb).reversed())
                 .collect(Collectors.toList());
@@ -455,12 +463,16 @@ public class FileService {
                 .orElseThrow(() -> new RuntimeException("Organization not found: " + orgId));
     }
 
+    /** Config for new uploads: the org's own bucket, else managed (platform) storage. */
     private OrgCloudConfig requireCloudConfig(Organization org) {
-        OrgCloudConfig cfg = org.getCloudConfig();
-        if (cfg == null || cfg.getCloud() == null) {
+        OrgCloudConfig own = org.getCloudConfig();
+        if (own != null && own.getCloud() != null && !StorageConfigResolver.hasOwnStorage(org)) {
+            return own;   // pre-existing behaviour for a partially configured own bucket
+        }
+        if (!storageResolver.isAvailable(org)) {
             throw new RuntimeException(CLOUD_NOT_CONFIGURED);
         }
-        return cfg;
+        return storageResolver.forWrite(org);
     }
 
     private OrgFile requireFile(String orgId, String fileId) {
@@ -503,8 +515,7 @@ public class FileService {
         OrgQuotaConfig quotaCfg = quotaService.getConfig(orgId);
         if (quotaCfg.getMaxStorageMb() == -1) return; // unlimited
 
-        double usedMb = fileRepository.findActiveFileSizes(orgId)
-                .stream().mapToDouble(OrgFile::getFileSizeMb).sum();
+        double usedMb = fileUsageRepository.sumActiveMb(orgId);   // $group/$sum in Mongo
 
         if (usedMb + additionalMb > quotaCfg.getMaxStorageMb()) {
             throw new QuotaExceededException(
@@ -512,59 +523,8 @@ public class FileService {
         }
     }
 
-    /**
-     * Builds the object storage key.
-     * Pattern: {@code <cfg.path>/<orgId>/<fileId>/<sanitisedFilename>}
-     */
-    private String buildBasePath(OrgCloudConfig cfg, String orgId, String fileId, String filename) {
-        String base = (cfg.getPath() != null && !cfg.getPath().isBlank())
-                ? cfg.getPath().replaceAll("/$", "") + "/" + orgId + "/" + fileId
-                : orgId + "/" + fileId;
-        String safeFilename = sanitize(filename != null ? filename : "file");
-        return base + "/" + safeFilename;
-    }
 
-    private CloudUploadRequest buildUploadRequest(OrgCloudConfig cfg,
-                                                   String storageKey,
-                                                   byte[] data,
-                                                   String contentType,
-                                                   String originalFilename,
-                                                   String plainAccessKey,
-                                                   String plainSecretKey) {
-        return CloudUploadRequest.builder()
-                .bucket(cfg.getBucket())
-                .storageKey(storageKey)
-                .data(data)
-                .contentType(contentType)
-                .originalFilename(originalFilename)
-                .awsRegion(cfg.getAwsRegion())
-                .awsAccessKeyId(plainAccessKey)
-                .awsSecretAccessKey(plainSecretKey)
-                .azureConnectionString(plainAccessKey)    // Azure: accessKey = connection string
-                .gcpServiceAccountJson(plainSecretKey)    // GCP:   secretKey = SA JSON
-                .build();
-    }
 
-    private CloudDownloadRequest buildDownloadRequest(OrgCloudConfig cfg,
-                                                       String storageKey,
-                                                       int ttlSeconds,
-                                                       String plainAccessKey,
-                                                       String plainSecretKey) {
-        return CloudDownloadRequest.builder()
-                .bucket(cfg.getBucket())
-                .storageKey(storageKey)
-                .expirationSeconds(ttlSeconds)
-                .awsRegion(cfg.getAwsRegion())
-                .awsAccessKeyId(plainAccessKey)
-                .awsSecretAccessKey(plainSecretKey)
-                .azureConnectionString(plainAccessKey)
-                .gcpServiceAccountJson(plainSecretKey)
-                .build();
-    }
-
-    private OrgFile.CloudProvider toModelProvider(OrgCloudConfig.CloudProvider p) {
-        return OrgFile.CloudProvider.valueOf(p.name());
-    }
 
     private OrgFile.DocumentType parseDocumentType(String value) {
         if (value == null || value.isBlank()) return OrgFile.DocumentType.OTHER;
@@ -584,7 +544,4 @@ public class FileService {
         }
     }
 
-    private static String sanitize(String s) {
-        return s.replaceAll("[^a-zA-Z0-9._\\-]", "_");
-    }
 }

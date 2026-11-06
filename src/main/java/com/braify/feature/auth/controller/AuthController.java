@@ -10,6 +10,8 @@ import com.braify.feature.auth.dto.MfaVerifyRequest;
 import com.braify.feature.auth.dto.OtpRequest;
 import com.braify.feature.auth.dto.OtpVerifyRequest;
 import com.braify.feature.signer.service.EmailOtpService;
+import com.braify.feature.signup.dto.SignupRequest;
+import com.braify.feature.signup.service.SignupService;
 import com.braify.feature.auth.service.MfaService;
 import com.braify.feature.user.dto.UserResponse;
 import com.braify.feature.user.model.AppUser;
@@ -56,6 +58,7 @@ public class AuthController {
     private final MfaService mfaService;
     private final com.braify.feature.auth.service.PasswordPolicyService passwordPolicyService;
     private final EmailOtpService emailOtpService;
+    private final SignupService signupService;
 
     /** Name of the httpOnly refresh-token cookie. Scoped to /api/auth so it is only ever sent to auth endpoints. */
     private static final String REFRESH_COOKIE = "refresh_token";
@@ -129,6 +132,37 @@ public class AuthController {
         log.info("POST /api/auth/otp/verify email='{}'", req.getEmail());
         AuthService.LoginResult result = authService.loginWithOtp(
                 req.getEmail(), req.getCode(), req.getDeviceInfo(), extractClientIp(httpReq));
+        setRefreshCookie(httpRes, result.refreshToken());
+        return ResponseEntity.ok(result.response());
+    }
+
+    // ── Instant self-serve sign-up ──────────────────────────────────────────
+
+    /**
+     * Step 1: validates the sign-up form and emails a verification code. Public. Unlike login,
+     * this tells the user when the email is already registered (409), as sign-up forms do.
+     */
+    @PostMapping("/signup/start")
+    public ResponseEntity<Map<String, Object>> signupStart(@Valid @RequestBody SignupRequest req,
+                                                           HttpServletRequest httpReq) {
+        log.info("POST /api/auth/signup/start email='{}'", req.getEmail());
+        signupService.start(req, httpReq.getHeader("User-Agent"), extractClientIp(httpReq));
+        return ResponseEntity.ok(Map.of(
+                "message", "We've emailed you a verification code.",
+                "resendAfterSeconds", emailOtpService.getResendSeconds(),
+                "ttlMinutes", emailOtpService.getTtlMinutes()));
+    }
+
+    /**
+     * Step 2: verifies the code, creates the organisation (FREE plan) and its ORG_ADMIN, and
+     * signs them in — same response contract as {@code /login}.
+     */
+    @PostMapping("/signup/complete")
+    public ResponseEntity<LoginResponse> signupComplete(@Valid @RequestBody SignupRequest req,
+                                                        HttpServletRequest httpReq,
+                                                        HttpServletResponse httpRes) {
+        log.info("POST /api/auth/signup/complete email='{}'", req.getEmail());
+        AuthService.LoginResult result = signupService.complete(req, extractClientIp(httpReq));
         setRefreshCookie(httpRes, result.refreshToken());
         return ResponseEntity.ok(result.response());
     }
@@ -267,9 +301,9 @@ public class AuthController {
     public ResponseEntity<Map<String, Object>> validateToken(@RequestParam String token) {
         log.info("GET /api/auth/validate-token");
         InvitationToken it = tokenRepository.findByTokenAndUsedFalse(token)
-                .orElseThrow(() -> new RuntimeException("Invalid or expired token"));
+                .orElseThrow(() -> new IllegalArgumentException("Invalid or expired token"));
         if (it.getExpiresAt().isBefore(LocalDateTime.now())) {
-            throw new RuntimeException("Token has expired");
+            throw new IllegalArgumentException("Token has expired");
         }
         AppUser user = userRepository.findById(it.getUserId())
                 .orElseThrow(() -> new RuntimeException("User not found"));
@@ -291,16 +325,16 @@ public class AuthController {
         String newPassword = body.get("password");
         if (rawToken == null || newPassword == null) {
             log.warn("Accept-invite validation failed: token or password missing");
-            throw new RuntimeException("Token and a password are required");
+            throw new IllegalArgumentException("Token and a password are required");
         }
 
         InvitationToken it = tokenRepository.findByTokenAndUsedFalse(rawToken)
-                .orElseThrow(() -> new RuntimeException("Invalid or expired token"));
+                .orElseThrow(() -> new IllegalArgumentException("Invalid or expired token"));
         if (it.getExpiresAt().isBefore(LocalDateTime.now())) {
-            throw new RuntimeException("Invitation link has expired. Please ask an admin to resend the invite.");
+            throw new IllegalArgumentException("Invitation link has expired. Please ask an admin to resend the invite.");
         }
         if (it.getType() != InvitationToken.TokenType.INVITE) {
-            throw new RuntimeException("Invalid token type");
+            throw new IllegalArgumentException("Invalid token type");
         }
 
         AppUser user = userRepository.findById(it.getUserId())
@@ -328,7 +362,8 @@ public class AuthController {
     public ResponseEntity<Map<String, String>> forgotPassword(@RequestBody Map<String, String> body) {
         log.info("POST /api/auth/forgot-password");
         String email = body.get("email");
-        userRepository.findByEmail(email).ifPresent(user -> {
+        // Case-insensitive, like login and code sign-in (a mixed-case stored email still gets its link).
+        authService.findUserByEmail(email).ifPresent(user -> {
             if (user.isActive()) {
                 emailInviteService.sendPasswordReset(user);
             }
@@ -348,16 +383,16 @@ public class AuthController {
         String newPassword = body.get("password");
         if (rawToken == null || newPassword == null) {
             log.warn("Reset-password validation failed: token or password missing");
-            throw new RuntimeException("Token and a password are required");
+            throw new IllegalArgumentException("Token and a password are required");
         }
 
         InvitationToken it = tokenRepository.findByTokenAndUsedFalse(rawToken)
-                .orElseThrow(() -> new RuntimeException("Invalid or expired token"));
+                .orElseThrow(() -> new IllegalArgumentException("Invalid or expired token"));
         if (it.getExpiresAt().isBefore(LocalDateTime.now())) {
-            throw new RuntimeException("Reset link has expired. Please request a new one.");
+            throw new IllegalArgumentException("Reset link has expired. Please request a new one.");
         }
         if (it.getType() != InvitationToken.TokenType.PASSWORD_RESET) {
-            throw new RuntimeException("Invalid token type");
+            throw new IllegalArgumentException("Invalid token type");
         }
 
         AppUser user = userRepository.findById(it.getUserId())

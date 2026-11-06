@@ -5,6 +5,7 @@ import com.braify.feature.user.model.AppUser;
 import com.braify.feature.audit.model.AuditLog;
 import com.braify.feature.user.repository.AppUserRepository;
 import com.braify.feature.audit.repository.AuditLogRepository;
+import com.braify.security.UserDetailsImpl;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import lombok.RequiredArgsConstructor;
@@ -13,6 +14,7 @@ import org.springframework.data.domain.*;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
@@ -43,6 +45,14 @@ public class AuditLogService {
 
     /** Serialises chain writes so the previousHash linkage stays consistent (single-JVM). */
     private final Object chainLock = new Object();
+
+    /**
+     * In-memory head of the v2 chain (hash + timestamp of the last saved entry). Guarded by
+     * {@link #chainLock}; {@code null} = not yet seeded from the DB. Single-instance deployment —
+     * this service is the only writer of {@code audit_logs}.
+     */
+    private String        lastChainHash;
+    private LocalDateTime lastChainTimestamp;
 
     // ── Severity mapping ──────────────────────────────────────────────────────
 
@@ -135,14 +145,34 @@ public class AuditLogService {
      */
     private AuditLog finalizeAndSave(AuditLog entry) {
         synchronized (chainLock) {
-            String prev = auditLogRepository
-                    .findTopByHashVersionOrderByTimestampDescIdDesc(HASH_VERSION)
-                    .map(AuditLog::getIntegrityHash)
-                    .orElse(""); // genesis: no prior v2 entry
-            entry.setPreviousHash(prev != null ? prev : "");
+            // Lazily seed the in-memory chain head from the DB (first write after startup, or
+            // after a failed save) — afterwards no read is needed inside the critical section.
+            if (lastChainHash == null) {
+                AuditLog head = auditLogRepository
+                        .findTopByHashVersionOrderByTimestampDescIdDesc(HASH_VERSION)
+                        .orElse(null); // genesis: no prior v2 entry
+                lastChainHash      = head != null && head.getIntegrityHash() != null ? head.getIntegrityHash() : "";
+                lastChainTimestamp = head != null ? head.getTimestamp() : null;
+            }
+            // Stamp the timestamp under the lock so entries are linked in exactly the order the
+            // verifier walks them (timestamp asc, id asc); never let it go backwards.
+            LocalDateTime ts = LocalDateTime.now();
+            if (lastChainTimestamp != null && ts.isBefore(lastChainTimestamp)) ts = lastChainTimestamp;
+            entry.setTimestamp(ts);
+            entry.setPreviousHash(lastChainHash);
             entry.setHashVersion(HASH_VERSION);
             entry.setIntegrityHash(computeHash(entry));
-            return auditLogRepository.save(entry);
+            try {
+                AuditLog saved = auditLogRepository.save(entry);
+                lastChainHash      = saved.getIntegrityHash() != null ? saved.getIntegrityHash() : "";
+                lastChainTimestamp = saved.getTimestamp();
+                return saved;
+            } catch (RuntimeException e) {
+                // Unknown whether it was persisted — re-seed from the DB on the next write.
+                lastChainHash = null;
+                lastChainTimestamp = null;
+                throw e;
+            }
         }
     }
 
@@ -154,6 +184,18 @@ public class AuditLogService {
             Object jti = attrs.getRequest().getAttribute(RequestLoggingFilter.SESSION_ID_ATTR);
             return jti != null ? jti.toString() : null;
         } catch (Exception e) { return null; }
+    }
+
+    /** The authenticated {@link AppUser} when its email equals {@code email}, else null. */
+    private static AppUser currentPrincipalUser(String email) {
+        try {
+            var auth = SecurityContextHolder.getContext().getAuthentication();
+            if (auth != null && auth.getPrincipal() instanceof UserDetailsImpl ud
+                    && ud.getAppUser() != null && email.equals(ud.getAppUser().getEmail())) {
+                return ud.getAppUser();
+            }
+        } catch (Exception ignored) {}
+        return null;
     }
 
     // ── IP / UA extraction ────────────────────────────────────────────────────
@@ -289,7 +331,10 @@ public class AuditLogService {
         String performer         = (performedBy != null) ? performedBy : "system";
         if (!"system".equals(performer)) {
             try {
-                var opt = userRepository.findByEmail(performer);
+                // The caller is almost always the authenticated user — take id/role/name from the
+                // SecurityContext principal instead of a findByEmail round-trip per audited write.
+                AppUser principalUser = currentPrincipalUser(performer);
+                var opt = principalUser != null ? Optional.of(principalUser) : userRepository.findByEmail(performer);
                 if (opt.isPresent()) {
                     var u = opt.get();
                     performedByUserId = u.getId();

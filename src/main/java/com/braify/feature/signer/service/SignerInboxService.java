@@ -165,7 +165,11 @@ public class SignerInboxService {
     public String openForView(String email, String documentId) {
         ESignDocument doc = docRepo.findById(documentId)
                 .orElseThrow(() -> new IllegalArgumentException("Document not found"));
-        classify(doc, email, Map.of()).orElseThrow(() -> new IllegalArgumentException("Document not found"));
+        SignerDocumentItem item = classify(doc, email, Map.of())
+                .orElseThrow(() -> new IllegalArgumentException("Document not found"));
+        if (!item.isCanView()) {
+            throw new IllegalStateException("This document isn't available to view yet.");
+        }
         return tokenService.issueViewToken(doc.getId(), VIEW_TOKEN_DAYS);
     }
 
@@ -204,7 +208,8 @@ public class SignerInboxService {
         Set<String> orgIds = docs.stream().map(ESignDocument::getOrgId).filter(Objects::nonNull)
                 .collect(Collectors.toSet());
         Map<String, String> orgNames = orgRepo.findAllById(orgIds).stream()
-                .collect(Collectors.toMap(Organization::getId, Organization::getName, (a, b) -> a));
+                .collect(Collectors.toMap(Organization::getId,
+                        o -> o.getName() != null ? o.getName() : "", (a, b) -> a));
 
         return docs.stream()
                 .map(d -> classify(d, email, orgNames))
@@ -277,9 +282,17 @@ public class SignerInboxService {
                 .mySignedAt(me != null ? me.getSignedAt() : (legacySigner ? doc.getSubmittedAt() : null))
                 .completedAt(doc.getCompletedAt())
                 .canSign(bucket == Bucket.ACTION && !legacySigner)
-                .canView(true)
+                // Read-only view: signers once it's their turn or they've signed, invitation CCs
+                // (who were always sent a view link), completion CCs only once it's complete.
+                .canView(canView(doc, bucket, isSigner, email))
                 .canDownload(status == ESignDocument.Status.COMPLETED)
                 .build());
+    }
+
+    private static boolean canView(ESignDocument doc, Bucket bucket, boolean isSigner, String email) {
+        if (doc.getStatus() == ESignDocument.Status.COMPLETED) return true;
+        if (isSigner) return bucket != Bucket.UPCOMING;               // not before their turn
+        return containsEmail(doc.getCcEmails(), email);                // invitation CC: as by email
     }
 
     /** The signatory whose turn it is in SEQUENTIAL mode (lowest unsigned order). */

@@ -44,6 +44,7 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
     private static final ObjectMapper MAPPER      = new ObjectMapper();
 
     private final OrgApiKeyService orgApiKeyService;
+    private final com.braify.feature.quota.service.QuotaService quotaService;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request,
@@ -54,6 +55,14 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
 
         // No API key present — let the JWT filter handle it
         if (apiKey == null || apiKey.isBlank()) {
+            chain.doFilter(request, response);
+            return;
+        }
+
+        // API keys only authenticate the external API. Elsewhere the request stays anonymous
+        // (→ 401), so key holders can't reach user endpoints (which expect a user principal).
+        String servletPath = request.getServletPath() + (request.getPathInfo() != null ? request.getPathInfo() : "");
+        if (!servletPath.startsWith("/api/external/")) {
             chain.doFilter(request, response);
             return;
         }
@@ -76,6 +85,7 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
             // Check the key is permitted to access this feature
             if (feature != null) {
                 if (!key.getAllowedFeatures().contains(feature)) {
+                    orgApiKeyService.recordRejectedCall(key.getId());
                     writeJson(response, HttpServletResponse.SC_FORBIDDEN,
                             Map.of("error", "Feature not allowed for this API key"));
                     return;
@@ -101,7 +111,21 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
             // cleared by Spring Security before the outermost filter's finally block)
             request.setAttribute(RequestLoggingFilter.CALLER_ATTR, "key:" + key.getKeyPrefix());
 
-            // Async usage tracking — non-blocking
+            // Plan limit: monthly API calls (tracked below; was never enforced).
+            // A usage-lookup failure must not turn into "invalid API key" — fail open and log.
+            String limitMsg = null;
+            try {
+                limitMsg = quotaService.apiCallLimitMessage(key.getOrgId());
+            } catch (Exception e) {
+                log.warn("API call limit check failed for org {}: {}", key.getOrgId(), e.getMessage());
+            }
+            if (limitMsg != null) {
+                orgApiKeyService.recordRejectedCall(key.getId());
+                writeJson(response, 429, Map.of("status", 429, "error", limitMsg, "message", limitMsg));
+                return;
+            }
+
+            // Async usage tracking — non-blocking (the only place API calls are counted)
             orgApiKeyService.trackUsage(
                     key.getOrgId(),
                     key.getId(),

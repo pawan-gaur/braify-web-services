@@ -6,12 +6,14 @@ import com.google.cloud.storage.BlobInfo;
 import com.google.cloud.storage.HttpMethod;
 import com.google.cloud.storage.Storage;
 import com.google.cloud.storage.StorageOptions;
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -116,13 +118,39 @@ public class GcpStorageUploader implements CloudUploader {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    /**
+     * The GCS {@link Storage} client is thread-safe and caches its OAuth access token, so it is
+     * kept per service-account key (keyed by the key's SHA-256, never the key itself) instead of
+     * re-parsing credentials and re-fetching a token on every call. Closed on shutdown.
+     */
+    private final ConcurrentHashMap<String, Storage> storages = new ConcurrentHashMap<>();
+
     private Storage buildStorage(String serviceAccountJson) throws IOException {
+        String key = CloudClientKeys.of("gcp", null, serviceAccountJson);
+        Storage cached = storages.get(key);
+        if (cached != null) return cached;
         GoogleCredentials credentials = GoogleCredentials
                 .fromStream(new ByteArrayInputStream(serviceAccountJson.getBytes()))
                 .createScoped("https://www.googleapis.com/auth/cloud-platform");
-        return StorageOptions.newBuilder()
+        Storage built = StorageOptions.newBuilder()
                 .setCredentials(credentials)
                 .build()
                 .getService();
+        Storage raced = storages.putIfAbsent(key, built);
+        if (raced != null) {
+            closeQuietly(built);
+            return raced;
+        }
+        return built;
+    }
+
+    @PreDestroy
+    void closeCachedClients() {
+        storages.values().forEach(GcpStorageUploader::closeQuietly);
+        storages.clear();
+    }
+
+    private static void closeQuietly(Storage storage) {
+        try { storage.close(); } catch (Exception ignored) { }
     }
 }

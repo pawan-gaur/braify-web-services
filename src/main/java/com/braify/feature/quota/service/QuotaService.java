@@ -186,6 +186,12 @@ public class QuotaService {
         incrementField(orgId, "apiCalls");
     }
 
+    /** Meters one outbound SMS for the org's current month. */
+    public void incrementSms(String orgId) {
+        if (orgId == null) return;
+        incrementField(orgId, "smsSent");
+    }
+
     /**
      * Atomically adds {@code additionalMb} to the current month's storage counter.
      * No enforcement — storage limit is checked before upload in {@code FileService}.
@@ -213,6 +219,19 @@ public class QuotaService {
     }
 
     // ── Read ─────────────────────────────────────────────────────────────────
+
+    /**
+     * Read-only check of the monthly API-call allowance (-1 = unlimited). Returns a user-facing
+     * message when the limit is reached, otherwise {@code null}.
+     */
+    public String apiCallLimitMessage(String orgId) {
+        int limit = getConfig(orgId).getMaxApiCallsPerMonth();
+        if (limit == -1) return null;
+        long used = getCurrentUsage(orgId).getApiCalls();
+        return used >= limit
+                ? "Monthly API call limit reached (" + used + "/" + limit + "). Upgrade your plan for more."
+                : null;
+    }
 
     public OrgQuotaConfig getConfig(String orgId) {
         return quotaConfigRepo.findByOrganizationId(orgId)
@@ -276,6 +295,7 @@ public class QuotaService {
                         .esignSent(u.getEsignSent())
                         .storageMb(u.getStorageMb())
                         .apiCalls(u.getApiCalls())
+                        .smsSent(u.getSmsSent())
                         .build())
                 .collect(Collectors.toList());
     }

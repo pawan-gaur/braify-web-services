@@ -1,5 +1,6 @@
 package com.braify.feature.email.service;
 
+import org.springframework.security.access.AccessDeniedException;
 import com.braify.config.infra.email.CssInliner;
 import com.braify.config.infra.email.EmailDispatcher;
 import com.braify.feature.email.dto.SendEmailRequest;
@@ -11,7 +12,7 @@ import com.braify.feature.email.model.EmailTemplate;
 import com.braify.feature.email.model.EmailTemplateVersion;
 import com.braify.feature.email.repository.EmailTemplateRepository;
 import com.braify.feature.pdf.service.PlaceholderService;
-import com.resend.services.emails.model.CreateEmailResponse;
+import com.braify.config.infra.email.EmailSendResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -44,10 +45,9 @@ public class EmailTemplateService {
         log.debug("findAll email templates for user='{}' org='{}'", currentUser.getEmail(), currentUser.getOrganizationId());
         // INTERNAL system templates are managed separately and never shown in the org UI.
         if (currentUser.getRole() == AppUser.Role.PLATFORM_ADMIN) {
-            return emailTemplateRepository.findByTypeAndDeletedFalseOrderByUpdatedAtDesc(
-                    com.braify.shared.TemplateType.EXTERNAL);
+            return emailTemplateRepository.findSummariesByType(com.braify.shared.TemplateType.EXTERNAL);
         }
-        return emailTemplateRepository.findByOrganizationIdAndTypeAndDeletedFalseOrderByUpdatedAtDesc(
+        return emailTemplateRepository.findSummariesByOrganizationIdAndType(
                 currentUser.getOrganizationId(), com.braify.shared.TemplateType.EXTERNAL);
     }
 
@@ -59,8 +59,7 @@ public class EmailTemplateService {
         if (currentUser.getRole() != AppUser.Role.PLATFORM_ADMIN) {
             return java.util.List.of();
         }
-        return emailTemplateRepository.findByTypeAndDeletedFalseOrderByUpdatedAtDesc(
-                com.braify.shared.TemplateType.INTERNAL);
+        return emailTemplateRepository.findSummariesByType(com.braify.shared.TemplateType.INTERNAL);
     }
 
     public EmailTemplate findById(String id, AppUser currentUser) {
@@ -299,7 +298,7 @@ public class EmailTemplateService {
 
         final String finalSubject = subject;
         final String finalHtml = cssInliner.inline(template.getHtmlContent(), template.getCssContent());
-        CreateEmailResponse resendResponse =
+        EmailSendResult resendResponse =
                 emailLogService.recorded(
                         com.braify.feature.emaillog.model.EmailLog.builder()
                                 .orgId(template.getOrganizationId())
@@ -312,7 +311,7 @@ public class EmailTemplateService {
                                 .createdBy(caller.getId())
                                 .build(),
                         () -> emailDispatcher.sendHtmlEmail(
-                                req.getTo(), finalSubject, finalHtml, placeholders));
+                                template.getOrganizationId(), req.getTo(), finalSubject, finalHtml, placeholders));
 
         // Audit the send event
         auditLogService.log(
@@ -337,7 +336,7 @@ public class EmailTemplateService {
     private void assertAccess(AppUser user, String resourceOrgId) {
         if (user.getRole() == AppUser.Role.PLATFORM_ADMIN) return;
         if (resourceOrgId != null && !resourceOrgId.equals(user.getOrganizationId())) {
-            throw new RuntimeException("Access denied");
+            throw new AccessDeniedException("Access denied");
         }
     }
 

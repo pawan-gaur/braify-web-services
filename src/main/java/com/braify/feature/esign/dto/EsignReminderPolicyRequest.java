@@ -25,4 +25,6 @@ public class EsignReminderPolicyRequest {
     @Min(value = 1,  message = "Max reminders must be at least 1")
     @Max(value = 50, message = "Max reminders cannot exceed 50")
     private int maxReminders = 10;
+    /** Text reminders to signatories with a phone number. Null = leave unchanged (older clients). */
+    private Boolean smsEnabled;
 }

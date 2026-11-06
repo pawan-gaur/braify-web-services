@@ -30,6 +30,7 @@ import java.util.Map;
 public class ESignClientController {
 
     private final ESignClientService clientService;
+    private final com.braify.feature.esign.service.ESignStorageService esignStorage;
 
     @Operation(summary = "Open document for signing",
                description = "Validates the signing token, transitions the document to IN_REVIEW on first open, " +
@@ -186,7 +187,7 @@ public class ESignClientController {
         return ResponseEntity.ok()
                 .header("Content-Type", ct)
                 .header("Content-Disposition", "attachment; filename=\"" + sanitize(att.getFileName()) + "\"")
-                .body(att.getData());
+                .body(esignStorage.attachmentBytes(att));
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

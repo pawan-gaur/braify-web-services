@@ -2,6 +2,7 @@ package com.braify.feature.pdf.repository;
 
 import com.braify.feature.pdf.model.TemplateVersion;
 import org.springframework.data.mongodb.repository.MongoRepository;
+import org.springframework.data.mongodb.repository.Query;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -10,7 +11,11 @@ import java.util.Optional;
 @Repository
 public interface TemplateVersionRepository extends MongoRepository<TemplateVersion, String> {
 
-    /** All versions for a template, newest first */
+    /**
+     * All versions for a template, newest first — for the history list. Omits htmlContent,
+     * cssContent and gjsData (the bulk of each snapshot); restore and GET /versions/{v} load the full document.
+     */
+    @Query(value = "{'templateId': ?0}", fields = "{'htmlContent':0,'cssContent':0,'gjsData':0}", sort = "{'version': -1}")
     List<TemplateVersion> findByTemplateIdOrderByVersionDesc(String templateId);
 
     /** Specific version for a template */

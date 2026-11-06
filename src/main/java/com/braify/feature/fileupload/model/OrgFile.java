@@ -60,13 +60,13 @@ public class OrgFile {
     /** The original filename as provided by the client. */
     private String originalFilename;
 
-    /**
-     * Object key / blob path used to retrieve the file from cloud storage.
-     * For S3: {@code <prefix>/<orgId>/<fileId>/<originalFilename>}
-     */
+    /** StoredFile id holding the bytes (see StorageService). */
+    private String storedFileId;
+
+    /** LEGACY raw object key (files uploaded before StoredFile) — see LegacyFileMigration. */
     private String storageKey;
 
-    /** Cloud bucket / container / GCS bucket name. */
+    /** LEGACY bucket for {@link #storageKey}. */
     private String bucket;
 
     /** Which cloud provider hosts this file. */

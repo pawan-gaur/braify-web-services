@@ -29,6 +29,7 @@ import java.util.UUID;
 public class ESignClientService {
 
     private final ESignDocumentRepository      docRepo;
+    private final ESignEvents                  esignEvents;
     private final ESignSignatureFieldRepository fieldRepo;
     private final AppUserRepository            userRepo;
     private final ESignTokenService            tokenService;
@@ -66,6 +67,7 @@ public class ESignClientService {
             auditService.log(doc.getId(), token.getClientEmail(),
                     ESignAuditEvent.ActorType.CLIENT,
                     ESignAuditEvent.EventType.DOCUMENT_VIEWED, ip, ua, null);
+            esignEvents.viewed(doc, signatory);
         }
 
         List<ESignSignatureField> fields = fieldRepo.findByDocumentIdOrderByPageAscYAsc(doc.getId());
@@ -244,11 +246,13 @@ public class ESignClientService {
             doc.setStatus(ESignDocument.Status.SIGNED);
             doc.setSubmittedAt(LocalDateTime.now());
             docRepo.save(doc);
+            esignEvents.signed(doc, signatory);   // after the status change, so the payload is current
             // Stamp ALL signatories' fields into the final PDF + send completion emails
             finalizeDocumentAsync(doc, allFields, ip, ua);
         } else {
             doc.setStatus(ESignDocument.Status.PARTIALLY_SIGNED);
             docRepo.save(doc);
+            esignEvents.signed(doc, signatory);
             // Sequential mode: hand the document to the next signatory in order
             if (doc.getSigningMode() == ESignDocument.SigningMode.SEQUENTIAL) {
                 inviteNextSignatory(doc, ip, ua);
@@ -309,15 +313,13 @@ public class ESignClientService {
             String hash = pdfService.sha256Hex(signedBytes);
 
             // 2. Upload the signed PDF to cloud storage; keep only the reference.
-            ESignStorageService.StoredPdf ref = esignStorage.uploadSignedPdf(doc.getOrgId(), doc.getId(), signedBytes);
-            doc.setSignedPdfKey(ref.storageKey());
+            doc.setSignedFileId(esignStorage.storeSignedPdf(doc, signedBytes));
             doc.setSignedPdfHash(hash);
-            if (doc.getPdfBucket() == null)        doc.setPdfBucket(ref.bucket());
-            if (doc.getPdfCloudProvider() == null) doc.setPdfCloudProvider(ref.provider());
             doc.setStatus(ESignDocument.Status.COMPLETED);
             doc.setCompletedAt(LocalDateTime.now());
             doc.setFinalizeError(null);   // clear any prior failure
             docRepo.save(doc);
+            esignEvents.completed(doc);
 
             auditService.log(doc.getId(), "SYSTEM",
                     ESignAuditEvent.ActorType.SYSTEM,
@@ -415,12 +417,14 @@ public class ESignClientService {
             }
         }
 
-        // Build and persist attachment
+        // Store the file; the document keeps only metadata + the file id
+        String fileId = esignStorage.storeAttachment(doc, file.getBytes(), file.getOriginalFilename(),
+                file.getContentType(), "signer:" + doc.getClientEmail());
         ESignDocument.ClientAttachment attachment = ESignDocument.ClientAttachment.builder()
                 .id(UUID.randomUUID().toString())
                 .fileName(file.getOriginalFilename())
                 .contentType(file.getContentType())
-                .data(file.getBytes())
+                .fileId(fileId)
                 .fileSize(file.getSize())
                 .uploadedAt(LocalDateTime.now())
                 .uploadedFromIp(ip)
@@ -563,6 +567,9 @@ public class ESignClientService {
      * revoked, and the expiry scheduler only runs hourly.
      */
     private void requireOpenForSigning(ESignDocument doc) {
+        if (doc.getStatus() == null) {
+            throw new SigningLinkException(SigningLinkException.Reason.INVALID, "This signing link isn't valid.");
+        }
         switch (doc.getStatus()) {
             case PENDING, IN_REVIEW, PARTIALLY_SIGNED -> { /* open */ }
             case CANCELLED -> throw new SigningLinkException(SigningLinkException.Reason.CANCELLED,
@@ -599,6 +606,9 @@ public class ESignClientService {
         if (doc == null) {
             return new SigningLinkException(SigningLinkException.Reason.INVALID,
                     "This signing link isn't valid.");
+        }
+        if (doc.getStatus() == null) {
+            return new SigningLinkException(SigningLinkException.Reason.INVALID, "This signing link isn't valid.");
         }
 
         switch (doc.getStatus()) {

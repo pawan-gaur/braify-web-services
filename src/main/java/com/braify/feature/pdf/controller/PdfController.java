@@ -81,7 +81,7 @@ public class PdfController {
         log.debug("POST /api/preview-pdf templateId='{}'", request.getTemplateId());
         Template    template = templateService.findById(request.getTemplateId(), getUser(auth));
         OrgBranding branding = resolveBranding(template.getOrganizationId());
-        byte[]      pdfBytes = pdfGenerationService.generate(template, request.getData(), branding);
+        byte[]      pdfBytes = pdfGenerationService.preview(template, request.getData(), branding);   // quota-free, as documented
 
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"preview.pdf\"")

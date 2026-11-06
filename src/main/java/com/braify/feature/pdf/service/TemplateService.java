@@ -1,5 +1,6 @@
 package com.braify.feature.pdf.service;
 
+import org.springframework.security.access.AccessDeniedException;
 import com.braify.feature.user.model.AppUser;
 import com.braify.feature.audit.model.AuditLog;
 import com.braify.feature.audit.service.AuditLogService;
@@ -31,10 +32,9 @@ public class TemplateService {
     public List<Template> findAll(AppUser currentUser) {
         log.debug("findAll templates for user='{}' org='{}'", currentUser.getEmail(), currentUser.getOrganizationId());
         if (currentUser.getRole() == AppUser.Role.PLATFORM_ADMIN) {
-            return templateRepository.findByDeletedFalseOrderByUpdatedAtDesc();
+            return templateRepository.findSummariesByDeletedFalse();
         }
-        return templateRepository.findByOrganizationIdAndDeletedFalseOrderByUpdatedAtDesc(
-                currentUser.getOrganizationId());
+        return templateRepository.findSummariesByOrganizationId(currentUser.getOrganizationId());
     }
 
     /** Throws if the template is deleted, not found, or inaccessible to the user. */
@@ -258,7 +258,7 @@ public class TemplateService {
     private void assertAccess(AppUser user, String resourceOrgId) {
         if (user.getRole() == AppUser.Role.PLATFORM_ADMIN) return;
         if (resourceOrgId != null && !resourceOrgId.equals(user.getOrganizationId())) {
-            throw new RuntimeException("Access denied");
+            throw new AccessDeniedException("Access denied");
         }
     }
 

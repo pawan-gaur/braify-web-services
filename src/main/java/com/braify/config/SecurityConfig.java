@@ -54,20 +54,25 @@ public class SecurityConfig {
                 .requestMatchers("/api/esign/sign/**").permitAll()   // client signing (ESIGN token)
                 .requestMatchers("/api/esign/view/**").permitAll()   // read-only CC viewer (ESIGN_VIEW token)
                 .requestMatchers("/api/esign/verify/**").permitAll() // public verification
+                .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/s/*").permitAll()   // SMS short links (code → app path)
                 .requestMatchers("/api/track/**").permitAll()        // bulk-email open/click/unsubscribe (mail-client hits)
                 .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/public/**").permitAll() // public assets (org logo for emails)
                 .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/onboarding").permitAll() // public get-started form
+                .requestMatchers(org.springframework.http.HttpMethod.POST, "/api/billing/webhook").permitAll() // Stripe (signature-verified)
                 // OpenAPI / Swagger UI — allow unauthenticated access so the frontend doc page can load the spec
                 .requestMatchers("/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
                 // Signer inbox: signer-portal sessions and Braify users (scoped to their own email).
                 .requestMatchers("/api/signer/**").authenticated()
-                // Everything else: authenticated, and NEVER a signer-portal identity. JwtAuthFilter
-                // already only honours signer tokens on /api/signer/**; this is the second lock.
+                // External API: organisation API keys (controllers also accept user sessions).
+                .requestMatchers("/api/external/**").authenticated()
+                // Everything else: authenticated, and NEVER a signer-portal identity or an API key.
+                // The filters already scope those to /api/signer/** and /api/external/**; this is the second lock.
                 .anyRequest().access((authentication, context) -> {
                     Authentication a = authentication.get();
                     boolean ok = a != null && a.isAuthenticated()
                             && !(a instanceof AnonymousAuthenticationToken)
-                            && a.getAuthorities().stream().noneMatch(g -> "ROLE_SIGNER".equals(g.getAuthority()));
+                            && a.getAuthorities().stream().noneMatch(g ->
+                                    "ROLE_SIGNER".equals(g.getAuthority()) || "ROLE_API_KEY".equals(g.getAuthority()));
                     return new AuthorizationDecision(ok);
                 })
             )

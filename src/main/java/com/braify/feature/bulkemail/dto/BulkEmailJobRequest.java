@@ -36,7 +36,8 @@ public class BulkEmailJobRequest {
     private BulkEmailJob.AttachmentType attachmentType = BulkEmailJob.AttachmentType.NONE;
 
     /* ── UPLOAD ── */
-    private String uploadedPdfBase64;       // data URL or raw base64
+    private String uploadedPdfFileId;       // UPLOAD: id from POST /api/storage/upload?purpose=BULK_EMAIL_ATTACHMENT
+    private String uploadedPdfBase64;       // UPLOAD alternative (data URL or raw base64) — stored to the same place
     private String uploadedPdfName;
 
     /* ── PDF_TEMPLATE ── */

@@ -72,8 +72,17 @@ public class AppUser {
     /** When set and in the future, login is blocked until this time (account lockout). */
     private LocalDateTime lockedUntil;
 
-    /** Base64 data-URL of the user's profile picture (may be null) */
+    /** StoredFile id of the profile picture (purpose AVATAR); null when none. */
+    private String profilePictureFileId;
+
+    /** LEGACY base64 data-URL profile picture — read only until LegacyFileMigration moves it. */
     private String profilePicture;
+
+    /** URL to show the profile picture: the public file link, else the legacy data URL, else null. */
+    public String avatarUrl() {
+        if (profilePictureFileId != null) return "/api/public/files/" + profilePictureFileId;
+        return profilePicture;
+    }
 
     /** Optional short bio / display note */
     private String bio;

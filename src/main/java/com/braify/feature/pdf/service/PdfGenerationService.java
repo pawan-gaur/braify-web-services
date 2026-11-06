@@ -33,40 +33,156 @@ public class PdfGenerationService {
     private final PlaceholderService placeholderService;
     private final QuotaService       quotaService;
     private final com.braify.feature.placeholder.service.GlobalPlaceholderService globalPlaceholderService;
+    private final com.braify.feature.storage.service.StorageService storageService;
 
     // Timeouts for fetching remote resources (images / CSS) during rendering.
     private static final int RESOURCE_CONNECT_TIMEOUT_MS = 4000;
     private static final int RESOURCE_READ_TIMEOUT_MS    = 6000;
 
+    /** Hosts allowed even when internal (the app itself — e.g. the org logo URL in dev). */
+    @org.springframework.beans.factory.annotation.Value("${app.base-url:}")
+    private String appBaseUrl;
+    @org.springframework.beans.factory.annotation.Value("${app.frontend-url:}")
+    private String appFrontendUrl;
+    /** Extra trusted hosts, comma-separated (e.g. an internal CDN). */
+    @org.springframework.beans.factory.annotation.Value("${app.pdf.trusted-resource-hosts:}")
+    private String extraTrustedHosts;
+
+    private static final int MAX_REDIRECTS = 3;
+
     /**
-     * Timeout-bounded, fail-soft stream factory for http(s) resources.
+     * Timeout-bounded, fail-soft, SSRF-guarded stream factory for http(s) resources.
      *
-     * <p>openhtmltopdf's default resolves every remote {@code <img src="http…">}
-     * (or remote CSS) by opening a {@link java.net.URL} stream on the render
-     * thread with the JVM-global timeout, which is effectively infinite. A single
-     * slow or unreachable image host therefore blocks the entire PDF render (and
-     * the HTTP worker thread) indefinitely — the main cause of "PDF generation
-     * hangs / is slow". This caps each fetch and returns {@code null} on failure
-     * so openhtmltopdf simply skips the missing resource instead of blocking.
+     * <p>Timeouts: openhtmltopdf's default opens every remote {@code <img src="http…">} with the
+     * JVM-global (effectively infinite) timeout, so one slow host could block the whole render.
+     * Each fetch is capped and returns {@code null} on failure, so the resource is skipped.
+     *
+     * <p>SSRF: template HTML is user-authored, so a resource URL must resolve to a public address —
+     * loopback, private, link-local (incl. cloud metadata 169.254.169.254), CGNAT and multicast
+     * targets are refused, and redirects are followed manually with the same check on every hop.
+     * The app's own host is trusted so its public logo endpoint keeps working in every environment.
      */
-    private static final FSStreamFactory TIMEOUT_STREAM_FACTORY = (String uri) -> new FSStream() {
-        private InputStream open() {
+    private FSStreamFactory guardedStreamFactory() {
+        java.util.Set<String> trusted = trustedHosts();
+        return (String uri) -> new FSStream() {
+            private InputStream open() {
+                try {
+                    return fetchGuarded(uri, trusted);
+                } catch (Exception e) {
+                    log.warn("PDF resource fetch refused/failed, skipping {}: {}", uri, e.getMessage());
+                    return null;
+                }
+            }
+            @Override public InputStream getStream() { return open(); }
+            @Override public Reader getReader() {
+                InputStream is = open();
+                return is == null ? null : new InputStreamReader(is, StandardCharsets.UTF_8);
+            }
+        };
+    }
+
+    /** {@code /api/public/files/<uuid>} — relative, or absolute on any host. */
+    private static final java.util.regex.Pattern STORED_FILE_URL = java.util.regex.Pattern.compile(
+            "(?:https?://[^\\s\"'()<>]+)?/api/public/files/([0-9a-fA-F-]{36})");
+
+    /**
+     * Replaces links to public stored files (template images uploaded in the builder) with inline
+     * data URIs read straight from storage. The renderer has no base URI for relative links, and this
+     * avoids an HTTP round-trip to ourselves; the bytes live only in this render's memory.
+     * A file that can't be read is left as-is (the renderer then skips it).
+     */
+    private String inlineStoredImages(String html) {
+        if (html == null || !html.contains("/api/public/files/")) return html;
+        java.util.Map<String, String> cache = new java.util.HashMap<>();
+        java.util.regex.Matcher m = STORED_FILE_URL.matcher(html);
+        StringBuilder out = new StringBuilder();
+        while (m.find()) {
+            String dataUri = cache.computeIfAbsent(m.group(1), id -> {
+                try {
+                    com.braify.feature.storage.model.StoredFile f = storageService.get(id);
+                    if (!f.getPurpose().publicRead()) return null;
+                    return "data:" + f.getContentType() + ";base64,"
+                            + java.util.Base64.getEncoder().encodeToString(storageService.read(f));
+                } catch (RuntimeException e) {
+                    log.warn("Stored image {} not inlined: {}", id, e.getMessage());
+                    return null;
+                }
+            });
+            m.appendReplacement(out, java.util.regex.Matcher.quoteReplacement(dataUri != null ? dataUri : m.group()));
+        }
+        m.appendTail(out);
+        return out.toString();
+    }
+
+    /** Refuses every non-http(s) protocol (file:, jar:, ftp: …) — local files must never be read. */
+    private static final FSStreamFactory BLOCKED_STREAM_FACTORY = (String uri) -> new FSStream() {
+        @Override public InputStream getStream() {
+            log.warn("PDF resource with blocked protocol skipped: {}", uri);
+            return null;
+        }
+        @Override public Reader getReader() { return null; }
+    };
+
+    private static InputStream fetchGuarded(String uri, java.util.Set<String> trusted) throws Exception {
+        String current = uri;
+        for (int hop = 0; hop <= MAX_REDIRECTS; hop++) {
+            URL url = new URL(current);
+            assertPublicTarget(url, trusted);
+            java.net.HttpURLConnection conn = (java.net.HttpURLConnection) url.openConnection();
+            conn.setInstanceFollowRedirects(false);   // each hop is re-checked below
+            conn.setConnectTimeout(RESOURCE_CONNECT_TIMEOUT_MS);
+            conn.setReadTimeout(RESOURCE_READ_TIMEOUT_MS);
+            int code = conn.getResponseCode();
+            if (code >= 300 && code < 400 && conn.getHeaderField("Location") != null) {
+                current = new URL(url, conn.getHeaderField("Location")).toString();
+                conn.disconnect();
+                continue;
+            }
+            return conn.getInputStream();
+        }
+        throw new java.io.IOException("Too many redirects");
+    }
+
+    private static void assertPublicTarget(URL url, java.util.Set<String> trusted) throws Exception {
+        String protocol = url.getProtocol();
+        if (!"http".equals(protocol) && !"https".equals(protocol)) {
+            throw new SecurityException("protocol not allowed: " + protocol);
+        }
+        String host = url.getHost() == null ? "" : url.getHost().toLowerCase();
+        if (host.isEmpty()) throw new SecurityException("missing host");
+        int port = url.getPort() != -1 ? url.getPort() : url.getDefaultPort();
+        if (trusted.contains(host + ":" + port)) return;
+        for (java.net.InetAddress addr : java.net.InetAddress.getAllByName(host)) {
+            if (isInternal(addr)) throw new SecurityException("internal address not allowed: " + host);
+        }
+    }
+
+    static boolean isInternal(java.net.InetAddress a) {
+        return com.braify.config.infra.net.OutboundTargetGuard.isInternal(a);
+    }
+
+
+    private java.util.Set<String> trustedHosts() {
+        java.util.Set<String> hosts = new java.util.HashSet<>();
+        for (String u : new String[]{ appBaseUrl, appFrontendUrl }) {
             try {
-                URLConnection conn = new URL(uri).openConnection();
-                conn.setConnectTimeout(RESOURCE_CONNECT_TIMEOUT_MS);
-                conn.setReadTimeout(RESOURCE_READ_TIMEOUT_MS);
-                return conn.getInputStream();
-            } catch (Exception e) {
-                log.warn("PDF resource fetch failed/timed out, skipping {}: {}", uri, e.getMessage());
-                return null;
+                if (u != null && !u.isBlank() && new URL(u).getHost() != null) {
+                    URL url = new URL(u);
+                    int port = url.getPort() != -1 ? url.getPort() : url.getDefaultPort();
+                    hosts.add(url.getHost().toLowerCase() + ":" + port);   // host AND port
+                }
+            } catch (Exception ignored) { /* malformed config — not trusted */ }
+        }
+        if (extraTrustedHosts != null) {
+            // Entries are "host" (https, 443) or "host:port".
+            for (String h : extraTrustedHosts.split(",")) {
+                if (h.isBlank()) continue;
+                String e = h.trim().toLowerCase();
+                hosts.add(e.contains(":") ? e : e + ":443");
             }
         }
-        @Override public InputStream getStream() { return open(); }
-        @Override public Reader getReader() {
-            InputStream is = open();
-            return is == null ? null : new InputStreamReader(is, StandardCharsets.UTF_8);
-        }
-    };
+        return hosts;
+    }
 
     // ── Public API ────────────────────────────────────────────────────────────
 
@@ -81,12 +197,24 @@ public class PdfGenerationService {
     public byte[] generate(Template template, Map<String, Object> data, OrgBranding branding) throws Exception {
         // Enforce monthly document quota
         quotaService.checkAndIncrementDocs(template.getOrganizationId());
+        return render(template, data, branding);
+    }
+
+    /**
+     * Same rendering as {@link #generate} but NOT counted as a generated document: builder previews,
+     * and e-sign documents rendered from a template (those count once, as an e-sign send).
+     */
+    public byte[] preview(Template template, Map<String, Object> data, OrgBranding branding) throws Exception {
+        return render(template, data, branding);
+    }
+
+    private byte[] render(Template template, Map<String, Object> data, OrgBranding branding) throws Exception {
 
         // Layer org-level global placeholders under the caller-supplied data
         // (explicit non-blank values win; globals fill everything else).
         Map<String, Object> merged = globalPlaceholderService.mergeForOrg(template.getOrganizationId(), data);
         String rawTemplate = template.getHtmlContent();
-        String html        = placeholderService.replacePlaceholders(rawTemplate, merged);
+        String html        = inlineStoredImages(placeholderService.replacePlaceholders(rawTemplate, merged));
 
         log.debug("Generating PDF for template: {} (standalone={})",
                 template.getId(), isFullHtmlDocument(rawTemplate));
@@ -95,7 +223,8 @@ public class PdfGenerationService {
             PdfRendererBuilder builder = new PdfRendererBuilder();
             builder.useFastMode();
             // Bound remote image/CSS fetches so a slow host can't hang the render.
-            builder.useHttpStreamImplementation(TIMEOUT_STREAM_FACTORY);
+            builder.useHttpStreamImplementation(guardedStreamFactory());
+            builder.useProtocolsStreamImplementation(BLOCKED_STREAM_FACTORY, "file", "jar", "ftp");
             builder.useSVGDrawer(new BatikSVGDrawer());
 
             if (isFullHtmlDocument(rawTemplate)) {
@@ -112,7 +241,8 @@ public class PdfGenerationService {
                 // Legacy path: template stores a body fragment (+ separate cssContent); wrap it in
                 // the system document shell and apply org branding (logo / footer / brand colour).
                 String cleaned  = sanitizeHtml(html);
-                String fullHtml = buildHtmlDocument(cleaned, template, branding);
+                // Inline again: the template's separate cssContent (background images) is added here.
+                String fullHtml = inlineStoredImages(buildHtmlDocument(cleaned, template, branding));
                 builder.withHtmlContent(fullHtml, null);
             }
 

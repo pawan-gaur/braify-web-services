@@ -1,5 +1,8 @@
 package com.braify.feature.user.controller;
 
+import com.braify.feature.storage.model.StoragePurpose;
+import com.braify.feature.storage.model.StoredFile;
+import com.braify.feature.storage.service.StorageService;
 import com.braify.feature.user.dto.UserResponse;
 import com.braify.feature.user.model.AppUser;
 import com.braify.feature.audit.model.AuditLog;
@@ -30,6 +33,7 @@ public class ProfileController {
     private final PasswordEncoder passwordEncoder;
     private final AuditLogService auditLogService;
     private final UserService userService;
+    private final StorageService storageService;
     private final com.braify.feature.auth.service.PasswordPolicyService passwordPolicyService;
     private final com.braify.feature.platform.service.PlatformSettingsService platformSettingsService;
     private final com.braify.feature.session.repository.UserSessionRepository sessionRepository;
@@ -119,35 +123,47 @@ public class ProfileController {
     }
 
     /**
-     * POST /api/profile/me/avatar — upload profile picture.
-     * Body: { "avatar": "<base64 data-URL>" }
-     * The client should encode the image as:  "data:image/jpeg;base64,..."
+     * POST /api/profile/me/avatar — set or remove the profile picture.
+     * Body: {@code { "fileId": "<id from POST /api/storage/upload?purpose=AVATAR>" }};
+     * a null/blank fileId removes the picture. The previous picture is deleted from storage.
      */
     @PostMapping("/me/avatar")
     public ResponseEntity<UserResponse> uploadAvatar(@RequestBody Map<String, String> body,
                                                      Authentication auth) {
-        log.info("POST /api/profile/me/avatar caller='{}'", me(auth).getEmail());
-        String avatar = body.get("avatar");
-        if (avatar == null || avatar.isBlank()) {
-            log.warn("Avatar upload rejected for '{}': no avatar data provided", me(auth).getEmail());
-            throw new RuntimeException("No avatar data provided");
-        }
-        // Basic size guard — base64 of ~2 MB is ~2.7 MB string
-        if (avatar.length() > 3_000_000) {
-            throw new RuntimeException("Avatar image too large (max ~2 MB)");
-        }
+        AppUser caller = me(auth);
+        String fileId = body.get("fileId") != null ? body.get("fileId").trim() : "";
+        log.info("POST /api/profile/me/avatar caller='{}' fileId='{}'", caller.getEmail(), fileId);
 
-        AppUser user = userRepository.findById(me(auth).getId())
+        AppUser user = userRepository.findById(caller.getId())
                 .orElseThrow(() -> new RuntimeException("User not found"));
-        user.setProfilePicture(avatar);
+        String previous = user.getProfilePictureFileId();
+        String legacyDataUrl = body.get("avatar");   // older clients send a data URL; it is stored like an upload
+        boolean unchanged = fileId.equals(previous != null ? previous : "")
+                && legacyDataUrl == null && user.getProfilePicture() == null;
+        if (unchanged) return ResponseEntity.ok(userService.toResponse(user));
+
+        if (fileId.isEmpty() && legacyDataUrl != null && legacyDataUrl.startsWith("data:") && legacyDataUrl.contains(",")) {
+            String type = legacyDataUrl.substring(5, legacyDataUrl.indexOf(legacyDataUrl.contains(";") ? ';' : ','));
+            byte[] bytes = java.util.Base64.getDecoder().decode(legacyDataUrl.substring(legacyDataUrl.indexOf(',') + 1).trim());
+            if (bytes.length > 2 * 1024 * 1024) throw new IllegalArgumentException("Avatar image too large (max 2 MB)");
+            user.setProfilePictureFileId(storageService.store(caller.getOrganizationId(), StoragePurpose.AVATAR, bytes,
+                    "avatar", type.isBlank() ? "image/png" : type, caller.getId(), "avatar:" + user.getId()).getId());
+        } else if (!fileId.isEmpty()) {
+            StoredFile upload = storageService.getForUser(fileId, StoragePurpose.AVATAR, caller);
+            user.setProfilePictureFileId(storageService.claim(upload, "avatar:" + user.getId()).getId());
+        } else {
+            user.setProfilePictureFileId(null);
+        }
+        user.setProfilePicture(null);   // drop any legacy inline picture
         userRepository.save(user);
+        storageService.deleteQuietly(previous);
 
         auditLogService.log(
                 user.getId(), user.getEmail(),
                 AuditLog.Action.AVATAR_UPDATED, AuditLog.ResourceType.USER,
                 0, null, user.getEmail());
 
-        log.info("Avatar updated for user '{}'", user.getEmail());
+        log.info("Avatar {} for user '{}'", fileId.isEmpty() ? "removed" : "updated", user.getEmail());
         return ResponseEntity.ok(userService.toResponse(user));
     }
 

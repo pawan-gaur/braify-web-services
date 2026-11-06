@@ -8,6 +8,7 @@ import com.braify.feature.cloudconfig.dto.OrgCloudConfigResponse;
 import com.braify.feature.cloudconfig.model.OrgCloudConfig;
 import com.braify.feature.fileupload.cloud.CloudDownloadRequest;
 import com.braify.feature.fileupload.cloud.CloudUploaderFactory;
+import com.braify.feature.fileupload.cloud.StorageConfigResolver;
 import com.braify.feature.organization.model.Organization;
 import com.braify.feature.organization.repository.OrganizationRepository;
 import com.braify.feature.user.model.AppUser;
@@ -46,6 +47,8 @@ public class OrgCloudConfigService {
     private final AuditLogService        auditLogService;
     private final EncryptionService      encryptionService;
     private final CloudUploaderFactory   uploaderFactory;
+    private final StorageConfigResolver  storageResolver;
+    private final com.braify.feature.storage.service.StorageConfigCache storageConfigCache;
 
     // ── Read ─────────────────────────────────────────────────────────────────
 
@@ -57,7 +60,10 @@ public class OrgCloudConfigService {
      */
     public OrgCloudConfigResponse getCloudConfig(String orgId, AppUser caller) {
         assertAccess(caller, orgId);
-        return toResponse(requireOrg(orgId).getCloudConfig());
+        Organization org = requireOrg(orgId);
+        OrgCloudConfigResponse resp = toResponse(org.getCloudConfig());
+        resp.setManagedStorage(storageResolver.usesManagedStorage(org));
+        return resp;
     }
 
     // ── Write ─────────────────────────────────────────────────────────────────
@@ -81,6 +87,11 @@ public class OrgCloudConfigService {
                                                     AppUser caller) {
         assertAccess(caller, orgId);
         Organization org = requireOrg(orgId);
+
+        // The platform's managed bucket can't be registered as an org's "own" bucket.
+        if (storageResolver.isPlatformBucket(req.getBucket())) {
+            throw new IllegalArgumentException("This bucket name is reserved. Use a bucket in your own cloud account.");
+        }
 
         // ── Validate cloud provider ───────────────────────────────────────────
         OrgCloudConfig.CloudProvider provider = null;
@@ -151,6 +162,7 @@ public class OrgCloudConfigService {
 
         org.setCloudConfig(updated);
         orgRepository.save(org);
+        storageConfigCache.evictOrg(org.getId());   // StorageService caches resolved creds ~60 s
 
         auditLogService.log(
                 org.getId(), org.getName(),

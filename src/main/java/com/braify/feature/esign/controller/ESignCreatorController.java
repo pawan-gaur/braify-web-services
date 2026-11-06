@@ -35,6 +35,8 @@ import java.util.Map;
 public class ESignCreatorController {
 
     private final ESignDocumentService documentService;
+    private final com.braify.feature.esign.service.ESignStorageService esignStorage;
+    private final com.braify.feature.billing.service.PlanAccessService planAccessService;
     private final ESignAuditService    auditService;
 
     @Operation(summary = "Create e-sign document",
@@ -71,6 +73,7 @@ public class ESignCreatorController {
 
         log.info("POST /api/esign/documents/bulk count={} sendImmediately={} by '{}'",
                 req.getDocuments().size(), req.isSendImmediately(), principal.getUsername());
+        planAccessService.requireBulk(principal.getOrgId());   // paid feature (grandfathered orgs keep it)
 
         BulkCreateDocumentResponse result = documentService.createAndSendBulk(
                 req, principal, extractIp(http), http.getHeader("User-Agent"));
@@ -420,7 +423,7 @@ public class ESignCreatorController {
                 .header("Content-Type", ct)
                 .header("Content-Disposition",
                         "attachment; filename=\"" + sanitize(att.getFileName()) + "\"")
-                .body(att.getData());
+                .body(esignStorage.attachmentBytes(att));
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
