@@ -51,6 +51,7 @@ public class SecurityConfig {
                 .requestMatchers("/api/auth/me").authenticated()
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers(org.springframework.http.HttpMethod.GET, "/api/health").permitAll() // public liveness probe (frontend connectivity banner)
+                .requestMatchers(org.springframework.http.HttpMethod.HEAD, "/api/health").permitAll() // uptime monitors probe with HEAD
                 .requestMatchers("/api/esign/sign/**").permitAll()   // client signing (ESIGN token)
                 .requestMatchers("/api/esign/view/**").permitAll()   // read-only CC viewer (ESIGN_VIEW token)
                 .requestMatchers("/api/esign/verify/**").permitAll() // public verification

@@ -238,6 +238,40 @@ public class GlobalExceptionHandler {
                 .body(errorBody(HttpStatus.PAYLOAD_TOO_LARGE, "The file is too large to upload (max 10 MB)."));
     }
 
+    /**
+     * Unparseable request body: broken multipart (bots POSTing junk to /api/auth/*) or malformed JSON.
+     * A client error, so 400 — not a 500 with a stack trace in the logs.
+     * {@link org.springframework.web.multipart.MaxUploadSizeExceededException} keeps its own 413 handler (more specific).
+     */
+    @ExceptionHandler({
+            org.springframework.web.multipart.MultipartException.class,
+            org.springframework.http.converter.HttpMessageNotReadableException.class
+    })
+    public ResponseEntity<Map<String, Object>> handleUnreadableBody(Exception ex) {
+        log.warn("Malformed request body: {}", ex.getMessage());
+        return ResponseEntity.badRequest().body(errorBody(HttpStatus.BAD_REQUEST, "Malformed request body"));
+    }
+
+    /**
+     * Framework-level client errors that carry their own status: wrong HTTP method (405, with Allow header),
+     * unsupported Content-Type (415), missing parameter / part (400), unknown path (404).
+     * They are not RuntimeExceptions, so without this they would fall through to the catch-all 500.
+     */
+    @ExceptionHandler({
+            org.springframework.web.HttpRequestMethodNotSupportedException.class,
+            org.springframework.web.HttpMediaTypeNotSupportedException.class,
+            org.springframework.web.bind.MissingServletRequestParameterException.class,
+            org.springframework.web.multipart.support.MissingServletRequestPartException.class,
+            org.springframework.web.servlet.resource.NoResourceFoundException.class
+    })
+    public ResponseEntity<Map<String, Object>> handleFrameworkClientError(Exception ex) {
+        org.springframework.web.ErrorResponse er = (org.springframework.web.ErrorResponse) ex;
+        HttpStatus status = HttpStatus.resolve(er.getStatusCode().value());
+        if (status == null) status = HttpStatus.BAD_REQUEST;
+        log.warn("{} {}", status.value(), ex.getMessage());
+        return ResponseEntity.status(status).headers(er.getHeaders()).body(errorBody(status, ex.getMessage()));
+    }
+
     /** Bad path/query parameter, e.g. an unknown enum value. */
     @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
     public ResponseEntity<Map<String, Object>> handleTypeMismatch(

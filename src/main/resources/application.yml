@@ -135,7 +135,7 @@ resend:
 braify:
   ai:
     enabled: ${AI_ENABLED:false}
-    provider: ${AI_PROVIDER:anthropic}   # anthropic | openai | gemini | grok
+    provider: ${AI_PROVIDER:openai}   # anthropic | openai | gemini | grok
     max-output-tokens: ${AI_MAX_OUTPUT_TOKENS:8000}
     document-max-output-tokens: ${AI_DOCUMENT_MAX_OUTPUT_TOKENS:16000}   # "template from document" replies
     document-max-chars: ${AI_DOCUMENT_MAX_CHARS:120000}                  # longer uploads are rejected, not truncated
