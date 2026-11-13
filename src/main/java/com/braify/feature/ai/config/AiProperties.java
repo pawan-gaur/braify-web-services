@@ -13,7 +13,7 @@ import org.springframework.context.annotation.Configuration;
  * braify.ai.enabled=true
  * braify.ai.provider=anthropic          # anthropic | openai | gemini | grok
  * braify.ai.anthropic.api-key=${ANTHROPIC_API_KEY:}
- * braify.ai.anthropic.model=claude-opus-4-8
+ * braify.ai.anthropic.model=claude-opus-5-5
  * braify.ai.openai.api-key=${OPENAI_API_KEY:}
  * braify.ai.openai.model=gpt-4o
  * braify.ai.gemini.api-key=${GEMINI_API_KEY:}
@@ -36,7 +36,13 @@ public class AiProperties {
     /** Upper bound on generated tokens for a single assist call. */
     private int maxOutputTokens = 8000;
 
-    private Provider anthropic = new Provider("https://api.anthropic.com/v1", "claude-opus-4-8");
+    /** Upper bound on generated tokens when an uploaded document becomes a template (the whole template comes back in one reply). */
+    private int documentMaxOutputTokens = 16000;
+
+    /** Longest extracted document text accepted, in characters. Longer documents are rejected, never truncated. */
+    private int documentMaxChars = 120_000;
+
+    private Provider anthropic = new Provider("https://api.anthropic.com/v1", "claude-opus-5-5");
     private Provider openai    = new Provider("https://api.openai.com/v1",     "gpt-4o");
     private Provider gemini    = new Provider("https://generativelanguage.googleapis.com/v1beta", "gemini-1.5-pro");
     private Provider grok      = new Provider("https://api.x.ai/v1",           "grok-2-latest");

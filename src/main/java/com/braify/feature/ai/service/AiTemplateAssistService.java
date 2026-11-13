@@ -8,7 +8,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
-import java.util.regex.Pattern;
 
 /**
  * Orchestrates one AI template edit: build the scoped prompts, call the active provider,
@@ -22,13 +21,6 @@ public class AiTemplateAssistService {
     private final AiProviderRegistry registry;
     private final TemplatePromptBuilder prompts;
     private final AiProperties props;
-
-    // Second-line output guards — strip anything the model shouldn't emit even if it slips past the prompt.
-    private static final Pattern SCRIPT   = Pattern.compile("(?is)<script\\b.*?</script>");
-    private static final Pattern IFRAME   = Pattern.compile("(?is)<iframe\\b.*?</iframe>");
-    private static final Pattern ON_ATTR  = Pattern.compile("(?is)\\son[a-z]+\\s*=\\s*(\"[^\"]*\"|'[^']*'|[^\\s>]+)");
-    private static final Pattern JS_URL   = Pattern.compile("(?is)(href|src)\\s*=\\s*([\"'])\\s*javascript:[^\"']*\\2");
-    private static final Pattern FENCE    = Pattern.compile("(?is)^```[a-z]*\\s*|\\s*```$");
 
     public TemplateAssistResponse assist(TemplateAssistRequest req) {
         if (!registry.isAvailable()) {
@@ -60,7 +52,7 @@ public class AiTemplateAssistService {
                     msg.isBlank() ? "I can only help with your template." : msg, provider.id(), provider.model());
         }
 
-        String html = sanitize(out);
+        String html = AiHtmlSanitizer.clean(out);
 
         // Scope guard 2: a non-HTML answer (no tags at all) is treated as off-topic.
         if (!html.contains("<")) {
@@ -68,15 +60,5 @@ public class AiTemplateAssistService {
                     "I can only help you build and edit this template.", provider.id(), provider.model());
         }
         return TemplateAssistResponse.ok(html, mode, provider.id(), provider.model());
-    }
-
-    /** Remove markdown fences and any disallowed active content. */
-    private String sanitize(String s) {
-        String html = FENCE.matcher(s).replaceAll("").trim();
-        html = SCRIPT.matcher(html).replaceAll("");
-        html = IFRAME.matcher(html).replaceAll("");
-        html = ON_ATTR.matcher(html).replaceAll("");
-        html = JS_URL.matcher(html).replaceAll("$1=\"#\"");
-        return html.trim();
     }
 }
